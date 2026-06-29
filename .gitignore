@@ -1,0 +1,43 @@
+# Dependencies
+node_modules/
+
+# Build outputs
+frontend/.next/
+frontend/out/
+frontend/src-tauri/target/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Environment
+.env
+.env.*
+!.env.example
+
+# Database files
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+
+# Archive
+*.zip
+*.tar.gz
+
+# Claude
+.claude/
+
+# Tauri generated
+frontend/src-tauri/gen/
+
+# Temp
+tmp/
+temp/
+*.tmp
