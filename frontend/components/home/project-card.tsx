@@ -13,7 +13,7 @@ export function ProjectCard({
   onTogglePin,
 }: {
   project: Project
-  onTogglePin: (id: string) => void
+  onTogglePin?: (id: string) => void
 }) {
   return (
     <Link
@@ -40,7 +40,7 @@ export function ProjectCard({
             aria-label={project.pinned ? "取消置顶" : "置顶"}
             onClick={(e) => {
               e.preventDefault()
-              onTogglePin(project.id)
+              onTogglePin?.(project.id)
             }}
             className={project.pinned ? "text-primary" : "opacity-0 group-hover:opacity-100"}
           >

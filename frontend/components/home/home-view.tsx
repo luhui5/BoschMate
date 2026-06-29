@@ -10,33 +10,31 @@ import {
   Sun,
   Moon,
   FolderOpen,
-  Trash2,
   Pin,
-  GitBranch,
-  ArrowRight,
+  ChevronLeft,
+  ChevronRight,
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
-import { Badge } from "@/components/ui/badge"
 import { Wordmark } from "@/components/brand"
-import { CiBadge } from "@/components/ci-badge"
 import { ProjectCard } from "@/components/home/project-card"
 import { NewProjectDialog } from "@/components/home/new-project-dialog"
-import { EmptyState, ErrorState, ProjectCardSkeleton, RowSkeleton, Skeleton } from "@/components/states"
+import { EmptyState, ErrorState, ProjectCardSkeleton, Skeleton } from "@/components/states"
 import { useApp } from "@/components/app-provider"
 import { projects as seedProjects } from "@/lib/mock-data"
-import { timeAgo } from "@/lib/format"
 import type { Project } from "@/lib/types"
 import { isTauri, listProjects as tauriListProjects } from "@/lib/tauri-api"
 
 type LoadStatus = "loading" | "error" | "ready"
+
+const CARDS_PER_PAGE = 9 // 3 columns x 3 rows
 
 export function HomeView() {
   const { resolvedTheme, toggleTheme } = useApp()
   const [projects, setProjects] = useState<Project[]>(seedProjects)
   const [query, setQuery] = useState("")
   const [dialog, setDialog] = useState<null | "new" | "ssh">(null)
-  const [historyPage, setHistoryPage] = useState(0)
+  const [projectPage, setProjectPage] = useState(0)
   const [status, setStatus] = useState<LoadStatus>("loading")
 
   useEffect(() => {
@@ -86,20 +84,22 @@ export function HomeView() {
   }, [projects, query])
 
   const pinned = filtered.filter((p) => p.pinned)
-  const recent = [...filtered].sort(
+  const unpinned = [...filtered].sort(
     (a, b) => new Date(b.openedAt).getTime() - new Date(a.openedAt).getTime(),
   )
 
-  const togglePin = (id: string) =>
-    setProjects((prev) => prev.map((p) => (p.id === id ? { ...p, pinned: !p.pinned } : p)))
-
-  const removeProject = (id: string) => setProjects((prev) => prev.filter((p) => p.id !== id))
-
   const addProject = (p: Project) => setProjects((prev) => [p, ...prev])
 
-  const pageSize = 4
-  const pagedHistory = recent.slice(historyPage * pageSize, historyPage * pageSize + pageSize)
-  const totalPages = Math.max(1, Math.ceil(recent.length / pageSize))
+  const totalPages = Math.max(1, Math.ceil(unpinned.length / CARDS_PER_PAGE))
+  const pagedProjects = unpinned.slice(
+    projectPage * CARDS_PER_PAGE,
+    projectPage * CARDS_PER_PAGE + CARDS_PER_PAGE,
+  )
+
+  const handleSearch = (value: string) => {
+    setQuery(value)
+    setProjectPage(0)
+  }
 
   return (
     <div className="mx-auto flex min-h-dvh max-w-6xl flex-col px-4 pb-16 sm:px-6">
@@ -110,209 +110,178 @@ export function HomeView() {
           <Search className="pointer-events-none absolute left-2.5 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
           <Input
             value={query}
-            onChange={(e) => {
-              setQuery(e.target.value)
-              setHistoryPage(0)
-            }}
-            placeholder="搜索项目、语言、最近聊天…"
+            onChange={(e) => handleSearch(e.target.value)}
+            placeholder="Search projects, language, chat history..."
             className="h-9 pl-8"
-            aria-label="搜索项目"
+            aria-label="Search projects"
           />
         </div>
         <Button variant="secondary" size="sm" onClick={() => setDialog("ssh")}>
           <Server />
-          连接 SSH
+          Connect SSH
         </Button>
         <Button size="sm" onClick={() => setDialog("new")}>
           <Plus />
-          新建项目
+          New Project
         </Button>
-        <Button variant="ghost" size="icon-sm" onClick={toggleTheme} aria-label="切换主题">
+        <Button variant="ghost" size="icon-sm" onClick={toggleTheme} aria-label="Toggle theme">
           {resolvedTheme === "dark" ? <Sun /> : <Moon />}
         </Button>
         <Button
           variant="ghost"
           size="icon-sm"
           nativeButton={false}
-          render={<Link href="/settings" aria-label="设置" />}
+          render={<Link href="/settings" aria-label="Settings" />}
         >
           <Settings />
         </Button>
       </header>
 
       <main className="flex flex-col gap-8 pt-8">
-        {/* Loading 骨架屏 */}
+        {/* Loading */}
         {status === "loading" ? (
-          <div className="flex flex-col gap-8">
-            <section>
-              <Skeleton className="mb-3 h-3 w-24" />
-              <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-                {[0, 1, 2, 3, 4, 5].map((i) => (
-                  <ProjectCardSkeleton key={i} />
-                ))}
-              </div>
-            </section>
-            <section>
-              <div className="overflow-hidden rounded-xl border border-border">
-                {[0, 1, 2].map((i) => (
-                  <div key={i} className={i !== 0 ? "border-t border-border" : ""}>
-                    <RowSkeleton />
-                  </div>
-                ))}
-              </div>
-            </section>
-          </div>
+          <section>
+            <Skeleton className="mb-3 h-3 w-24" />
+            <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+              {Array.from({ length: CARDS_PER_PAGE }, (_, i) => (
+                <ProjectCardSkeleton key={i} />
+              ))}
+            </div>
+          </section>
         ) : status === "error" ? (
           <ErrorState
-            title="加载项目失败"
-            description="无法读取本地项目索引，请检查权限或重试。"
-            onRetry={loadProjects}
+            title="Failed to load projects"
+            description="Could not read local project index. Check permissions and retry."
+            onRetry={() => window.location.reload()}
           />
         ) : filtered.length === 0 ? (
           query.trim() ? (
             <EmptyState
               icon={Search}
-              title={`没有匹配 “${query}” 的项目`}
-              description="尝试其它关键词，或打开你的第一个项目。"
+              title={`No projects matching "${query}"`}
+              description="Try another keyword, or open your first project."
               action={
                 <Button size="sm" onClick={() => setDialog("new")}>
                   <Plus />
-                  新建项目
+                  New Project
                 </Button>
               }
             />
           ) : (
             <EmptyState
               icon={FolderOpen}
-              title="还没有项目"
-              description="打开本地文件夹或连接远程 SSH，开始你的第一个 AI 编码会话。"
+              title="No projects yet"
+              description="Open a local folder or connect via SSH to start your first AI coding session."
               action={
                 <Button size="sm" onClick={() => setDialog("new")}>
                   <Plus />
-                  打开第一个项目
+                  Open First Project
                 </Button>
               }
             />
           )
         ) : (
           <>
+            {/* Pinned projects */}
             {pinned.length > 0 && (
               <section>
                 <div className="mb-3 flex items-center gap-2">
                   <Pin className="size-3.5 text-primary" />
                   <h2 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-                    置顶项目
+                    Pinned
                   </h2>
                 </div>
                 <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
                   {pinned.map((p) => (
-                    <ProjectCard key={p.id} project={p} onTogglePin={togglePin} />
+                    <ProjectCard key={p.id} project={p} />
                   ))}
                 </div>
               </section>
             )}
 
+            {/* All projects - paginated grid */}
             <section>
               <div className="mb-3 flex items-center justify-between">
                 <h2 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-                  全部项目
+                  All Projects
                 </h2>
-                <span className="text-xs text-muted-foreground">{filtered.length} 个项目</span>
+                <span className="text-xs text-muted-foreground">
+                  {filtered.length} projects
+                </span>
               </div>
-              <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-                {recent.map((p) => (
-                  <ProjectCard key={p.id} project={p} onTogglePin={togglePin} />
-                ))}
-              </div>
-            </section>
 
-            {/* History */}
-            <section>
-              <div className="mb-3 flex items-center justify-between">
-                <h2 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-                  历史记录
-                </h2>
-                <div className="flex items-center gap-1">
+              {/* Top pagination */}
+              {totalPages > 1 && (
+                <div className="mb-3 flex items-center justify-center gap-1">
                   <Button
                     variant="ghost"
                     size="xs"
-                    disabled={historyPage === 0}
-                    onClick={() => setHistoryPage((p) => Math.max(0, p - 1))}
+                    disabled={projectPage === 0}
+                    onClick={() => setProjectPage((p) => p - 1)}
                   >
-                    上一页
+                    <ChevronLeft className="size-3.5" />
                   </Button>
-                  <span className="px-1 text-xs text-muted-foreground">
-                    {historyPage + 1}/{totalPages}
+                  {Array.from({ length: totalPages }, (_, i) => (
+                    <Button
+                      key={i}
+                      variant={i === projectPage ? "default" : "ghost"}
+                      size="xs"
+                      className="min-w-[2rem]"
+                      onClick={() => setProjectPage(i)}
+                    >
+                      {i + 1}
+                    </Button>
+                  ))}
+                  <Button
+                    variant="ghost"
+                    size="xs"
+                    disabled={projectPage >= totalPages - 1}
+                    onClick={() => setProjectPage((p) => p + 1)}
+                  >
+                    <ChevronRight className="size-3.5" />
+                  </Button>
+                </div>
+              )}
+
+              <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+                {pagedProjects.map((p) => (
+                  <ProjectCard key={p.id} project={p} />
+                ))}
+              </div>
+
+              {/* Bottom pagination */}
+              {totalPages > 1 && (
+                <div className="mt-3 flex items-center justify-center gap-2">
+                  <Button
+                    variant="ghost"
+                    size="xs"
+                    disabled={projectPage === 0}
+                    onClick={() => setProjectPage((p) => p - 1)}
+                  >
+                    <ChevronLeft className="size-3.5" /> Prev
+                  </Button>
+                  <span className="px-2 text-xs text-muted-foreground">
+                    {projectPage + 1} / {totalPages}
                   </span>
                   <Button
                     variant="ghost"
                     size="xs"
-                    disabled={historyPage >= totalPages - 1}
-                    onClick={() => setHistoryPage((p) => Math.min(totalPages - 1, p + 1))}
+                    disabled={projectPage >= totalPages - 1}
+                    onClick={() => setProjectPage((p) => p + 1)}
                   >
-                    下一页
+                    Next <ChevronRight className="size-3.5" />
                   </Button>
                 </div>
-              </div>
-              <div className="overflow-hidden rounded-xl border border-border">
-                {pagedHistory.map((p, i) => (
-                  <div
-                    key={p.id}
-                    className={`group flex items-center gap-3 px-3 py-2.5 transition-colors hover:bg-accent/40 ${
-                      i !== 0 ? "border-t border-border" : ""
-                    }`}
-                  >
-                    <span className="flex size-7 shrink-0 items-center justify-center rounded-md bg-secondary text-muted-foreground">
-                      {p.kind === "ssh" ? <Server className="size-3.5" /> : <FolderOpen className="size-3.5" />}
-                    </span>
-                    <Link href={`/project/${p.id}`} className="flex min-w-0 flex-1 items-center gap-2">
-                      <span className="truncate text-sm font-medium">{p.name}</span>
-                      {p.kind === "ssh" && (
-                        <Badge variant="outline" className="hidden sm:inline-flex">
-                          {p.sshHost}
-                        </Badge>
-                      )}
-                      <span className="hidden items-center gap-1 text-xs text-muted-foreground sm:flex">
-                        <GitBranch className="size-3" />
-                        {p.gitBranch}
-                      </span>
-                    </Link>
-                    <div className="hidden md:block">
-                      <CiBadge status={p.ciStatus} />
-                    </div>
-                    <span className="hidden w-20 text-right text-xs text-muted-foreground sm:block">
-                      {timeAgo(p.openedAt)}
-                    </span>
-                    <Button
-                      variant="ghost"
-                      size="icon-xs"
-                      aria-label="置顶"
-                      onClick={() => togglePin(p.id)}
-                      className={p.pinned ? "text-primary" : "opacity-0 group-hover:opacity-100"}
-                    >
-                      <Pin className={p.pinned ? "fill-current" : ""} />
-                    </Button>
-                    <Button
-                      variant="ghost"
-                      size="icon-xs"
-                      aria-label="删除记录"
-                      onClick={() => removeProject(p.id)}
-                      className="opacity-0 group-hover:opacity-100 hover:text-destructive"
-                    >
-                      <Trash2 />
-                    </Button>
-                  </div>
-                ))}
-              </div>
+              )}
             </section>
           </>
         )}
       </main>
 
       <footer className="mt-auto flex items-center justify-between pt-10 text-xs text-muted-foreground">
-        <span>BoschCode · 本地 AI Coding Agent</span>
+        <span>BoschCode - Local AI Coding Agent</span>
         <Link href="/settings" className="flex items-center gap-1 hover:text-foreground">
-          全局设置 <ArrowRight className="size-3" />
+          Settings <ChevronRight className="size-3" />
         </Link>
       </footer>
 
