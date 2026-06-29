@@ -2,9 +2,9 @@
 node_modules/
 
 # Build outputs
-frontend/.next/
-frontend/out/
-frontend/src-tauri/target/
+.next/
+out/
+src-tauri/target/
 
 # IDE
 .vscode/
@@ -27,15 +27,15 @@ Thumbs.db
 *.db-wal
 *.db-shm
 
+# Tauri generated
+src-tauri/gen/
+
 # Archive
 *.zip
 *.tar.gz
 
 # Claude
 .claude/
-
-# Tauri generated
-frontend/src-tauri/gen/
 
 # Temp
 tmp/

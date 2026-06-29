@@ -16,9 +16,9 @@ jobs:
         with: { node-version: '22' }
       - uses: pnpm/action-setup@v4
         with: { version: '10' }
-      - run: cd frontend && pnpm install --frozen-lockfile
-      - run: cd frontend && pnpm lint || true
-      - run: cd frontend && npx tsc --noEmit || true
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm lint || true
+      - run: npx tsc --noEmit || true
 
   rust-check:
     name: Rust Check
@@ -28,10 +28,10 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: pnpm/action-setup@v4
         with: { version: '10' }
-      - run: cd frontend && pnpm install --frozen-lockfile
+      - run: pnpm install --frozen-lockfile
       - run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libssl-dev libsoup-3.0-dev libjavascriptcoregtk-4.1-dev
-      - run: cd frontend/src-tauri && cargo check
-      - run: cd frontend/src-tauri && cargo clippy -- -D warnings || true
+      - run: cd src-tauri && cargo check
+      - run: cd src-tauri && cargo clippy -- -D warnings || true
 
   test-rust:
     name: Rust Tests
@@ -40,7 +40,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libssl-dev libsoup-3.0-dev libjavascriptcoregtk-4.1-dev
-      - run: cd frontend/src-tauri && cargo test
+      - run: cd src-tauri && cargo test
 
   test-frontend:
     name: Frontend Tests
@@ -51,8 +51,8 @@ jobs:
         with: { node-version: '22' }
       - uses: pnpm/action-setup@v4
         with: { version: '10' }
-      - run: cd frontend && pnpm install --frozen-lockfile
-      - run: cd frontend && npx vitest --run || true
+      - run: pnpm install --frozen-lockfile
+      - run: npx vitest --run || true
 
   security:
     name: Security Audit
@@ -64,9 +64,9 @@ jobs:
         with: { node-version: '22' }
       - uses: pnpm/action-setup@v4
         with: { version: '10' }
-      - run: cd frontend && pnpm install --frozen-lockfile || true
-      - run: cd frontend/src-tauri && cargo audit || true
-      - run: cd frontend && npx audit-ci --moderate || true
+      - run: pnpm install --frozen-lockfile || true
+      - run: cd src-tauri && cargo audit || true
+      - run: npx audit-ci --moderate || true
 
   build:
     name: Build (${{ matrix.os }})
@@ -85,10 +85,10 @@ jobs:
       - name: Install Linux deps
         if: matrix.os == 'ubuntu-24.04'
         run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libssl-dev libsoup-3.0-dev libjavascriptcoregtk-4.1-dev
-      - run: cd frontend && pnpm install --frozen-lockfile
-      - run: cd frontend && pnpm build
-      - run: cd frontend && npx tauri build --ci
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build
+      - run: npx tauri build --ci
       - uses: actions/upload-artifact@v4
         with:
           name: boschcode-${{ matrix.os }}
-          path: frontend/src-tauri/target/release/bundle/
+          path: src-tauri/target/release/bundle/

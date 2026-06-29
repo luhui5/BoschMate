@@ -7,7 +7,7 @@ PROXY ?= http://127.0.0.1:17897
 
 dev:
 	@echo "==> Starting BoschCode development environment..."
-	cd frontend && npx kill-port 3000 2>/dev/null; \
+	npx kill-port 3000 2>/dev/null; \
 	export HTTP_PROXY=$(PROXY); \
 	export HTTPS_PROXY=$(PROXY); \
 	npx tauri dev
@@ -16,29 +16,26 @@ dev:
 
 build:
 	@echo "==> Building frontend..."
-	cd frontend && pnpm build
+	pnpm build
 	@echo "==> Building Rust backend..."
-	cd frontend/src-tauri && cargo build --release
+	cd src-tauri && cargo build --release
 
 # ── Package ──
 
 package-windows:
 	@echo "==> Packaging BoschCode for Windows..."
-	cd frontend && \
 	export HTTP_PROXY=$(PROXY); \
 	export HTTPS_PROXY=$(PROXY); \
 	npx tauri build --bundles msi,nsis
 
 package-macos:
 	@echo "==> Packaging BoschCode for macOS..."
-	cd frontend && \
 	export HTTP_PROXY=$(PROXY); \
 	export HTTPS_PROXY=$(PROXY); \
 	npx tauri build --bundles dmg
 
 package-linux:
 	@echo "==> Packaging BoschCode for Linux..."
-	cd frontend && \
 	export HTTP_PROXY=$(PROXY); \
 	export HTTPS_PROXY=$(PROXY); \
 	npx tauri build --bundles deb,appimage
@@ -47,7 +44,6 @@ package-linux:
 
 package-all:
 	@echo "==> Packaging BoschCode for all platforms..."
-	cd frontend && \
 	pnpm build && \
 	npx tauri build
 
@@ -55,33 +51,33 @@ package-all:
 
 lint:
 	@echo "==> Running Rust linter..."
-	cd frontend/src-tauri && cargo clippy -- -D warnings 2>/dev/null || true
+	cd src-tauri && cargo clippy -- -D warnings 2>/dev/null || true
 	@echo "==> Running TypeScript type check..."
-	cd frontend && npx tsc --noEmit 2>/dev/null || true
+	npx tsc --noEmit 2>/dev/null || true
 
 test:
 	@echo "==> Running Rust tests..."
-	cd frontend/src-tauri && cargo test
+	cd src-tauri && cargo test
 	@echo "==> Running frontend tests..."
-	cd frontend && npx vitest --run 2>/dev/null || true
+	npx vitest --run 2>/dev/null || true
 
 # ── Clean ──
 
 clean:
 	@echo "==> Cleaning build artifacts..."
-	rm -rf frontend/.next frontend/out frontend/src-tauri/target
+	rm -rf .next out src-tauri/target
 	@echo "Done."
 
 clean-all: clean
 	@echo "==> Cleaning dependencies..."
-	rm -rf frontend/node_modules
+	rm -rf node_modules
 	@echo "Done."
 
 # ── Install / Setup ──
 
 setup:
 	@echo "==> Installing frontend dependencies..."
-	cd frontend && pnpm install
+	pnpm install
 	@echo "==> Checking Rust toolchain..."
 	rustc --version && cargo --version
 	@echo "Setup complete."
