@@ -102,7 +102,7 @@ export function HomeView() {
   }
 
   return (
-    <div className="mx-auto flex min-h-dvh max-w-6xl flex-col px-4 pb-16 sm:px-6">
+    <div className="mx-auto flex min-h-dvh max-w-6xl flex-col px-4 pb-8 sm:px-6">
       {/* Top bar */}
       <header className="sticky top-0 z-20 -mx-4 flex items-center gap-3 border-b border-border bg-background/80 px-4 py-3 backdrop-blur sm:-mx-6 sm:px-6">
         <Wordmark />
@@ -137,7 +137,7 @@ export function HomeView() {
         </Button>
       </header>
 
-      <main className="flex flex-col gap-8 pt-8">
+      <main className="flex flex-col gap-4 pt-4">
         {/* Loading */}
         {status === "loading" ? (
           <section>
@@ -210,9 +210,15 @@ export function HomeView() {
                 </span>
               </div>
 
-              {/* Top pagination */}
+              <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+                {pagedProjects.map((p) => (
+                  <ProjectCard key={p.id} project={p} />
+                ))}
+              </div>
+
+              {/* Pagination */}
               {totalPages > 1 && (
-                <div className="mb-3 flex items-center justify-center gap-1">
+                <div className="flex items-center justify-center gap-2">
                   <Button
                     variant="ghost"
                     size="xs"
@@ -242,48 +248,10 @@ export function HomeView() {
                   </Button>
                 </div>
               )}
-
-              <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-                {pagedProjects.map((p) => (
-                  <ProjectCard key={p.id} project={p} />
-                ))}
-              </div>
-
-              {/* Bottom pagination */}
-              {totalPages > 1 && (
-                <div className="mt-3 flex items-center justify-center gap-2">
-                  <Button
-                    variant="ghost"
-                    size="xs"
-                    disabled={projectPage === 0}
-                    onClick={() => setProjectPage((p) => p - 1)}
-                  >
-                    <ChevronLeft className="size-3.5" /> Prev
-                  </Button>
-                  <span className="px-2 text-xs text-muted-foreground">
-                    {projectPage + 1} / {totalPages}
-                  </span>
-                  <Button
-                    variant="ghost"
-                    size="xs"
-                    disabled={projectPage >= totalPages - 1}
-                    onClick={() => setProjectPage((p) => p + 1)}
-                  >
-                    Next <ChevronRight className="size-3.5" />
-                  </Button>
-                </div>
-              )}
             </section>
           </>
         )}
       </main>
-
-      <footer className="mt-auto flex items-center justify-between pt-10 text-xs text-muted-foreground">
-        <span>BoschCode - Local AI Coding Agent</span>
-        <Link href="/settings" className="flex items-center gap-1 hover:text-foreground">
-          Settings <ChevronRight className="size-3" />
-        </Link>
-      </footer>
 
       <NewProjectDialog
         open={dialog !== null}
