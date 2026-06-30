@@ -102,7 +102,7 @@ export function HomeView() {
   }
 
   return (
-    <div className="mx-auto flex min-h-dvh max-w-6xl flex-col px-4 pb-8 sm:px-6">
+    <div className="mx-auto flex max-w-6xl flex-col px-4 pb-8 sm:px-6">
       {/* Top bar */}
       <header className="sticky top-0 z-20 -mx-4 flex items-center gap-3 border-b border-border bg-background/80 px-4 py-3 backdrop-blur sm:-mx-6 sm:px-6">
         <Wordmark />
