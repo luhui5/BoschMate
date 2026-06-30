@@ -104,7 +104,7 @@ export function HomeView() {
   return (
     <div className="mx-auto max-w-6xl px-4 pb-4 sm:px-6">
       {/* Top bar */}
-      <header className="sticky top-0 z-20 -mx-4 flex items-center gap-3 border-b border-border bg-background/80 px-4 py-3 backdrop-blur sm:-mx-6 sm:px-6">
+      <header className="sticky top-[34px] z-20 -mx-4 flex items-center gap-3 border-b border-border bg-background/80 px-4 py-3 backdrop-blur sm:-mx-6 sm:px-6">
         <Wordmark />
         <div className="relative ml-2 flex-1">
           <Search className="pointer-events-none absolute left-2.5 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
