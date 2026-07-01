@@ -91,37 +91,36 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   const resolvedTheme = themeMode === "system" ? systemTheme : themeMode
 
-  // 读取持久化偏好 (Tauri settings or localStorage fallback)
+  // 读取持久化偏好 (Tauri settings → localStorage fallback → defaults)
   useEffect(() => {
     const load = async () => {
       const desktop = isTauri()
       setIsDesktop(desktop)
 
-      if (desktop) {
-        // Load from Rust backend via Tauri IPC
+      // Helper: try Tauri first, fall back to localStorage, then default
+      const loadPref = async <T extends string>(
+        key: string,
+        lsKey: string,
+        fallback: T,
+        setter: (v: T) => void,
+      ) => {
+        if (desktop) {
+          try {
+            const val = await getSetting(key)
+            if (val) { setter(val as T); return }
+          } catch { /* Tauri unavailable, try localStorage */ }
+        }
         try {
-          const tm = await getSetting("theme_mode")
-          if (tm) setThemeModeState(tm as ThemeMode)
-          const lg = await getSetting("lang")
-          if (lg) setLangState(lg as Lang)
-          const fs = await getSetting("font_size")
-          if (fs) setFontSizeState(fs as FontSize)
-          const ef = await getSetting("editor_font")
-          if (ef) setEditorFontState(ef as EditorFont)
-        } catch { /* fallback to localStorage below */ }
+          const val = localStorage.getItem(lsKey) as T | null
+          if (val) setter(val)
+        } catch { /* ignore */ }
       }
 
-      // Always try localStorage as fallback / initial value
-      try {
-        const tm = localStorage.getItem("bc-theme-mode") as ThemeMode | null
-        if (tm) setThemeModeState(tm)
-        const lg = localStorage.getItem("bc-lang") as Lang | null
-        if (lg) setLangState(lg)
-        const fs = localStorage.getItem("bc-font-size") as FontSize | null
-        if (fs) setFontSizeState(fs)
-        const ef = localStorage.getItem("bc-editor-font") as EditorFont | null
-        if (ef) setEditorFontState(ef)
-      } catch { /* ignore */ }
+      await loadPref("theme_mode", "bc-theme-mode", "dark" as ThemeMode, setThemeModeState)
+      await loadPref("lang", "bc-lang", "zh" as Lang, setLangState)
+      await loadPref("font_size", "bc-font-size", "md" as FontSize, setFontSizeState)
+      await loadPref("editor_font", "bc-editor-font", "geist-mono" as EditorFont, setEditorFontState)
+
       setSystemTheme(getSystemTheme())
       const mq = window.matchMedia("(prefers-color-scheme: dark)")
       const onChange = () => setSystemTheme(mq.matches ? "dark" : "light")
@@ -131,19 +130,18 @@ export function AppProvider({ children }: { children: ReactNode }) {
     load()
   }, [])
 
-  // 应用主题
+  // 应用主题 + 持久化
   useEffect(() => {
     const root = document.documentElement
     root.classList.toggle("dark", resolvedTheme === "dark")
     root.classList.toggle("light", resolvedTheme === "light")
-    try {
-      localStorage.setItem("bc-theme-mode", themeMode)
-    } catch {
-      /* ignore */
+    try { localStorage.setItem("bc-theme-mode", themeMode) } catch { /* ignore */ }
+    if (isDesktop) {
+      tauriSetSetting("theme_mode", themeMode).catch(() => {})
     }
-  }, [resolvedTheme, themeMode])
+  }, [resolvedTheme, themeMode, isDesktop])
 
-  // 应用字号与编辑器字体
+  // 持久化学号、编辑器字体、语言（已在上面读取时设置了 data 属性）
   useEffect(() => {
     const root = document.documentElement
     root.dataset.fontSize = fontSize
@@ -153,7 +151,6 @@ export function AppProvider({ children }: { children: ReactNode }) {
       localStorage.setItem("bc-editor-font", editorFont)
       localStorage.setItem("bc-lang", lang)
     } catch { /* ignore */ }
-    // Also persist to Tauri backend when available
     if (isDesktop) {
       tauriSetSetting("font_size", fontSize).catch(() => {})
       tauriSetSetting("editor_font", editorFont).catch(() => {})

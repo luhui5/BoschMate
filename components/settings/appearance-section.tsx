@@ -1,12 +1,12 @@
 "use client"
 
-import { useState } from "react"
 import { Moon, Sun, Monitor, Check, Languages } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { useApp } from "@/components/app-provider"
 import type { Lang } from "@/lib/i18n"
 import { SectionHeader, SettingsCard, SettingRow, Select } from "./primitives"
 import { Switch } from "@/components/ui/switch"
+import { useSetting } from "@/lib/use-setting"
 
 const ACCENTS = [
   { id: "blue", color: "oklch(0.62 0.19 250)" },
@@ -27,8 +27,8 @@ export function AppearanceSection() {
     editorFont,
     setEditorFont,
   } = useApp()
-  const [accent, setAccent] = useState("blue")
-  const [ligatures, setLigatures] = useState(true)
+  const [accent, setAccent] = useSetting("appearance_accent", "blue")
+  const [ligatures, setLigatures] = useSetting("appearance_ligatures", true)
 
   const themes = [
     { id: "dark" as const, label: t("settings.theme.dark"), icon: Moon },

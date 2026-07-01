@@ -1,6 +1,5 @@
 "use client"
 
-import { useState } from "react"
 import { Sparkles, RefreshCw, CheckCircle2, ExternalLink, History, RotateCcw } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { useApp } from "@/components/app-provider"
@@ -8,6 +7,7 @@ import { CURRENT_VERSION } from "@/lib/update"
 import { SectionHeader, SettingsCard, SettingRow } from "./primitives"
 import { Button } from "@/components/ui/button"
 import { Switch } from "@/components/ui/switch"
+import { useSetting } from "@/lib/use-setting"
 
 export function AboutSection() {
   const { t, update, setChannel, checkForUpdates, startUpdate } = useApp()
@@ -114,13 +114,13 @@ export function AboutSection() {
       {/* 自动更新选项 */}
       <SettingsCard>
         <SettingRow title="启动时自动检查" desc="应用启动后 5 秒内静默检查更新">
-          <Toggle defaultOn />
+          <AutoUpdateToggle storageKey="update_auto_check" defaultOn />
         </SettingRow>
         <SettingRow title="定时检查" desc="每 6 小时后台轮询一次更新">
-          <Toggle defaultOn />
+          <AutoUpdateToggle storageKey="update_periodic_check" defaultOn />
         </SettingRow>
         <SettingRow title="下载完成后自动安装" desc="下次关闭应用时自动完成安装">
-          <Toggle />
+          <AutoUpdateToggle storageKey="update_auto_install" />
         </SettingRow>
       </SettingsCard>
 
@@ -143,7 +143,7 @@ export function AboutSection() {
   )
 }
 
-function Toggle({ defaultOn = false }: { defaultOn?: boolean }) {
-  const [on, setOn] = useState(defaultOn)
+function AutoUpdateToggle({ storageKey, defaultOn = false }: { storageKey: string; defaultOn?: boolean }) {
+  const [on, setOn] = useSetting(storageKey, defaultOn)
   return <Switch checked={on} onCheckedChange={setOn} />
 }

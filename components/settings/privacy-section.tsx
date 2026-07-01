@@ -1,16 +1,16 @@
 "use client"
 
-import { useState } from "react"
 import { ShieldCheck, KeyRound, FileLock2 } from "lucide-react"
 import { SectionHeader, SettingsCard, SettingRow, Select } from "./primitives"
 import { Switch } from "@/components/ui/switch"
+import { useSetting } from "@/lib/use-setting"
 
 export function PrivacySection() {
-  const [telemetry, setTelemetry] = useState(false)
-  const [encryptMemory, setEncryptMemory] = useState(true)
-  const [confirmPush, setConfirmPush] = useState(true)
-  const [confirmShell, setConfirmShell] = useState(true)
-  const [redactSecrets, setRedactSecrets] = useState(true)
+  const [telemetry, setTelemetry] = useSetting("privacy_telemetry", false)
+  const [encryptMemory, setEncryptMemory] = useSetting("privacy_encrypt_memory", true)
+  const [confirmPush, setConfirmPush] = useSetting("privacy_confirm_push", true)
+  const [confirmShell, setConfirmShell] = useSetting("privacy_confirm_shell", true)
+  const [redactSecrets, setRedactSecrets] = useSetting("privacy_redact_secrets", true)
 
   return (
     <div className="space-y-6">

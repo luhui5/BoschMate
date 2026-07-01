@@ -1,131 +1,141 @@
 "use client"
 
-import { useState } from "react"
-import { Check, Cpu, Cloud, HardDrive, Plus, Pencil, Trash2 } from "lucide-react"
+import { useEffect, useState } from "react"
+import { Check, Cpu, Plus, Pencil, Trash2 } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { SectionHeader, Select } from "./primitives"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Modal } from "@/components/ui/modal"
+import {
+  type ModelConfig,
+  type ModelProtocol,
+  type ModelProvider,
+  DEFAULT_MODELS,
+  loadModels,
+  saveModels,
+  loadApiKey,
+  saveApiKey,
+  deleteApiKey,
+} from "@/lib/models"
 
-type Protocol = "openai" | "anthropic"
-
-interface ModelItem {
-  id: string
-  name: string
-  kind: "local" | "cloud"
-  protocol: Protocol
-  detail: string
-  endpoint?: string
-  contextWindow: string
-  temperature: number
-}
-
-const INITIAL_MODELS: ModelItem[] = [
-  {
-    id: "local-qwen",
-    name: "Qwen2.5-Coder 32B",
-    kind: "local",
-    protocol: "openai",
-    detail: "本地 · Ollama · 4-bit 量化",
-    endpoint: "http://localhost:11434",
-    contextWindow: "32768",
-    temperature: 0.2,
-  },
-  {
-    id: "local-deepseek",
-    name: "DeepSeek-Coder V2 16B",
-    kind: "local",
-    protocol: "openai",
-    detail: "本地 · llama.cpp",
-    endpoint: "http://localhost:8080",
-    contextWindow: "32768",
-    temperature: 0.3,
-  },
-  {
-    id: "cloud-claude",
-    name: "Claude Opus 4.6",
-    kind: "cloud",
-    protocol: "anthropic",
-    detail: "云端 · 需 API Key",
-    endpoint: "https://api.anthropic.com",
-    contextWindow: "131072",
-    temperature: 0.5,
-  },
-  {
-    id: "cloud-gpt",
-    name: "GPT-5",
-    kind: "cloud",
-    protocol: "openai",
-    detail: "云端 · 需 API Key",
-    endpoint: "https://api.openai.com",
-    contextWindow: "131072",
-    temperature: 0.7,
-  },
-]
-
-const EMPTY_DRAFT: ModelItem = {
+const EMPTY_DRAFT: ModelConfig = {
   id: "",
   name: "",
-  kind: "local",
   protocol: "openai",
+  provider: "ollama",
   detail: "",
   endpoint: "",
-  contextWindow: "32768",
+  contextWindow: 32768,
   temperature: 0.2,
 }
 
-const PROTOCOL_LABEL: Record<Protocol, string> = {
+const PROTOCOL_LABEL: Record<ModelProtocol, string> = {
   openai: "OpenAI 兼容",
   anthropic: "Anthropic",
 }
 
-export function ModelSection() {
-  const [models, setModels] = useState<ModelItem[]>(INITIAL_MODELS)
-  const [selected, setSelected] = useState("local-qwen")
+const PROVIDER_LABEL: Record<ModelProvider, string> = {
+  ollama: "Ollama",
+  openai: "OpenAI",
+  anthropic: "Anthropic",
+}
 
+export function ModelSection() {
+  const [models, setModels] = useState<ModelConfig[]>(DEFAULT_MODELS)
+  const [selected, setSelected] = useState<string>(DEFAULT_MODELS[0].id)
   const [dialogOpen, setDialogOpen] = useState(false)
-  const [draft, setDraft] = useState<ModelItem>(EMPTY_DRAFT)
+  const [draft, setDraft] = useState<ModelConfig>(EMPTY_DRAFT)
   const [editingId, setEditingId] = useState<string | null>(null)
+  const [apiKeyDraft, setApiKeyDraft] = useState("")
+
+  // Load persisted models on mount
+  useEffect(() => {
+    const init = async () => {
+      const saved = await loadModels()
+      setModels(saved)
+      if (saved.length > 0) setSelected(saved[0].id)
+    }
+    init()
+  }, [])
 
   const openAdd = () => {
     setDraft(EMPTY_DRAFT)
+    setApiKeyDraft("")
     setEditingId(null)
     setDialogOpen(true)
   }
 
-  const openEdit = (m: ModelItem) => {
+  const openEdit = async (m: ModelConfig) => {
     setDraft(m)
     setEditingId(m.id)
     setDialogOpen(true)
+    // Load existing API key if any
+    try {
+      const key = await loadApiKey(m.id)
+      setApiKeyDraft(key ?? "")
+    } catch {
+      setApiKeyDraft("")
+    }
   }
 
-  const saveModel = () => {
+  const saveModel = async () => {
     if (!draft.name.trim()) return
+    const modelId = editingId ?? `custom-${Date.now()}`
     if (editingId) {
-      setModels((prev) => prev.map((m) => (m.id === editingId ? { ...draft, id: editingId } : m)))
+      setModels((prev) => {
+        const updated = prev.map((m) => (m.id === editingId ? { ...draft, id: editingId } : m))
+        saveModels(updated).catch(console.error)
+        return updated
+      })
     } else {
-      const id = `custom-${Date.now()}`
-      setModels((prev) => [...prev, { ...draft, id }])
-      setSelected(id)
+      setModels((prev) => {
+        const updated = [...prev, { ...draft, id: modelId }]
+        saveModels(updated).catch(console.error)
+        return updated
+      })
+      setSelected(modelId)
+    }
+    // Persist API key separately (same modelId)
+    if (apiKeyDraft.trim()) {
+      await saveApiKey(modelId, apiKeyDraft.trim())
+    } else if (editingId) {
+      await deleteApiKey(editingId)
     }
     setDialogOpen(false)
   }
 
-  const deleteModel = (id: string) => {
+  const deleteModel = async (id: string) => {
     setModels((prev) => {
       const next = prev.filter((m) => m.id !== id)
       if (selected === id && next.length > 0) setSelected(next[0].id)
+      saveModels(next).catch(console.error)
       return next
     })
+    await deleteApiKey(id)
     setDialogOpen(false)
   }
+
+  // Derive provider from protocol/endpoint
+  const autoProvider = (protocol: ModelProtocol, endpoint: string | null): ModelProvider => {
+    if (endpoint && endpoint.includes(":11434")) return "ollama"
+    return protocol === "anthropic" ? "anthropic" : "openai"
+  }
+
+  useEffect(() => {
+    if (dialogOpen) {
+      const derived = autoProvider(draft.protocol, draft.endpoint)
+      if (derived !== draft.provider) {
+        setDraft((d) => ({ ...d, provider: derived }))
+      }
+    }
+  }, [draft.protocol, draft.endpoint, dialogOpen])
 
   return (
     <div className="space-y-6">
       <SectionHeader
         title="模型配置"
-        desc="管理可用的本地与云端模型。上下文窗口、采样温度、接口协议等参数均针对每个模型单独配置。"
+        desc="管理可用的模型。上下文窗口、采样温度、接口协议等参数均针对每个模型单独配置。"
       />
 
       <div>
@@ -140,7 +150,6 @@ export function ModelSection() {
         </div>
         <div className="grid gap-2 sm:grid-cols-2">
           {models.map((m) => {
-            const Icon = m.kind === "local" ? HardDrive : Cloud
             const isActive = selected === m.id
             return (
               <div
@@ -155,18 +164,15 @@ export function ModelSection() {
                   className="flex min-w-0 flex-1 items-center gap-3 text-left"
                 >
                   <span
-                    className={cn(
-                      "flex h-8 w-8 shrink-0 items-center justify-center rounded-md",
-                      m.kind === "local" ? "bg-emerald-500/15 text-emerald-400" : "bg-sky-500/15 text-sky-400",
-                    )}
+                    className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-primary/15 text-primary"
                   >
-                    <Icon className="h-4 w-4" />
+                    <Cpu className="h-4 w-4" />
                   </span>
                   <span className="min-w-0 flex-1">
                     <span className="flex items-center gap-1.5">
                       <span className="truncate text-sm font-medium">{m.name}</span>
                       <span className="shrink-0 rounded bg-secondary px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">
-                        {PROTOCOL_LABEL[m.protocol]}
+                        {PROVIDER_LABEL[m.provider]}
                       </span>
                     </span>
                     <span className="mt-0.5 block truncate text-xs text-muted-foreground">
@@ -198,7 +204,7 @@ export function ModelSection() {
       <div className="flex items-start gap-2 rounded-lg border border-border bg-muted/30 px-3 py-2.5 text-xs text-muted-foreground">
         <Cpu className="mt-0.5 h-3.5 w-3.5 shrink-0" />
         <span>
-          当前硬件：Apple M3 Max · 48GB 统一内存 · 检测到 Metal 加速。本地模型预计吞吐 ~38 tok/s。
+          当前已配置 {models.length} 个模型。使用本地服务（Ollama / llama.cpp）时需确保对应服务已启动。
         </span>
       </div>
 
@@ -229,66 +235,74 @@ export function ModelSection() {
             />
           </div>
 
-          <div className="space-y-1.5">
-            <label className="text-xs font-medium text-muted-foreground">类型</label>
-            <div className="grid grid-cols-2 gap-2">
-              {(["local", "cloud"] as const).map((k) => (
-                <button
-                  key={k}
-                  onClick={() =>
-                    setDraft((d) => ({
-                      ...d,
-                      kind: k,
-                      detail: k === "local" ? "本地 · 自定义端点" : "云端 · 需 API Key",
-                    }))
-                  }
-                  className={cn(
-                    "flex items-center gap-2 rounded-lg border px-3 py-2 text-sm transition-colors",
-                    draft.kind === k ? "border-primary bg-primary/5" : "border-border hover:border-ring",
-                  )}
-                >
-                  {k === "local" ? <HardDrive className="size-4" /> : <Cloud className="size-4" />}
-                  {k === "local" ? "本地模型" : "云端模型"}
-                </button>
-              ))}
+          <div className="grid grid-cols-2 gap-3">
+            <div className="space-y-1.5">
+              <label className="text-xs font-medium text-muted-foreground">接口协议</label>
+              <div className="grid grid-cols-2 gap-2">
+                {(["openai", "anthropic"] as const).map((p) => (
+                  <button
+                    key={p}
+                    type="button"
+                    onClick={() =>
+                      setDraft((d) => ({
+                        ...d,
+                        protocol: p,
+                        provider: autoProvider(p, d.endpoint),
+                      }))
+                    }
+                    className={cn(
+                      "flex items-center justify-center gap-2 rounded-lg border px-3 py-2 text-sm transition-colors",
+                      draft.protocol === p ? "border-primary bg-primary/5" : "border-border hover:border-ring",
+                    )}
+                  >
+                    {PROTOCOL_LABEL[p]}
+                  </button>
+                ))}
+              </div>
+            </div>
+            <div className="space-y-1.5">
+              <label className="text-xs font-medium text-muted-foreground">后端 Provider</label>
+              <Select
+                value={draft.provider}
+                onChange={(v) => setDraft((d) => ({ ...d, provider: v as ModelProvider }))}
+                options={[
+                  { value: "ollama", label: "Ollama" },
+                  { value: "openai", label: "OpenAI" },
+                  { value: "anthropic", label: "Anthropic" },
+                ]}
+              />
             </div>
           </div>
 
           <div className="space-y-1.5">
-            <label className="text-xs font-medium text-muted-foreground">接口协议</label>
-            <div className="grid grid-cols-2 gap-2">
-              {(["openai", "anthropic"] as const).map((p) => (
-                <button
-                  key={p}
-                  onClick={() => setDraft((d) => ({ ...d, protocol: p }))}
-                  className={cn(
-                    "flex items-center justify-center gap-2 rounded-lg border px-3 py-2 text-sm transition-colors",
-                    draft.protocol === p ? "border-primary bg-primary/5" : "border-border hover:border-ring",
-                  )}
-                >
-                  {PROTOCOL_LABEL[p]}
-                </button>
-              ))}
-            </div>
-          </div>
-
-          <div className="space-y-1.5">
-            <label className="text-xs font-medium text-muted-foreground">
-              {draft.kind === "local" ? "本地端点" : "API 端点"}
-            </label>
+            <label className="text-xs font-medium text-muted-foreground">API 端点</label>
             <Input
               value={draft.endpoint ?? ""}
               onChange={(e) => setDraft((d) => ({ ...d, endpoint: e.target.value }))}
-              placeholder={draft.kind === "local" ? "http://localhost:11434" : "https://api.example.com"}
+              placeholder="http://localhost:11434 或 https://api.example.com"
             />
+          </div>
+
+          {/* API Key (optional) */}
+          <div className="space-y-1.5">
+            <label className="text-xs font-medium text-muted-foreground">API Key（选填）</label>
+            <Input
+              type="password"
+              value={apiKeyDraft}
+              onChange={(e) => setApiKeyDraft(e.target.value)}
+              placeholder="sk-…"
+            />
+            <p className="text-[11px] text-muted-foreground">
+              Key 将加密存储在本机，不会上传到任何云端服务。
+            </p>
           </div>
 
           <div className="grid grid-cols-2 gap-3">
             <div className="space-y-1.5">
               <label className="text-xs font-medium text-muted-foreground">上下文窗口</label>
               <Select
-                value={draft.contextWindow}
-                onChange={(v) => setDraft((d) => ({ ...d, contextWindow: v }))}
+                value={String(draft.contextWindow)}
+                onChange={(v) => setDraft((d) => ({ ...d, contextWindow: Number(v) }))}
                 options={[
                   { value: "8192", label: "8K" },
                   { value: "16384", label: "16K" },

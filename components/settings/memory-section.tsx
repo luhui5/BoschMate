@@ -9,6 +9,7 @@ import { timeAgo } from "@/lib/format"
 import { SectionHeader, SettingsCard, SettingRow, Select } from "./primitives"
 import { Switch } from "@/components/ui/switch"
 import { Input } from "@/components/ui/input"
+import { useSetting } from "@/lib/use-setting"
 
 const TYPE_LABEL: Record<MemoryType, string> = {
   fact: "事实",
@@ -28,7 +29,7 @@ export function MemorySection() {
   const [memories, setMemories] = useState<Memory[]>(seedMemories)
   const [query, setQuery] = useState("")
   const [filter, setFilter] = useState<MemoryType | "all">("all")
-  const [autoCompress, setAutoCompress] = useState(true)
+  const [autoCompress, setAutoCompress] = useSetting("memory_auto_compress", true)
 
   const filtered = memories.filter(
     (m) =>

@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useMemo, useRef, useState } from "react"
+import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import {
   ArrowUp,
   Paperclip,
@@ -26,12 +26,18 @@ import type { ThinkingDepth } from "@/lib/thinking-depth"
 import { SessionSidebar } from "@/components/assistant/session-sidebar"
 import { FolderPicker } from "@/components/assistant/folder-picker"
 import {
-  ASSISTANT_MODELS,
   SEED_SESSIONS,
   createSession,
   deriveTitle,
   type AssistantSession,
 } from "@/lib/assistant-sessions"
+import {
+  loadModels,
+  findModel,
+  loadApiKey,
+  type ModelConfig,
+} from "@/lib/models"
+import { streamChat, isTauri, type AiChatRequest } from "@/lib/tauri-api"
 
 interface Suggestion {
   icon: React.ComponentType<{ className?: string }>
@@ -79,13 +85,6 @@ const SUGGESTIONS: Suggestion[] = [
   },
 ]
 
-function assistantReply(prompt: string, folder: string | null): string {
-  const scope = folder
-    ? `\n\n（当前工作文件夹：${folder}，我会在该目录范围内读取与检索相关内容。）`
-    : ""
-  return `已收到你的请求：「${prompt.slice(0, 40)}${prompt.length > 40 ? "…" : ""}」。\n\n作为本地全能助手，我可以在不离开本机的前提下完成写作、文档总结、翻译、数据分析、计划制定与代码编写。请告诉我更多细节，或从知识库中选择相关文档，我会据此给出更精准的结果。${scope}`
-}
-
 export function AssistantView({
   knowledgeCount,
   onOpenKnowledge,
@@ -94,21 +93,18 @@ export function AssistantView({
   onOpenKnowledge: () => void
 }) {
   const [sessions, setSessions] = useState<AssistantSession[]>(SEED_SESSIONS)
-  const [activeId, setActiveId] = useState<string>(() => {
-    const fresh = createSession()
-    return fresh.id
-  })
-  // Ensure there is always an active session object. Seed with a fresh empty one on first render.
-  const [bootstrapped, setBootstrapped] = useState(false)
+  const [activeId, setActiveId] = useState<string>("")
+  const didInit = useRef(false)
+
+  // One-time init: create a fresh session on first mount (no race condition)
   useEffect(() => {
-    if (!bootstrapped) {
-      setSessions((prev) => {
-        const fresh = createSession({ id: activeId })
-        return [fresh, ...prev]
-      })
-      setBootstrapped(true)
+    if (!didInit.current) {
+      didInit.current = true
+      const fresh = createSession()
+      setSessions((prev) => [fresh, ...prev])
+      setActiveId(fresh.id)
     }
-  }, [bootstrapped, activeId])
+  }, [])
 
   const [input, setInput] = useState("")
   const [thinking, setThinking] = useState(false)
@@ -117,6 +113,23 @@ export function AssistantView({
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
   const scrollRef = useRef<HTMLDivElement>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
+
+  // ── Model list (shared source of truth) ──
+  const [availableModels, setAvailableModels] = useState<ModelConfig[]>([])
+
+  const refreshModels = useCallback(() => {
+    loadModels().then(setAvailableModels).catch(() => {})
+  }, [])
+
+  useEffect(() => {
+    refreshModels()
+  }, [refreshModels])
+
+  // Re-sync on window focus (user may have changed models in settings)
+  useEffect(() => {
+    window.addEventListener("focus", refreshModels)
+    return () => window.removeEventListener("focus", refreshModels)
+  }, [refreshModels])
 
   const active = useMemo(
     () => sessions.find((s) => s.id === activeId) ?? sessions[0],
@@ -160,11 +173,14 @@ export function AssistantView({
     })
   }
 
-  const send = (text: string) => {
+  // ── Real AI send ──
+  const send = async (text: string) => {
     const content = text.trim()
     if (!content || thinking || !active) return
+
     const userMsg = { id: `u-${Date.now()}`, role: "user" as const, content }
     const isFirst = active.messages.length === 0
+
     setSessions((prev) =>
       prev.map((s) =>
         s.id === activeId
@@ -179,8 +195,55 @@ export function AssistantView({
     )
     setInput("")
     setThinking(true)
-    const folder = active.folder
-    setTimeout(() => {
+
+    // Look up the model config
+    const modelCfg = findModel(availableModels, active.model)
+    if (!modelCfg || !isTauri()) {
+      // Fallback: keep the old template reply when models aren't loaded or not in Tauri
+      setTimeout(() => {
+        const fallback = `已收到你的请求：「${content.slice(0, 40)}${content.length > 40 ? "…" : ""}」。\n\n作为本地全能助手，我可以在不离开本机的前提下完成写作、文档总结、翻译、数据分析、计划制定与代码编写。请告诉我更多细节，或从知识库中选择相关文档，我会据此给出更精准的结果。${active.folder ? `\n\n（当前工作文件夹：${active.folder}，我会在该目录范围内读取与检索相关内容。）` : ""}`
+        setSessions((prev) =>
+          prev.map((s) =>
+            s.id === activeId
+              ? {
+                  ...s,
+                  messages: [
+                    ...s.messages,
+                    { id: `a-${Date.now()}`, role: "assistant" as const, content: fallback },
+                  ],
+                  updatedAt: new Date().toISOString(),
+                }
+              : s,
+          ),
+        )
+        setThinking(false)
+      }, 900)
+      return
+    }
+
+    const assistantMsgId = `a-${Date.now()}`
+
+    // Load API key if available
+    const apiKey = (await loadApiKey(modelCfg.id)) ?? undefined
+
+    // Build conversation history
+    const history = active.messages.map((m) => ({
+      role: m.role,
+      content: m.content,
+    }))
+
+    const request: AiChatRequest = {
+      provider: modelCfg.provider,
+      model: modelCfg.name,
+      messages: [...history, { role: "user", content }],
+      temperature: modelCfg.temperature,
+      max_tokens: modelCfg.contextWindow >= 4096 ? 4096 : undefined,
+      api_key: apiKey,
+      base_url: modelCfg.endpoint ?? undefined,
+    }
+
+    try {
+      const response = await streamChat(request, activeId)
       setSessions((prev) =>
         prev.map((s) =>
           s.id === activeId
@@ -188,15 +251,32 @@ export function AssistantView({
                 ...s,
                 messages: [
                   ...s.messages,
-                  { id: `a-${Date.now()}`, role: "assistant" as const, content: assistantReply(content, folder) },
+                  { id: assistantMsgId, role: "assistant" as const, content: response.content },
                 ],
                 updatedAt: new Date().toISOString(),
               }
             : s,
         ),
       )
+    } catch (err) {
+      const errorMsg = `抱歉，请求失败：${err instanceof Error ? err.message : "未知错误"}\n\n请检查模型配置与端点是否可访问。`
+      setSessions((prev) =>
+        prev.map((s) =>
+          s.id === activeId
+            ? {
+                ...s,
+                messages: [
+                  ...s.messages,
+                  { id: assistantMsgId, role: "assistant" as const, content: errorMsg },
+                ],
+                updatedAt: new Date().toISOString(),
+              }
+            : s,
+        ),
+      )
+    } finally {
       setThinking(false)
-    }, 900)
+    }
   }
 
   const onKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
@@ -205,6 +285,12 @@ export function AssistantView({
       send(input)
     }
   }
+
+  // Resolve current model display name
+  const currentModelName = useMemo(() => {
+    const cfg = findModel(availableModels, active?.model ?? "")
+    return cfg?.name ?? "选择模型"
+  }, [availableModels, active?.model])
 
   return (
     <div className="flex h-[calc(100vh-34px)]">
@@ -373,26 +459,26 @@ export function AssistantView({
                       className="gap-1.5"
                       onClick={() => setModelOpen((o) => !o)}
                     >
-                      {active?.model ?? ASSISTANT_MODELS[0]}
+                      {currentModelName}
                       <ChevronDown className="size-3.5" />
                     </Button>
                     {modelOpen && (
                       <>
                         <div className="fixed inset-0 z-10" onClick={() => setModelOpen(false)} aria-hidden />
                         <div className="absolute bottom-full left-0 z-20 mb-1 w-56 rounded-lg border border-border bg-popover p-1 shadow-lg">
-                          {ASSISTANT_MODELS.map((m) => (
+                          {availableModels.map((m) => (
                             <button
-                              key={m}
+                              key={m.id}
                               onClick={() => {
-                                patchActive({ model: m })
+                                patchActive({ model: m.id })
                                 setModelOpen(false)
                               }}
                               className={cn(
                                 "flex w-full items-center rounded-md px-2 py-1.5 text-left text-sm transition-colors hover:bg-accent",
-                                m === active?.model && "text-primary",
+                                m.id === active?.model && "text-primary",
                               )}
                             >
-                              {m}
+                              {m.name}
                             </button>
                           ))}
                         </div>

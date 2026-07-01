@@ -1,14 +1,14 @@
 "use client"
 
-import { useState } from "react"
 import { SectionHeader, SettingsCard, SettingRow, Select } from "./primitives"
 import { Switch } from "@/components/ui/switch"
+import { useSetting } from "@/lib/use-setting"
 
 export function NotificationsSection() {
-  const [taskDone, setTaskDone] = useState(true)
-  const [needsInput, setNeedsInput] = useState(true)
-  const [errors, setErrors] = useState(true)
-  const [sound, setSound] = useState(false)
+  const [taskDone, setTaskDone] = useSetting("notif_task_done", true)
+  const [needsInput, setNeedsInput] = useSetting("notif_needs_input", true)
+  const [errors, setErrors] = useSetting("notif_errors", true)
+  const [sound, setSound] = useSetting("notif_sound", false)
 
   return (
     <div className="space-y-6">

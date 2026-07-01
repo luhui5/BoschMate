@@ -1,4 +1,5 @@
 import type { ThinkingDepth } from "@/lib/thinking-depth"
+import { DEFAULT_MODELS } from "@/lib/models"
 
 export interface AssistantMessage {
   id: string
@@ -18,13 +19,6 @@ export interface AssistantSession {
   updatedAt: string
 }
 
-export const ASSISTANT_MODELS = [
-  "Qwen2.5-Coder 32B（本地）",
-  "DeepSeek V2（本地）",
-  "Claude Opus 4.6",
-  "GPT-5",
-]
-
 /** 用于新建会话时快速生成一个空会话 */
 export function createSession(overrides: Partial<AssistantSession> = {}): AssistantSession {
   const now = new Date().toISOString()
@@ -33,7 +27,7 @@ export function createSession(overrides: Partial<AssistantSession> = {}): Assist
     title: "新对话",
     messages: [],
     folder: null,
-    model: ASSISTANT_MODELS[0],
+    model: DEFAULT_MODELS[0].id,
     depth: "default",
     createdAt: now,
     updatedAt: now,
@@ -57,7 +51,7 @@ export const SEED_SESSIONS: AssistantSession[] = [
     id: "s-seed-1",
     title: "起草项目延期说明邮件",
     folder: null,
-    model: ASSISTANT_MODELS[2],
+    model: "cloud-claude",
     depth: "medium",
     createdAt: hoursAgo(2),
     updatedAt: hoursAgo(2),
@@ -75,7 +69,7 @@ export const SEED_SESSIONS: AssistantSession[] = [
     id: "s-seed-2",
     title: "架构设计规范 v3 要点总结",
     folder: "~/dev/bosch-code/docs",
-    model: ASSISTANT_MODELS[0],
+    model: "local-qwen",
     depth: "high",
     createdAt: hoursAgo(20),
     updatedAt: hoursAgo(19),
@@ -93,7 +87,7 @@ export const SEED_SESSIONS: AssistantSession[] = [
     id: "s-seed-3",
     title: "fetch 封装函数（带重试）",
     folder: "~/dev/web-dashboard",
-    model: ASSISTANT_MODELS[3],
+    model: "cloud-gpt",
     depth: "default",
     createdAt: hoursAgo(50),
     updatedAt: hoursAgo(49),
