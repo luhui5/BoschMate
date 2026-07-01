@@ -1,15 +1,16 @@
 import { cn } from "@/lib/utils"
+import { BoschLogo } from "@/components/bosch-logo"
 
 export function Logo({ className }: { className?: string }) {
   return (
     <span
       className={cn(
-        "inline-flex size-7 items-center justify-center rounded-md bg-primary text-primary-foreground font-mono text-sm font-bold",
+        "inline-flex size-7 items-center justify-center rounded-md bg-foreground text-background",
         className,
       )}
       aria-hidden
     >
-      {"</>"}
+      <BoschLogo className="size-4" />
     </span>
   )
 }

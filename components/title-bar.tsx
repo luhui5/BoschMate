@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react"
 import { Minus, Square, X } from "lucide-react"
 import { useApp } from "@/components/app-provider"
+import { BoschLogo } from "@/components/bosch-logo"
 
 export function TitleBar() {
   const { resolvedTheme } = useApp()
@@ -64,6 +65,7 @@ export function TitleBar() {
       >
         {/* Left: Logo + Title */}
         <div className="flex items-center gap-2 pl-3">
+          <BoschLogo className={`size-4 ${resolvedTheme === "dark" ? "text-white" : "text-zinc-900"}`} />
           <span className="text-sm font-semibold tracking-wide">
             BoschCode
           </span>

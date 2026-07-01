@@ -1,5 +1,5 @@
-import { HomeView } from "@/components/home/home-view"
+import { AppShell } from "@/components/shell/app-shell"
 
 export default function Page() {
-  return <HomeView />
+  return <AppShell />
 }

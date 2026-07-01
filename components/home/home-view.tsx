@@ -1,14 +1,11 @@
 "use client"
 
 import { useEffect, useMemo, useState } from "react"
-import Link from "next/link"
 import {
   Search,
   Plus,
   Server,
-  Settings,
-  Sun,
-  Moon,
+  Code2,
   FolderOpen,
   Pin,
   ChevronLeft,
@@ -16,21 +13,18 @@ import {
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
-import { Wordmark } from "@/components/brand"
 import { ProjectCard } from "@/components/home/project-card"
 import { NewProjectDialog } from "@/components/home/new-project-dialog"
 import { EmptyState, ErrorState, ProjectCardSkeleton, Skeleton } from "@/components/states"
-import { useApp } from "@/components/app-provider"
 import { projects as seedProjects } from "@/lib/mock-data"
 import type { Project } from "@/lib/types"
 import { isTauri, listProjects as tauriListProjects } from "@/lib/tauri-api"
 
 type LoadStatus = "loading" | "error" | "ready"
 
-const CARDS_PER_PAGE = 9 // 3 columns x 3 rows
+const CARDS_PER_PAGE = 12 // fills up to 4 columns x 3 rows on wide desktop windows
 
 export function HomeView() {
-  const { resolvedTheme, toggleTheme } = useApp()
   const [projects, setProjects] = useState<Project[]>(seedProjects)
   const [query, setQuery] = useState("")
   const [dialog, setDialog] = useState<null | "new" | "ssh">(null)
@@ -102,16 +96,19 @@ export function HomeView() {
   }
 
   return (
-    <div className="mx-auto max-w-6xl px-4 pb-4 sm:px-6">
+    <div className="w-full px-4 pb-4 sm:px-6">
       {/* Top bar */}
-      <header className="sticky top-[34px] z-20 -mx-4 flex items-center gap-3 border-b border-border bg-background/80 px-4 py-3 backdrop-blur sm:-mx-6 sm:px-6">
-        <Wordmark />
+      <header className="sticky top-[34px] z-20 -mx-4 flex items-center gap-3 border-b border-border bg-background/80 px-4 py-2.5 backdrop-blur sm:-mx-6 sm:px-6">
+        <div className="flex items-center gap-2">
+          <Code2 className="size-5 text-primary" />
+          <span className="text-sm font-semibold">Coding Agent</span>
+        </div>
         <div className="relative ml-2 flex-1">
           <Search className="pointer-events-none absolute left-2.5 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
           <Input
             value={query}
             onChange={(e) => handleSearch(e.target.value)}
-            placeholder="Search projects, language, chat history..."
+            placeholder="搜索项目、语言、对话历史…"
             className="h-9 pl-8"
             aria-label="Search projects"
           />
@@ -124,25 +121,14 @@ export function HomeView() {
           <Plus />
           New Project
         </Button>
-        <Button variant="ghost" size="icon-sm" onClick={toggleTheme} aria-label="Toggle theme">
-          {resolvedTheme === "dark" ? <Sun /> : <Moon />}
-        </Button>
-        <Button
-          variant="ghost"
-          size="icon-sm"
-          nativeButton={false}
-          render={<Link href="/settings" aria-label="Settings" />}
-        >
-          <Settings />
-        </Button>
       </header>
 
-      <main className="pt-4">
+      <main className="pt-3">
         {/* Loading */}
         {status === "loading" ? (
           <section>
-            <Skeleton className="mb-3 h-3 w-24" />
-            <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+            <Skeleton className="mb-2.5 h-3 w-24" />
+            <div className="grid gap-2.5 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5">
               {Array.from({ length: CARDS_PER_PAGE }, (_, i) => (
                 <ProjectCardSkeleton key={i} />
               ))}
@@ -184,14 +170,14 @@ export function HomeView() {
           <>
             {/* Pinned projects */}
             {pinned.length > 0 && (
-              <section>
-                <div className="mb-3 flex items-center gap-2">
+              <section className="mb-4">
+                <div className="mb-2.5 flex items-center gap-2">
                   <Pin className="size-3.5 text-primary" />
                   <h2 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
                     Pinned
                   </h2>
                 </div>
-                <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+                <div className="grid gap-2.5 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5">
                   {pinned.map((p) => (
                     <ProjectCard key={p.id} project={p} />
                   ))}
@@ -201,7 +187,7 @@ export function HomeView() {
 
             {/* All projects - paginated grid */}
             <section>
-              <div className="mb-3 flex items-center justify-between">
+              <div className="mb-2.5 flex items-center justify-between">
                 <h2 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
                   All Projects
                 </h2>
@@ -210,7 +196,7 @@ export function HomeView() {
                 </span>
               </div>
 
-              <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+              <div className="grid gap-2.5 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5">
                 {pagedProjects.map((p) => (
                   <ProjectCard key={p.id} project={p} />
                 ))}
@@ -218,7 +204,7 @@ export function HomeView() {
 
               {/* Pagination */}
               {totalPages > 1 && (
-                <div className="flex items-center justify-center gap-2">
+                <div className="mt-4 flex items-center justify-center gap-2">
                   <Button
                     variant="ghost"
                     size="xs"

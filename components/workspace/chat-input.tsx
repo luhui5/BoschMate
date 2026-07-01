@@ -19,6 +19,8 @@ import { Textarea } from "@/components/ui/input"
 import { cn } from "@/lib/utils"
 import { slashCommands } from "@/lib/mock-data"
 import type { AgentMode } from "@/lib/types"
+import { ThinkingDepthSelect } from "@/components/thinking-depth-select"
+import type { ThinkingDepth } from "@/lib/thinking-depth"
 
 const modes: { id: AgentMode; label: string; icon: typeof Bot; desc: string }[] = [
   { id: "ask", label: "Bosch Assistant", icon: MessageCircleQuestion, desc: "仅回答与解释，不修改代码" },
@@ -44,6 +46,7 @@ export function ChatInput({
   const [showModes, setShowModes] = useState(false)
   const [showSlash, setShowSlash] = useState(false)
   const [pastedImage, setPastedImage] = useState<string | null>(null)
+  const [depth, setDepth] = useState<ThinkingDepth>("default")
   const taRef = useRef<HTMLTextAreaElement>(null)
 
   const activeMode = modes.find((m) => m.id === mode)!
@@ -162,6 +165,9 @@ export function ChatInput({
             <activeMode.icon />
             {activeMode.label}
           </Button>
+
+          {/* Thinking depth */}
+          <ThinkingDepthSelect value={depth} onChange={setDepth} variant="outline" />
 
           <div className="mx-1 h-5 w-px bg-border" />
 

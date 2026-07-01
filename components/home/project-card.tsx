@@ -18,15 +18,15 @@ export function ProjectCard({
   return (
     <Link
       href={`/project/${project.id}`}
-      className="group relative flex flex-col gap-3 rounded-xl border border-border bg-card p-4 transition-colors hover:border-primary/40 hover:bg-accent/40"
+      className="group relative flex flex-col gap-2 rounded-lg border border-border bg-card p-3 transition-colors hover:border-primary/40 hover:bg-accent/40"
     >
       <div className="flex items-start justify-between gap-2">
         <div className="flex items-center gap-2 min-w-0">
           <span
-            className="flex size-8 shrink-0 items-center justify-center rounded-md bg-secondary text-secondary-foreground"
+            className="flex size-7 shrink-0 items-center justify-center rounded-md bg-secondary text-secondary-foreground"
             aria-hidden
           >
-            {project.kind === "ssh" ? <Server className="size-4" /> : <FolderGit2 className="size-4" />}
+            {project.kind === "ssh" ? <Server className="size-3.5" /> : <FolderGit2 className="size-3.5" />}
           </span>
           <div className="min-w-0">
             <p className="truncate text-sm font-semibold">{project.name}</p>
@@ -58,7 +58,7 @@ export function ProjectCard({
         </div>
       </div>
 
-      <p className="line-clamp-2 text-xs leading-relaxed text-muted-foreground">
+      <p className="line-clamp-1 text-xs leading-normal text-muted-foreground">
         {project.lastChatSummary}
       </p>
 
@@ -74,7 +74,7 @@ export function ProjectCard({
         <CiBadge status={project.ciStatus} />
       </div>
 
-      <div className="mt-1 flex items-center justify-between border-t border-border pt-3 text-xs text-muted-foreground">
+      <div className="flex items-center justify-between border-t border-border pt-2 text-xs text-muted-foreground">
         <span className="flex items-center gap-1">
           <GitBranch className="size-3" />
           {project.gitBranch}
