@@ -42,6 +42,28 @@ export function isTauri(): boolean {
   return tauriAvailable;
 }
 
+// ── Native Dialogs ──
+
+/**
+ * Open the OS-native folder picker dialog.
+ * On Windows this uses the Win32 folder browser,
+ * on Linux it uses the GTK/Qt file chooser.
+ * Returns the selected folder path or null if cancelled.
+ */
+export async function pickFolder(): Promise<string | null> {
+  if (!tauriAvailable) {
+    console.warn('[tauri-api] Tauri not available, cannot open native folder dialog.');
+    return null;
+  }
+  const { open } = await import('@tauri-apps/plugin-dialog');
+  const selected = await open({
+    directory: true,
+    multiple: false,
+    title: '选择工作文件夹',
+  });
+  return selected ?? null;
+}
+
 // ── Projects ──
 
 export async function listProjects(): Promise<Project[]> {
