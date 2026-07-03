@@ -30,6 +30,19 @@ export interface ToolCall {
   result?: string
 }
 
+/** Full AI loop timeline step (thought or tool), persisted in tool_calls JSON. */
+export interface ActivityStep {
+  id: string
+  kind: "thought" | "tool"
+  round: number
+  label: string
+  detail?: string
+  tool?: string
+  args?: string
+  status: "running" | "success" | "error"
+  result?: string
+}
+
 export interface DiffHunk {
   filePath: string
   additions: number
@@ -61,6 +74,7 @@ export interface ChatMessage {
   createdAt: string
   mode?: AgentMode
   toolCalls?: ToolCall[]
+  activitySteps?: ActivityStep[]
   diffs?: DiffHunk[]
   fileRefs?: string[]
   streaming?: boolean

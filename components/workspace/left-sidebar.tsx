@@ -13,6 +13,7 @@ import {
   MoreHorizontal,
   GitMerge,
   FileDown,
+  Trash2,
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -41,6 +42,7 @@ export function LeftSidebar({
   onSelectSession,
   onNewSession,
   onMergeSession,
+  onDeleteSession,
   onSessionsChange,
 }: {
   project: Project
@@ -51,6 +53,7 @@ export function LeftSidebar({
   onSelectSession: (id: string) => void
   onNewSession: () => void
   onMergeSession?: (sourceId: string, targetId: string) => void
+  onDeleteSession?: (id: string) => void
   onSessionsChange?: () => void
 }) {
   const [tab, setTab] = useState<Tab>("sessions")
@@ -201,6 +204,19 @@ export function LeftSidebar({
                             <FileDown className="size-3" />
                             导出 Plan
                           </button>
+                          {onDeleteSession && (
+                            <button
+                              type="button"
+                              className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs text-destructive hover:bg-destructive/10"
+                              onClick={() => {
+                                onDeleteSession(s.id)
+                                setMenuSessionId(null)
+                              }}
+                            >
+                              <Trash2 className="size-3" />
+                              删除会话
+                            </button>
+                          )}
                         </div>
                       </>
                     )}

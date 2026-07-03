@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import {
   ArrowUp,
+  Square,
   Paperclip,
   BookUp,
   ChevronDown,
@@ -55,7 +56,8 @@ import {
   resolveActiveModelId,
   type ModelConfig,
 } from "@/lib/models"
-import { streamChat, aiLoopChat, sendMessage as tauriSendMessage, deleteSession as tauriDeleteSession, isTauri, onChatToken, type AiChatRequest } from "@/lib/tauri-api"
+import { streamChat, aiLoopChat, sendMessage as tauriSendMessage, deleteSession as tauriDeleteSession, cancelChat, isTauri, onChatToken, type AiChatRequest } from "@/lib/tauri-api"
+import { isChatCancelled } from "@/lib/chat-cancel"
 import { parseLlmError } from "@/lib/llm-error"
 import { LlmErrorCard } from "@/components/llm-error-card"
 
@@ -142,6 +144,9 @@ export function AssistantView({
 
   const [input, setInput] = useState("")
   const [thinking, setThinking] = useState(false)
+  const generatingSessionRef = useRef<string | null>(null)
+  const stopRequestedRef = useRef(false)
+  const activeAssistantMsgRef = useRef<string | null>(null)
   const [llmError, setLlmError] = useState<ReturnType<typeof parseLlmError> | null>(null)
   const [modelOpen, setModelOpen] = useState(false)
   const [folderOpen, setFolderOpen] = useState(false)
@@ -214,24 +219,34 @@ export function AssistantView({
   }
 
   const deleteSession = (id: string) => {
-    if (isTauri()) {
-      tauriDeleteSession(id).catch(() => {})
-    }
-    setSessions((prev) => {
-      const next = prev.filter((s) => s.id !== id)
-      if (id === activeId) {
-        if (next.length > 0) {
-          setActiveId(next[0].id)
-        } else {
-          void createPersistedSession().then((fresh) => {
-            setActiveId(fresh.id)
-            setSessions([fresh])
-          })
-          return []
+    const target = sessions.find((s) => s.id === id)
+    if (!target) return
+    if (!window.confirm(`确定删除对话「${target.title}」？此操作不可撤销。`)) return
+
+    void (async () => {
+      if (isTauri()) {
+        try {
+          await tauriDeleteSession(id)
+        } catch {
+          return
         }
       }
-      return next
-    })
+      setSessions((prev) => {
+        const next = prev.filter((s) => s.id !== id)
+        if (id === activeId) {
+          if (next.length > 0) {
+            setActiveId(next[0].id)
+          } else {
+            void createPersistedSession().then((fresh) => {
+              setActiveId(fresh.id)
+              setSessions([fresh])
+            })
+            return []
+          }
+        }
+        return next
+      })
+    })()
   }
 
   // ── Real AI send ──
@@ -256,6 +271,8 @@ export function AssistantView({
     )
     setInput("")
     setThinking(true)
+    generatingSessionRef.current = activeId
+    stopRequestedRef.current = false
 
     // Look up the model config
     const modelCfg = findModel(availableModels, active.model)
@@ -303,6 +320,7 @@ export function AssistantView({
     }
 
     const assistantMsgId = `a-${Date.now()}`
+    activeAssistantMsgRef.current = assistantMsgId
     setLlmError(null)
 
     setSessions((prev) =>
@@ -365,7 +383,6 @@ export function AssistantView({
             system_prompt: system,
             api_key: apiKey,
             base_url: modelCfg.endpoint ?? undefined,
-            max_iterations: 8,
             assistant_mode: true,
           },
           activeId,
@@ -386,6 +403,7 @@ export function AssistantView({
       }
 
       await recordModelUsage(modelCfg.id)
+      if (stopRequestedRef.current) return
       setSessions((prev) =>
         prev.map((s) =>
           s.id === activeId
@@ -402,6 +420,24 @@ export function AssistantView({
         ),
       )
     } catch (err) {
+      if (isChatCancelled(err)) {
+        setSessions((prev) =>
+          prev.map((s) =>
+            s.id === activeId
+              ? {
+                  ...s,
+                  messages: s.messages.map((m) =>
+                    m.id === assistantMsgId
+                      ? { ...m, content: m.content.trim() || "（已中止）" }
+                      : m,
+                  ),
+                  updatedAt: new Date().toISOString(),
+                }
+              : s,
+          ),
+        )
+        return
+      }
       const parsed = parseLlmError(err)
       setLlmError(parsed)
       setSessions((prev) =>
@@ -418,7 +454,34 @@ export function AssistantView({
     } finally {
       unlisten()
       setThinking(false)
+      generatingSessionRef.current = null
+      activeAssistantMsgRef.current = null
     }
+  }
+
+  const stopGeneration = () => {
+    const sessionId = generatingSessionRef.current
+    if (!sessionId || !thinking) return
+    stopRequestedRef.current = true
+    if (isTauri()) void cancelChat(sessionId).catch(() => {})
+    const msgId = activeAssistantMsgRef.current
+    setSessions((prev) =>
+      prev.map((s) =>
+        s.id === sessionId
+          ? {
+              ...s,
+              messages: s.messages.map((m) =>
+                msgId && m.id === msgId
+                  ? { ...m, content: m.content.trim() || "（已中止）" }
+                  : m,
+              ),
+              updatedAt: new Date().toISOString(),
+            }
+          : s,
+      ),
+    )
+    setThinking(false)
+    generatingSessionRef.current = null
   }
 
   const onKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
@@ -653,14 +716,26 @@ export function AssistantView({
                     onChange={(d: ThinkingDepth) => patchActive({ depth: d })}
                   />
                 </div>
-                <Button
-                  size="icon-sm"
-                  disabled={!input.trim() || thinking}
-                  onClick={() => send(input)}
-                  aria-label="发送"
-                >
-                  <ArrowUp className="size-4" />
-                </Button>
+                {thinking ? (
+                  <Button
+                    type="button"
+                    size="icon-sm"
+                    onClick={stopGeneration}
+                    aria-label="停止生成"
+                    className="size-8 rounded-full bg-foreground text-background hover:bg-foreground/90"
+                  >
+                    <Square className="size-3 fill-current" />
+                  </Button>
+                ) : (
+                  <Button
+                    size="icon-sm"
+                    disabled={!input.trim()}
+                    onClick={() => send(input)}
+                    aria-label="发送"
+                  >
+                    <ArrowUp className="size-4" />
+                  </Button>
+                )}
               </div>
             </div>
             <p className="mt-1.5 text-center text-[11px] text-muted-foreground">

@@ -1,7 +1,7 @@
 "use client"
 
 import { useEffect, useState } from "react"
-import { Lock, Trash2, Search, Database, Layers, Loader2 } from "lucide-react"
+import { Lock, Trash2, Search, Database, Layers, Loader2, Pencil, Download, Wrench } from "lucide-react"
 import { cn } from "@/lib/utils"
 import type { Memory, MemoryType } from "@/lib/types"
 import { timeAgo } from "@/lib/format"
@@ -9,7 +9,7 @@ import { SectionHeader, SettingsCard, SettingRow, Select } from "./primitives"
 import { Switch } from "@/components/ui/switch"
 import { Input } from "@/components/ui/input"
 import { useSetting } from "@/lib/use-setting"
-import { isTauri, listProjects, listMemories, deleteMemory, searchMemories, compressMemories } from "@/lib/tauri-api"
+import { isTauri, listProjects, listMemories, deleteMemory, searchMemories, compressMemories, updateMemory, exportMemories, repairDatabase, checkDatabase } from "@/lib/tauri-api"
 
 const TYPE_LABEL: Record<MemoryType, string> = {
   fact: "事实",
@@ -31,7 +31,9 @@ export function MemorySection() {
   const [query, setQuery] = useState("")
   const [filter, setFilter] = useState<MemoryType | "all">("all")
   const [autoCompress, setAutoCompress] = useSetting("memory_auto_compress", true)
-  const [vectorDim] = useState("768")
+  const [editingId, setEditingId] = useState<string | null>(null)
+  const [editText, setEditText] = useState("")
+  const [dbStatus, setDbStatus] = useState<string | null>(null)
 
   useEffect(() => {
     let cancelled = false
@@ -81,6 +83,38 @@ export function MemorySection() {
     setMemories(results.length ? results : memories)
   }
 
+  async function handleExport() {
+    if (!isTauri()) return
+    const projects = await listProjects()
+    const parts: string[] = []
+    for (const p of projects) {
+      parts.push(await exportMemories(p.id))
+    }
+    const blob = new Blob([parts.join("\n")], { type: "application/json" })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement("a")
+    a.href = url
+    a.download = `boschcode-memories-${Date.now()}.json`
+    a.click()
+    URL.revokeObjectURL(url)
+  }
+
+  async function handleRepair() {
+    if (!isTauri()) return
+    const before = await checkDatabase()
+    const after = await repairDatabase()
+    setDbStatus(
+      `完整性: ${after.integrity_ok ? "OK" : "异常"} · 向量条目: ${after.vector_entries}${before.vector_corrupted ? " (已重建)" : ""}`,
+    )
+  }
+
+  async function saveEdit(id: string) {
+    if (!isTauri()) return
+    await updateMemory(id, { content: editText })
+    setMemories((prev) => prev.map((m) => (m.id === id ? { ...m, content: editText, summary: editText } : m)))
+    setEditingId(null)
+  }
+
   async function handleCompress() {
     if (!isTauri()) return
     const projects = await listProjects()
@@ -109,7 +143,7 @@ export function MemorySection() {
         <>
           <div className="grid grid-cols-3 gap-3">
             <StatCard icon={Database} label="记忆条目" value={String(memories.length)} />
-            <StatCard icon={Layers} label="向量维度" value={vectorDim} />
+            <StatCard icon={Layers} label="向量维度" value="768" />
             <StatCard icon={Lock} label="加密条目" value={String(memories.filter((m) => m.encrypted).length)} />
           </div>
 
@@ -122,6 +156,17 @@ export function MemorySection() {
                 立即压缩
               </button>
             </SettingRow>
+            <SettingRow title="导出记忆" desc="导出全部项目记忆为 JSON">
+              <button type="button" className="flex items-center gap-1 text-sm text-primary hover:underline" onClick={() => void handleExport()}>
+                <Download className="size-3.5" /> 导出
+              </button>
+            </SettingRow>
+            <SettingRow title="数据库修复" desc="检查 SQLite 完整性并重建向量索引">
+              <button type="button" className="flex items-center gap-1 text-sm text-primary hover:underline" onClick={() => void handleRepair()}>
+                <Wrench className="size-3.5" /> 修复
+              </button>
+            </SettingRow>
+            {dbStatus && <p className="px-4 pb-3 text-xs text-muted-foreground">{dbStatus}</p>}
           </SettingsCard>
 
           <div>
@@ -162,12 +207,30 @@ export function MemorySection() {
                       <div className="flex items-center gap-2 text-xs text-muted-foreground">
                         {m.encrypted && <Lock className="size-3" />}
                         <span>{timeAgo(m.createdAt)}</span>
+                        <button type="button" onClick={() => { setEditingId(m.id); setEditText(m.content) }} className="hover:text-foreground">
+                          <Pencil className="size-3.5" />
+                        </button>
                         <button type="button" onClick={() => void remove(m.id)} className="text-destructive hover:underline">
                           <Trash2 className="size-3.5" />
                         </button>
                       </div>
                     </div>
-                    <p className="text-sm leading-relaxed">{m.summary ?? m.content}</p>
+                    {editingId === m.id ? (
+                      <div className="space-y-2">
+                        <textarea
+                          value={editText}
+                          onChange={(e) => setEditText(e.target.value)}
+                          className="w-full rounded border border-border bg-background p-2 text-sm"
+                          rows={3}
+                        />
+                        <div className="flex gap-2">
+                          <button type="button" className="text-xs text-primary" onClick={() => void saveEdit(m.id)}>保存</button>
+                          <button type="button" className="text-xs text-muted-foreground" onClick={() => setEditingId(null)}>取消</button>
+                        </div>
+                      </div>
+                    ) : (
+                      <p className="text-sm leading-relaxed">{m.summary ?? m.content}</p>
+                    )}
                   </div>
                 ))
               )}

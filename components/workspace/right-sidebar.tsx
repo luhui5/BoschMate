@@ -1,15 +1,16 @@
 "use client"
 
 import { useState } from "react"
-import { FolderTree, FileDiff, GitMerge, Loader2 } from "lucide-react"
+import { FolderTree, FileDiff, GitMerge, Loader2, ScrollText } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { FileTree } from "@/components/workspace/file-tree"
 import { GitPanel } from "@/components/workspace/git-panel"
 import { DiffCard } from "@/components/workspace/diff-card"
 import { SessionChangesPanel } from "@/components/workspace/session-changes-panel"
+import { AuditPanel } from "@/components/workspace/audit-panel"
 import type { DiffHunk, FileNode, GitFile } from "@/lib/types"
 
-type View = "files" | "changes" | "git"
+type View = "files" | "changes" | "git" | "audit"
 
 export function RightSidebar({
   projectId,
@@ -52,6 +53,7 @@ export function RightSidebar({
     { id: "files", label: "文件树", icon: FolderTree },
     { id: "changes", label: "本次变更", icon: FileDiff, count: changes.length },
     { id: "git", label: "Git", icon: GitMerge, count: gitFiles.length },
+    { id: "audit", label: "审计", icon: ScrollText },
   ]
 
   return (
@@ -142,6 +144,8 @@ export function RightSidebar({
             onBranchChange={onGitRefresh}
           />
         )}
+
+        {view === "audit" && <AuditPanel sessionId={activeSessionId} />}
       </div>
     </aside>
   )

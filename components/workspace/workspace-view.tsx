@@ -20,7 +20,7 @@ import { Badge } from "@/components/ui/badge"
 import { useApp } from "@/components/app-provider"
 import { LeftSidebar } from "@/components/workspace/left-sidebar"
 import { RightSidebar } from "@/components/workspace/right-sidebar"
-import { ChatMessageView } from "@/components/workspace/chat-message"
+import { ChatMessageView, findLastUserIndex } from "@/components/workspace/chat-message"
 import { ChatInput } from "@/components/workspace/chat-input"
 import { FilePreviewPanel } from "@/components/file-preview-panel"
 import { BulkWriteDialog } from "@/components/bulk-write-dialog"
@@ -31,7 +31,7 @@ import {
   memories as mockMemories,
   notes as mockNotes,
 } from "@/lib/mock-data"
-import type { AgentMode, ChatMessage, DiffHunk, FileNode, GitFile, Project, Session } from "@/lib/types"
+import type { AgentMode, ActivityStep, ChatMessage, DiffHunk, FileNode, GitFile, Project, Session } from "@/lib/types"
 import { cn } from "@/lib/utils"
 import {
   isTauri,
@@ -39,6 +39,9 @@ import {
   listSessions,
   listMessages,
   createSession,
+  deleteSession as tauriDeleteSession,
+  cancelChat,
+  clearRecoverySnapshot,
   sendMessage as tauriSendMessage,
   streamChat,
   aiLoopChat,
@@ -53,15 +56,29 @@ import {
   watchProjectDir,
   revealInExplorer,
   onChatToken,
+  retrieveMemories,
+  onLoopActivity,
+  mapActivityStep,
   type AiChatRequest,
   type AiLoopRequest,
 } from "@/lib/tauri-api"
 import { loadModels, findModel, loadApiKey, resolveActiveModelId, recordModelUsage, saveLastUsedModelId, type ModelConfig } from "@/lib/models"
 import { parseCommand, executeCommand } from "@/lib/slash-commands"
 import { parseLlmError, type ParsedLlmError } from "@/lib/llm-error"
+import { isChatCancelled } from "@/lib/chat-cancel"
 
 let idCounter = 1
 const nextId = () => `gen-${idCounter++}`
+
+function upsertActivityStep(steps: ActivityStep[], step: ActivityStep): ActivityStep[] {
+  const idx = steps.findIndex((s) => s.id === step.id)
+  if (idx >= 0) {
+    const next = [...steps]
+    next[idx] = step
+    return next
+  }
+  return [...steps, step]
+}
 
 function modeSystemPrompt(mode: AgentMode): string {
   switch (mode) {
@@ -75,6 +92,17 @@ function modeSystemPrompt(mode: AgentMode): string {
       return "You are BoschCode automation agent. Use tools to read, edit, test and verify changes in the project."
     default:
       return ""
+  }
+}
+
+function finalizeCancelledMessage(m: ChatMessage): ChatMessage {
+  return {
+    ...m,
+    streaming: false,
+    content: m.content.trim() || "（已中止）",
+    activitySteps: m.activitySteps?.map((s) =>
+      s.status === "running" ? { ...s, status: "error" as const, result: "已中止" } : s,
+    ),
   }
 }
 
@@ -92,6 +120,9 @@ export function WorkspaceView({ projectId }: { projectId: string }) {
   const [rightOpen, setRightOpen] = useState(true)
   const [activeFile, setActiveFile] = useState<string | null>(null)
   const [thinking, setThinking] = useState(false)
+  const [generating, setGenerating] = useState(false)
+  const generatingSessionRef = useRef<string | null>(null)
+  const stopRequestedRef = useRef(false)
   const [toast, setToast] = useState<string | null>(null)
   const [llmError, setLlmError] = useState<ParsedLlmError | null>(null)
   const [bulkWriteOpen, setBulkWriteOpen] = useState(false)
@@ -319,6 +350,34 @@ export function WorkspaceView({ projectId }: { projectId: string }) {
     setActiveSessionId(id)
   }
 
+  const removeSession = async (id: string) => {
+    const target = sessions.find((s) => s.id === id)
+    if (!target) return
+    if (!window.confirm(`确定删除会话「${target.title}」？此操作不可撤销。`)) return
+
+    if (isTauri()) {
+      try {
+        await tauriDeleteSession(id)
+        await clearRecoverySnapshot(id).catch(() => {})
+      } catch (err) {
+        setToast(`删除失败：${String(err)}`)
+        return
+      }
+    }
+
+    const remaining = sessions.filter((s) => s.id !== id)
+    setSessions(remaining)
+
+    if (id === activeSessionId) {
+      if (remaining.length > 0) {
+        setActiveSessionId(remaining[0].id)
+        setMode(remaining[0].mode)
+      } else {
+        await newSession()
+      }
+    }
+  }
+
   const loadTreeChildren = useCallback(
     async (dirPath: string) => {
       if (!project) return []
@@ -363,8 +422,20 @@ export function WorkspaceView({ projectId }: { projectId: string }) {
 
     const apiKey = (await loadApiKey(modelCfg.id)) ?? undefined
     const convo = history.map((m) => ({ role: m.role, content: m.content }))
-    const system = modeSystemPrompt(mode)
+    let system = modeSystemPrompt(mode)
+    if (isTauri() && userText.trim()) {
+      try {
+        const { context } = await retrieveMemories(project.id, userText, 8)
+        if (context) system = `${system}\n\n${context}`
+      } catch {
+        // degraded — keyword fallback handled server-side
+      }
+    }
     setLlmError(null)
+
+    generatingSessionRef.current = sessionId
+    stopRequestedRef.current = false
+    setGenerating(true)
 
     const streamId = nextId()
     const useLoop = mode === "edit" || mode === "auto"
@@ -397,6 +468,24 @@ export function WorkspaceView({ projectId }: { projectId: string }) {
         })
       : () => {}
 
+    const unlistenActivity = useLoop
+      ? onLoopActivity((e) => {
+          if (e.session_id !== sessionId) return
+          const step = mapActivityStep(e.step)
+          updateSession(sessionId, (s) => ({
+            ...s,
+            messages: s.messages.map((m) =>
+              m.id === streamId
+                ? {
+                    ...m,
+                    activitySteps: upsertActivityStep(m.activitySteps ?? [], step),
+                  }
+                : m,
+            ),
+          }))
+        })
+      : () => {}
+
     try {
       let reply: ChatMessage
       if (useLoop) {
@@ -407,7 +496,6 @@ export function WorkspaceView({ projectId }: { projectId: string }) {
           system_prompt: system,
           api_key: apiKey,
           base_url: modelCfg.endpoint ?? undefined,
-          max_iterations: mode === "auto" ? 15 : 8,
           edit_dry_run: mode === "edit",
           agent_mode: mode,
           bulk_write_confirmed: opts?.bulkWriteConfirmed,
@@ -427,10 +515,25 @@ export function WorkspaceView({ projectId }: { projectId: string }) {
         reply = await streamChat(request, sessionId)
       }
       reply.mode = mode
+      if (stopRequestedRef.current) return
       updateSession(sessionId, (s) => ({
         ...s,
         messages: useLoop
-          ? s.messages.map((m) => (m.id === streamId ? { ...reply, streaming: false } : m))
+          ? s.messages.map((m) => {
+              if (m.id !== streamId) return m
+              const activitySteps =
+                reply.activitySteps?.length
+                  ? reply.activitySteps
+                  : m.activitySteps?.length
+                    ? m.activitySteps
+                    : reply.activitySteps
+              return {
+                ...reply,
+                streaming: false,
+                activitySteps,
+                content: reply.content || m.content,
+              }
+            })
           : [...s.messages, reply],
         updatedAt: new Date().toISOString(),
       }))
@@ -438,6 +541,16 @@ export function WorkspaceView({ projectId }: { projectId: string }) {
       await refreshGit()
       await refreshFileTree()
     } catch (err) {
+      if (isChatCancelled(err)) {
+        updateSession(sessionId, (s) => ({
+          ...s,
+          messages: useLoop
+            ? s.messages.map((m) => (m.id === streamId ? finalizeCancelledMessage(m) : m))
+            : s.messages,
+          updatedAt: new Date().toISOString(),
+        }))
+        return
+      }
       const parsed = parseLlmError(err)
       if (parsed.kind === "bulk_write") {
         setPendingBulkRetry({ sessionId, history, userText })
@@ -471,7 +584,27 @@ export function WorkspaceView({ projectId }: { projectId: string }) {
       }))
     } finally {
       unlisten()
+      unlistenActivity()
+      if (generatingSessionRef.current === sessionId) {
+        generatingSessionRef.current = null
+        setGenerating(false)
+      }
     }
+  }
+
+  const stopGeneration = () => {
+    const sessionId = generatingSessionRef.current
+    if (!sessionId) return
+    stopRequestedRef.current = true
+    if (isTauri()) void cancelChat(sessionId).catch(() => {})
+    updateSession(sessionId, (s) => ({
+      ...s,
+      messages: s.messages.map((m) => (m.streaming ? finalizeCancelledMessage(m) : m)),
+      updatedAt: new Date().toISOString(),
+    }))
+    setThinking(false)
+    setGenerating(false)
+    generatingSessionRef.current = null
   }
 
   const simulateReply = (sessionId: string, prompt: string) => {
@@ -582,7 +715,8 @@ export function WorkspaceView({ projectId }: { projectId: string }) {
       return { id, messages: [] }
     }
 
-    setThinking(true)
+    const willUseLoop = mode === "edit" || mode === "auto"
+    if (!willUseLoop) setThinking(true)
     try {
       const { id: sessionId, messages: prior } = await ensureSession()
 
@@ -613,7 +747,7 @@ export function WorkspaceView({ projectId }: { projectId: string }) {
 
       await requestAiReply(sessionId, nextMessages, payload)
     } finally {
-      setThinking(false)
+      if (!willUseLoop) setThinking(false)
     }
   }
 
@@ -804,6 +938,7 @@ export function WorkspaceView({ projectId }: { projectId: string }) {
             }}
             onNewSession={newSession}
             onMergeSession={mergeSession}
+            onDeleteSession={removeSession}
             onSessionsChange={() => setSessionPrefsTick((t) => t + 1)}
           />
         )}
@@ -863,28 +998,102 @@ export function WorkspaceView({ projectId }: { projectId: string }) {
                 </div>
               </div>
             ) : (
-              <div className="mx-auto flex max-w-3xl flex-col gap-6 p-4">
-                {activeSession.messages.map((m) => (
-                  <ChatMessageView
-                    key={m.id}
-                    message={m}
-                    onDiffAction={onDiffAction}
-                    onOpenFile={openFile}
-                  />
-                ))}
-                {thinking && (
-                  <div className="flex items-center gap-2 text-sm text-muted-foreground">
-                    <span className="flex size-7 items-center justify-center rounded-md bg-primary text-primary-foreground font-mono text-xs font-bold">
-                      {"</>"}
-                    </span>
-                    <span className="flex gap-1">
-                      <span className="size-1.5 animate-bounce rounded-full bg-muted-foreground [animation-delay:-0.3s]" />
-                      <span className="size-1.5 animate-bounce rounded-full bg-muted-foreground [animation-delay:-0.15s]" />
-                      <span className="size-1.5 animate-bounce rounded-full bg-muted-foreground" />
-                    </span>
+              (() => {
+                const msgs = activeSession.messages
+                const lastUserIdx = findLastUserIndex(msgs)
+                const afterUser = lastUserIdx >= 0 ? msgs.slice(lastUserIdx + 1) : []
+                const awaitingReply =
+                  lastUserIdx >= 0 &&
+                  (afterUser.length === 0 ||
+                    afterUser.some((m) => m.role === "assistant" && m.streaming) ||
+                    thinking ||
+                    generating)
+                const usePinnedLayout = awaitingReply && lastUserIdx >= 0
+
+                if (!usePinnedLayout) {
+                  return (
+                    <div className="mx-auto flex max-w-3xl flex-col gap-6 p-4 pb-8">
+                      {msgs.map((m) => (
+                        <ChatMessageView
+                          key={m.id}
+                          message={m}
+                          variant={m.role === "user" ? "user-query" : "default"}
+                          onDiffAction={onDiffAction}
+                          onOpenFile={openFile}
+                        />
+                      ))}
+                      {thinking &&
+                        !msgs.some((m) => m.role === "assistant" && m.streaming) && (
+                          <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                            <span className="flex size-7 items-center justify-center rounded-md bg-primary text-primary-foreground font-mono text-xs font-bold">
+                              {"</>"}
+                            </span>
+                            <span className="flex gap-1">
+                              <span className="size-1.5 animate-bounce rounded-full bg-muted-foreground [animation-delay:-0.3s]" />
+                              <span className="size-1.5 animate-bounce rounded-full bg-muted-foreground [animation-delay:-0.15s]" />
+                              <span className="size-1.5 animate-bounce rounded-full bg-muted-foreground" />
+                            </span>
+                          </div>
+                        )}
+                    </div>
+                  )
+                }
+
+                const history = msgs.slice(0, lastUserIdx)
+                const pinnedUser = msgs[lastUserIdx]
+                const currentTurn = afterUser
+
+                return (
+                  <div className="mx-auto flex max-w-3xl flex-col p-4 pb-8">
+                    {history.length > 0 && (
+                      <div className="mb-6 flex flex-col gap-6">
+                        {history.map((m) => (
+                          <ChatMessageView
+                            key={m.id}
+                            message={m}
+                            variant={m.role === "user" ? "user-query" : "default"}
+                            onDiffAction={onDiffAction}
+                            onOpenFile={openFile}
+                          />
+                        ))}
+                      </div>
+                    )}
+
+                    <div className="sticky top-0 z-10 -mx-4 border-b border-border bg-background/95 px-4 py-3 backdrop-blur supports-[backdrop-filter]:bg-background/80">
+                      <ChatMessageView
+                        message={pinnedUser}
+                        variant="pinned"
+                        onDiffAction={onDiffAction}
+                        onOpenFile={openFile}
+                      />
+                    </div>
+
+                    <div className="mt-4 flex flex-col gap-4">
+                      {currentTurn.map((m) => (
+                        <ChatMessageView
+                          key={m.id}
+                          message={m}
+                          onDiffAction={onDiffAction}
+                          onOpenFile={openFile}
+                        />
+                      ))}
+                      {thinking &&
+                        !currentTurn.some((m) => m.role === "assistant" && m.streaming) && (
+                          <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                            <span className="flex size-7 items-center justify-center rounded-md bg-primary text-primary-foreground font-mono text-xs font-bold">
+                              {"</>"}
+                            </span>
+                            <span className="flex gap-1">
+                              <span className="size-1.5 animate-bounce rounded-full bg-muted-foreground [animation-delay:-0.3s]" />
+                              <span className="size-1.5 animate-bounce rounded-full bg-muted-foreground [animation-delay:-0.15s]" />
+                              <span className="size-1.5 animate-bounce rounded-full bg-muted-foreground" />
+                            </span>
+                          </div>
+                        )}
+                    </div>
                   </div>
-                )}
-              </div>
+                )
+              })()
             )}
           </div>
 
@@ -902,6 +1111,8 @@ export function WorkspaceView({ projectId }: { projectId: string }) {
             onValidationError={setToast}
             disabled={runMode === "offline"}
             degraded={runMode === "degraded"}
+            generating={generating}
+            onStop={stopGeneration}
           />
         </main>
 

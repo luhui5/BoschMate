@@ -3,8 +3,6 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
 use std::sync::Mutex;
-
-/// A memory entry in the vector store
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VectorEntry {
     pub id: String,
@@ -19,6 +17,7 @@ pub struct VectorStore {
     entries: Mutex<HashMap<String, VectorEntry>>,
     store_path: PathBuf,
     dimension: usize,
+    corrupted: Mutex<bool>,
 }
 
 impl VectorStore {
@@ -27,9 +26,73 @@ impl VectorStore {
             entries: Mutex::new(HashMap::new()),
             store_path,
             dimension,
+            corrupted: Mutex::new(false),
         };
-        store.load_from_disk().ok();
+        if let Err(e) = store.load_from_disk() {
+            eprintln!("[vector_store] Load failed, marking corrupted: {}", e);
+            *store.corrupted.lock().unwrap() = true;
+        }
         store
+    }
+
+    pub fn is_corrupted(&self) -> bool {
+        *self.corrupted.lock().unwrap()
+    }
+
+    #[allow(dead_code)]
+    pub fn mark_corrupted(&self) {
+        *self.corrupted.lock().unwrap() = true;
+    }
+
+    /// Rebuild in-memory index from SQLite embedding blobs.
+    pub fn rebuild_from_db(&self, conn: &rusqlite::Connection) -> Result<usize, String> {
+        let mut stmt = conn
+            .prepare(
+                "SELECT id, embedding, importance FROM memories WHERE embedding IS NOT NULL",
+            )
+            .map_err(|e| e.to_string())?;
+
+        let rows = stmt
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, Vec<u8>>(1)?,
+                    row.get::<_, f64>(2)? as f32,
+                ))
+            })
+            .map_err(|e| e.to_string())?;
+
+        let mut count = 0usize;
+        {
+            let mut entries = self.entries.lock().unwrap();
+            entries.clear();
+            for row in rows.flatten() {
+                let (id, blob, importance) = row;
+                if blob.len() % 4 != 0 {
+                    continue;
+                }
+                let embedding: Vec<f32> = blob
+                    .chunks_exact(4)
+                    .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+                    .collect();
+                if embedding.len() != self.dimension {
+                    continue;
+                }
+                entries.insert(
+                    id.clone(),
+                    VectorEntry {
+                        id,
+                        embedding,
+                        importance,
+                        last_accessed: now_ts(),
+                    },
+                );
+                count += 1;
+            }
+        }
+        *self.corrupted.lock().unwrap() = false;
+        self.save_to_disk()?;
+        Ok(count)
     }
 
     /// Add or update a vector entry
@@ -56,6 +119,7 @@ impl VectorStore {
     }
 
     /// Remove an entry
+    #[allow(dead_code)]
     pub fn remove(&self, id: &str) {
         let mut entries = self.entries.lock().unwrap();
         entries.remove(id);
@@ -142,6 +206,7 @@ impl VectorStore {
             }
         }
         *self.entries.lock().unwrap() = map;
+        *self.corrupted.lock().unwrap() = false;
         Ok(())
     }
 }

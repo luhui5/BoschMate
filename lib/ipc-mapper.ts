@@ -12,6 +12,7 @@ import type {
   Memory,
   Note,
   ToolCall,
+  ActivityStep,
   CIStatus,
 } from './types'
 import { parseDiffsFromRaw } from './diff-parser'
@@ -114,7 +115,64 @@ function asCiStatus(s: string): CIStatus {
   return 'none'
 }
 
+function parseActivitySteps(raw: unknown): ActivityStep[] | undefined {
+  if (!raw || !Array.isArray(raw) || raw.length === 0) return undefined
+  const first = raw[0] as Record<string, unknown>
+  if (first.kind != null) {
+    return raw.map((item, i) => {
+      const o = item as Record<string, unknown>
+      return {
+        id: String(o.id ?? `step-${i}`),
+        kind: o.kind === 'thought' ? 'thought' : 'tool',
+        round: Number(o.round ?? 1),
+        label: String(o.label ?? o.tool ?? 'step'),
+        detail: o.detail != null ? String(o.detail) : undefined,
+        tool: o.tool != null ? String(o.tool) : undefined,
+        args:
+          typeof o.args === 'string'
+            ? o.args
+            : o.arguments != null
+              ? JSON.stringify(o.arguments)
+              : undefined,
+        status: (o.status as ActivityStep['status']) ?? 'success',
+        result: o.result != null ? String(o.result) : undefined,
+      }
+    })
+  }
+  // Legacy: plain tool call array without kind
+  return raw.map((item, i) => {
+    const o = item as Record<string, unknown>
+    const tool = String(o.name ?? o.tool ?? 'tool')
+    return {
+      id: String(o.id ?? `legacy-tool-${i}`),
+      kind: 'tool' as const,
+      round: 1,
+      label: tool,
+      tool,
+      args:
+        typeof o.arguments === 'string'
+          ? o.arguments
+          : JSON.stringify(o.arguments ?? o.args ?? ''),
+      status: (o.status as ActivityStep['status']) ?? 'success',
+      result: o.result != null ? String(o.result) : undefined,
+    }
+  })
+}
+
+function activityStepsToToolCalls(steps: ActivityStep[]): ToolCall[] {
+  return steps
+    .filter((s) => s.kind === 'tool')
+    .map((s) => ({
+      tool: s.tool ?? s.label,
+      args: s.args ?? '{}',
+      status: s.status,
+      result: s.result,
+    }))
+}
+
 function parseToolCalls(raw: unknown): ToolCall[] | undefined {
+  const steps = parseActivitySteps(raw)
+  if (steps?.length) return activityStepsToToolCalls(steps)
   if (!raw || !Array.isArray(raw)) return undefined
   return raw.map((tc) => {
     const o = tc as Record<string, unknown>
@@ -164,6 +222,7 @@ export function mapChatMessage(raw: RawChatMessage): ChatMessage {
     content: raw.content,
     createdAt: raw.created_at,
     mode: raw.mode ? asAgentMode(raw.mode) : undefined,
+    activitySteps: parseActivitySteps(raw.tool_calls),
     toolCalls: parseToolCalls(raw.tool_calls),
     diffs: parseDiffsFromRaw(raw.diffs),
     fileRefs: Array.isArray(raw.file_refs)

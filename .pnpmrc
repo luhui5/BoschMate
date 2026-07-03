@@ -1,0 +1,2 @@
+package-manager-strict-version=false
+overrides.hono=4.12.25

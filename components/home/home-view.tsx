@@ -23,6 +23,11 @@ import { isTauri, listProjects as tauriListProjects, removeProject } from "@/lib
 import { applyProjectPins, toggleProjectPinned, clearProjectPin } from "@/lib/project-prefs"
 import { pickAndOpenLocalProject } from "@/lib/open-local-project"
 import { projectPath } from "@/lib/project-route"
+import { ASSISTANT_PROJECT_ID } from "@/lib/constants"
+
+function isCodingProject(p: Project): boolean {
+  return p.id !== ASSISTANT_PROJECT_ID
+}
 
 type LoadStatus = "loading" | "error" | "ready"
 
@@ -35,6 +40,7 @@ export function HomeView() {
   const [sshDialogOpen, setSshDialogOpen] = useState(false)
   const [openingLocal, setOpeningLocal] = useState(false)
   const [openError, setOpenError] = useState<string | null>(null)
+  const [deleteError, setDeleteError] = useState<string | null>(null)
   const [projectPage, setProjectPage] = useState(0)
   const [status, setStatus] = useState<LoadStatus>("loading")
 
@@ -48,7 +54,7 @@ export function HomeView() {
         try {
           const realProjects = await tauriListProjects()
           if (!cancelled) {
-            setProjects(applyProjectPins(realProjects))
+            setProjects(applyProjectPins(realProjects.filter(isCodingProject)))
             setStatus("ready")
           }
           return
@@ -125,10 +131,17 @@ export function HomeView() {
   }
 
   const handleDeleteProject = async (id: string) => {
+    if (id === ASSISTANT_PROJECT_ID) {
+      setDeleteError("Bosch Assistant 是内置助手，请从左侧栏进入，不能作为 Coding 项目移除。")
+      return
+    }
+    setDeleteError(null)
     if (isTauri()) {
       try {
         await removeProject(id)
-      } catch {
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err)
+        setDeleteError(msg.includes("Assistant") ? "内置项目无法移除。" : msg || "移除失败，请重试。")
         return
       }
     }
@@ -183,6 +196,11 @@ export function HomeView() {
       {openError && (
         <p className="mt-2 text-xs text-destructive" role="alert">
           {openError}
+        </p>
+      )}
+      {deleteError && (
+        <p className="mt-2 text-xs text-destructive" role="alert">
+          {deleteError}
         </p>
       )}
 

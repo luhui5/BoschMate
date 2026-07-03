@@ -1,9 +1,11 @@
 "use client"
 
-import { Wrench, CheckCircle2, Loader2, XCircle, FileCode2, User } from "lucide-react"
+import { FileCode2, User } from "lucide-react"
 import { Logo } from "@/components/brand"
 import { Badge } from "@/components/ui/badge"
 import { DiffCard } from "@/components/workspace/diff-card"
+import { ToolActivityPanel } from "@/components/workspace/tool-activity-panel"
+import { MarkdownContent, MarkdownInline } from "@/components/markdown-content"
 import { cn } from "@/lib/utils"
 import type { ChatMessage as TMessage, DiffHunk } from "@/lib/types"
 import { extractFileRefs } from "@/lib/workspace-utils"
@@ -15,138 +17,112 @@ const modeLabel: Record<string, string> = {
   auto: "自动",
 }
 
-/** Render markdown-ish content: headings, bullets, bold, code spans, @file refs. */
-function renderContent(text: string, onOpenFile?: (path: string) => void) {
-  return text.split("\n").map((line, i) => {
-    if (line.startsWith("## ")) {
-      return (
-        <p key={i} className="mt-2 mb-1 text-sm font-semibold">
-          {line.slice(3)}
-        </p>
-      )
-    }
-    if (/^\d+\.\s/.test(line) || line.startsWith("- ")) {
-      return (
-        <p key={i} className="pl-3 text-sm leading-relaxed text-foreground/90">
-          {inline(line, onOpenFile)}
-        </p>
-      )
-    }
-    if (line.trim() === "") return <div key={i} className="h-2" />
-    return (
-      <p key={i} className="text-sm leading-relaxed text-foreground/90">
-        {inline(line, onOpenFile)}
-      </p>
-    )
-  })
-}
-
-function inline(text: string, onOpenFile?: (path: string) => void) {
-  const parts = text.split(/(`[^`]+`|\*\*[^*]+\*\*|@[^\s`,]+)/g)
-  return parts.map((p, i) => {
-    if (p.startsWith("@") && onOpenFile) {
-      const path = p.slice(1)
-      return (
-        <button
-          key={i}
-          type="button"
-          onClick={() => onOpenFile(path)}
-          className="font-mono text-primary underline-offset-2 hover:underline"
-        >
-          {p}
-        </button>
-      )
-    }
-    if (p.startsWith("`") && p.endsWith("`")) {
-      return (
-        <code key={i} className="rounded bg-secondary px-1 py-0.5 font-mono text-[0.8em] text-primary">
-          {p.slice(1, -1)}
-        </code>
-      )
-    }
-    if (p.startsWith("**") && p.endsWith("**")) {
-      return (
-        <strong key={i} className="font-semibold">
-          {p.slice(2, -2)}
-        </strong>
-      )
-    }
-    return p
-  })
+export function findLastUserIndex(msgs: Pick<TMessage, "role">[]): number {
+  for (let i = msgs.length - 1; i >= 0; i--) {
+    if (msgs[i].role === "user") return i
+  }
+  return -1
 }
 
 export function ChatMessageView({
   message,
   onDiffAction,
   onOpenFile,
+  variant = "default",
 }: {
   message: TMessage
   onDiffAction: (messageId: string, diffIndex: number, action: "accept" | "reject" | "revert") => void
   onOpenFile: (path: string) => void
+  variant?: "default" | "pinned" | "user-query"
 }) {
   const isUser = message.role === "user"
+  const isQueryBar = isUser && (variant === "pinned" || variant === "user-query")
   const detectedRefs = extractFileRefs(message.content)
   const allFileRefs = [...new Set([...(message.fileRefs ?? []), ...detectedRefs])]
 
+  const hasActivity =
+    !isUser &&
+    (message.streaming ||
+      (message.activitySteps && message.activitySteps.length > 0) ||
+      (message.toolCalls && message.toolCalls.length > 0))
+  const hasOutput = !isUser && message.content.trim().length > 0
+  const stepsStillRunning =
+    message.activitySteps?.some((s) => s.status === "running") ?? false
+  // 工具/思考进行中时不展示中间轮次流式正文，避免步骤与回复混在一起
+  const showOutput =
+    hasOutput && (!message.streaming || !stepsStillRunning)
+
   return (
-    <div className={cn("flex gap-3", isUser && "flex-row-reverse")}>
-      <span
-        className={cn(
-          "flex size-7 shrink-0 items-center justify-center rounded-md",
-          isUser ? "bg-secondary text-secondary-foreground" : "",
-        )}
-        aria-hidden
-      >
-        {isUser ? <User className="size-4" /> : <Logo className="size-7" />}
-      </span>
-
-      <div className={cn("flex min-w-0 max-w-[85%] flex-col gap-2", isUser && "items-end")}>
-        <div className="flex items-center gap-2">
-          <span className="text-xs font-medium">{isUser ? "你" : "BoschCode"}</span>
-          {message.mode && !isUser && (
-            <Badge variant="primary" className="text-[10px]">
-              {modeLabel[message.mode]}
-            </Badge>
-          )}
-        </div>
-
-        <div
+    <div className={cn("flex gap-3", isUser && !isQueryBar && "flex-row-reverse")}>
+      {!isQueryBar && (
+        <span
           className={cn(
-            "rounded-lg px-3 py-2",
-            isUser ? "bg-primary text-primary-foreground" : "bg-card border border-border",
+            "flex size-7 shrink-0 items-center justify-center rounded-md",
+            isUser ? "bg-secondary text-secondary-foreground" : "",
           )}
+          aria-hidden
         >
-          {isUser ? (
-            <p className="whitespace-pre-wrap text-sm leading-relaxed">{inline(message.content, onOpenFile)}</p>
-          ) : (
-            <div className="flex flex-col">
-              {renderContent(message.content, onOpenFile)}
-              {message.streaming && (
-                <span className="mt-1 inline-block h-3.5 w-1.5 animate-pulse bg-primary align-middle" />
-              )}
-            </div>
-          )}
-        </div>
+          {isUser ? <User className="size-4" /> : <Logo className="size-7" />}
+        </span>
+      )}
 
-        {/* Tool calls */}
-        {message.toolCalls && message.toolCalls.length > 0 && (
-          <div className="flex w-full flex-col gap-1 rounded-lg border border-border bg-background/50 p-2">
-            {message.toolCalls.map((tc, i) => (
-              <div key={i} className="flex items-center gap-2 text-xs">
-                <Wrench className="size-3 shrink-0 text-muted-foreground" />
-                <span className="font-mono font-medium">{tc.tool}</span>
-                <span className="truncate font-mono text-muted-foreground">{tc.args}</span>
-                <span className="ml-auto shrink-0">
-                  {tc.status === "success" && <CheckCircle2 className="size-3.5 text-success" />}
-                  {tc.status === "running" && <Loader2 className="size-3.5 animate-spin text-warning" />}
-                  {tc.status === "error" && <XCircle className="size-3.5 text-destructive" />}
-                </span>
-              </div>
-            ))}
+      <div
+        className={cn(
+          "flex min-w-0 flex-col gap-2",
+          isQueryBar ? "w-full" : "max-w-[85%]",
+          isUser && !isQueryBar && "items-end",
+        )}
+      >
+        {!isQueryBar && (
+          <div className={cn("flex items-center gap-2", isUser && "flex-row-reverse")}>
+            <span className="text-xs font-medium">{isUser ? "你" : "BoschCode"}</span>
+            {message.mode && !isUser && (
+              <Badge variant="primary" className="text-[10px]">
+                {modeLabel[message.mode]}
+              </Badge>
+            )}
           </div>
         )}
 
-        {/* Diffs */}
+        {/* User bubble / pinned question */}
+        {isUser && (
+          <div
+            className={cn(
+              "rounded-lg px-3 py-2 w-full",
+              isQueryBar
+                ? "border border-border bg-card"
+                : "bg-primary text-primary-foreground",
+            )}
+          >
+            <p
+              className={cn(
+                "whitespace-pre-wrap text-sm leading-relaxed",
+                isQueryBar ? "text-foreground" : "",
+              )}
+            >
+              <MarkdownInline content={message.content} onOpenFile={onOpenFile} />
+            </p>
+          </div>
+        )}
+
+        {/* Assistant: Thought → Explore → Output */}
+        {!isUser && (
+          <>
+            {hasActivity && <ToolActivityPanel message={message} />}
+
+            {showOutput && (
+              <div className="rounded-lg border border-border bg-card px-3 py-2">
+                <div className="flex flex-col">
+                  <MarkdownContent content={message.content} onOpenFile={onOpenFile} />
+                  {message.streaming && (
+                    <span className="mt-1 inline-block h-3.5 w-1.5 animate-pulse bg-primary align-middle" />
+                  )}
+                </div>
+              </div>
+            )}
+          </>
+        )}
+
         {message.diffs && message.diffs.length > 0 && (
           <div className="flex w-full flex-col gap-2">
             {message.diffs.map((d: DiffHunk, i) => (
@@ -161,7 +137,6 @@ export function ChatMessageView({
           </div>
         )}
 
-        {/* File refs */}
         {allFileRefs.length > 0 && (
           <div className="flex flex-wrap gap-1.5">
             {allFileRefs.map((f) => (

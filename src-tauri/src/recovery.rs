@@ -50,6 +50,7 @@ pub fn clear_snapshot(data_dir: &PathBuf, session_id: &str) -> Result<(), String
     Ok(())
 }
 
+#[allow(dead_code)]
 pub fn clear_all(data_dir: &PathBuf) -> Result<(), String> {
     let dir = recovery_dir(data_dir);
     if dir.exists() {

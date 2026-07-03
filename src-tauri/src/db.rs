@@ -106,6 +106,30 @@ impl Database {
             CREATE INDEX IF NOT EXISTS idx_memories_project_type ON memories(project_id, type);
             CREATE INDEX IF NOT EXISTS idx_memories_importance ON memories(project_id, importance DESC);
 
+            CREATE TABLE IF NOT EXISTS memory_links (
+                id TEXT PRIMARY KEY,
+                source_id TEXT NOT NULL REFERENCES memories(id) ON DELETE CASCADE,
+                target_id TEXT NOT NULL REFERENCES memories(id) ON DELETE CASCADE,
+                link_type TEXT NOT NULL DEFAULT 'related',
+                created_at TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS vector_index_meta (
+                id TEXT PRIMARY KEY,
+                project_id TEXT,
+                dimension INTEGER NOT NULL DEFAULT 768,
+                entry_count INTEGER NOT NULL DEFAULT 0,
+                backend TEXT NOT NULL DEFAULT 'json',
+                last_rebuild_at TEXT,
+                status TEXT NOT NULL DEFAULT 'ok'
+            );
+
+            CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts USING fts5(
+                content,
+                content='memories',
+                content_rowid='rowid'
+            );
+
             CREATE TABLE IF NOT EXISTS notes (
                 id TEXT PRIMARY KEY,
                 project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
@@ -152,7 +176,40 @@ impl Database {
         // Migrate legacy DBs missing edit_meta column
         let _ = conn.execute("ALTER TABLE changes ADD COLUMN edit_meta TEXT", []);
 
+        let _ = conn.execute_batch("
+            CREATE TRIGGER IF NOT EXISTS memories_ai AFTER INSERT ON memories BEGIN
+              INSERT INTO memories_fts(rowid, content) VALUES (new.rowid, new.content);
+            END;
+            CREATE TRIGGER IF NOT EXISTS memories_ad AFTER DELETE ON memories BEGIN
+              INSERT INTO memories_fts(memories_fts, rowid, content) VALUES('delete', old.rowid, old.content);
+            END;
+            CREATE TRIGGER IF NOT EXISTS memories_au AFTER UPDATE ON memories BEGIN
+              INSERT INTO memories_fts(memories_fts, rowid, content) VALUES('delete', old.rowid, old.content);
+              INSERT INTO memories_fts(rowid, content) VALUES (new.rowid, new.content);
+            END;
+        ");
+
         Ok(())
+    }
+
+    pub fn rebuild_vector_index_meta(conn: &Connection, project_id: Option<&str>, count: i64) -> Result<(), String> {
+        let id = project_id.unwrap_or("__global__");
+        let now = chrono::Utc::now().to_rfc3339();
+        conn.execute(
+            "INSERT INTO vector_index_meta (id, project_id, dimension, entry_count, backend, last_rebuild_at, status)
+             VALUES (?1, ?2, 768, ?3, 'json', ?4, 'ok')
+             ON CONFLICT(id) DO UPDATE SET entry_count = ?3, last_rebuild_at = ?4, status = 'ok'",
+            rusqlite::params![id, project_id, count, now],
+        )
+        .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    pub fn check_db_integrity(conn: &Connection) -> Result<bool, String> {
+        let ok: String = conn
+            .query_row("PRAGMA integrity_check", [], |row| row.get(0))
+            .map_err(|e| e.to_string())?;
+        Ok(ok == "ok")
     }
 
     /// Virtual project for Bosch Assistant standalone chat (FK target for assistant sessions).
@@ -233,7 +290,7 @@ impl Database {
             ("project-init", "Initialize a project from a template", Some("/init")),
         ];
 
-        for (i, (name, desc, cmd)) in skills.iter().enumerate() {
+        for (i, (name, _desc, cmd)) in skills.iter().enumerate() {
             conn.execute(
                 "INSERT INTO skills (id, name, version, source, entry_point, permissions, enabled, installed_at) VALUES (?1, ?2, '1.0.0', 'builtin', '', '[]', 1, ?3)",
                 params![format!("builtin-{}", i), name, now],

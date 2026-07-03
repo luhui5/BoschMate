@@ -1,8 +1,8 @@
 use regex::Regex;
 use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::OnceLock;
 use walkdir::WalkDir;
 
@@ -67,6 +67,7 @@ impl std::fmt::Display for SymbolKind {
 }
 
 impl SymbolKind {
+    #[allow(dead_code)]
     pub fn from_str(s: &str) -> Self {
         match s.to_lowercase().as_str() {
             "function" | "fn" | "def" | "func" => SymbolKind::Function,
@@ -83,6 +84,7 @@ impl SymbolKind {
 }
 
 #[derive(Debug, Clone, Serialize)]
+#[allow(dead_code)]
 pub struct CodeGraphResult {
     pub symbols: Vec<Symbol>,
     pub total_files: usize,
@@ -117,6 +119,7 @@ pub struct AffectedFile {
 
 // ── Language-specific patterns ──
 
+#[allow(dead_code)]
 struct LangPatterns {
     function: Regex,
     method: Regex,
@@ -447,7 +450,7 @@ pub fn trace_chain(
     to_symbol: &str,
     max_depth: Option<usize>,
 ) -> Result<CallChain, String> {
-    let depth = max_depth.unwrap_or(10);
+    let _depth = max_depth.unwrap_or(10);
     // BFS from 'from' to 'to'
     let mut chains: Vec<Vec<ChainNode>> = Vec::new();
 

@@ -60,14 +60,15 @@ export function ProjectCard({
 
   return (
     <>
-      <div className="group relative flex flex-col gap-2 rounded-lg border border-border bg-card p-3 transition-colors hover:border-primary/40 hover:bg-accent/40">
+      <div className="group relative flex cursor-pointer flex-col gap-2 rounded-lg border border-border bg-card p-3 transition-colors hover:border-primary/40 hover:bg-accent/40">
         <Link
           href={projectPath(project.id)}
           className="absolute inset-0 z-0 rounded-lg"
           aria-label={`打开项目 ${project.name}`}
+          tabIndex={-1}
         />
 
-        <div className="relative z-10 flex items-start justify-between gap-2">
+        <div className="pointer-events-none relative z-10 flex items-start justify-between gap-2">
           <div className="flex min-w-0 items-center gap-2">
             <span
               className="flex size-7 shrink-0 items-center justify-center rounded-md bg-secondary text-secondary-foreground"
@@ -80,7 +81,7 @@ export function ProjectCard({
               <p className="truncate text-xs text-muted-foreground">{project.localPath}</p>
             </div>
           </div>
-          <div className="relative flex items-center gap-0.5">
+          <div className="pointer-events-auto relative flex items-center gap-0.5">
             <Button
               variant="ghost"
               size="icon-xs"
@@ -164,11 +165,11 @@ export function ProjectCard({
           </div>
         </div>
 
-        <p className="relative z-10 line-clamp-1 text-xs leading-normal text-muted-foreground">
+        <p className="pointer-events-none relative z-10 line-clamp-1 text-xs leading-normal text-muted-foreground">
           {project.lastChatSummary}
         </p>
 
-        <div className="relative z-10 flex flex-wrap items-center gap-1.5">
+        <div className="pointer-events-none relative z-10 flex flex-wrap items-center gap-1.5">
           <Badge variant="outline">
             <span
               className="size-2 rounded-full"
@@ -180,7 +181,7 @@ export function ProjectCard({
           <CiBadge status={project.ciStatus} />
         </div>
 
-        <div className="relative z-10 flex items-center justify-between border-t border-border pt-2 text-xs text-muted-foreground">
+        <div className="pointer-events-none relative z-10 flex items-center justify-between border-t border-border pt-2 text-xs text-muted-foreground">
           <span className="flex items-center gap-1">
             <GitBranch className="size-3" />
             {project.gitBranch}

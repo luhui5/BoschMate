@@ -158,7 +158,11 @@ export function SessionSidebar({
                       </span>
                     </button>
                     <button
-                      onClick={() => onDelete(s.id)}
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation()
+                        onDelete(s.id)
+                      }}
                       className="shrink-0 text-muted-foreground opacity-0 transition-opacity hover:text-destructive group-hover:opacity-100"
                       aria-label={`删除对话 ${s.title}`}
                     >

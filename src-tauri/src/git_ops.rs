@@ -71,8 +71,8 @@ pub fn get_log(repo_path: &Path, count: Option<usize>) -> Result<Vec<GitCommit>,
         let oid = oid.map_err(|e| format!("Oid error: {}", e))?;
         let commit = repo.find_commit(oid).map_err(|e| format!("Find commit error: {}", e))?;
         let time = commit.time();
-        let date = chrono::NaiveDateTime::from_timestamp_opt(time.seconds(), 0)
-            .map(|d| d.format("%Y-%m-%dT%H:%M:%SZ").to_string())
+        let date = chrono::DateTime::from_timestamp(time.seconds(), 0)
+            .map(|dt| dt.format("%Y-%m-%dT%H:%M:%SZ").to_string())
             .unwrap_or_default();
 
         commits.push(GitCommit {
@@ -147,6 +147,7 @@ pub fn list_branches(repo_path: &Path) -> Result<Vec<String>, String> {
 }
 
 /// Create and switch to a new branch
+#[allow(dead_code)]
 pub fn create_branch(repo_path: &Path, name: &str) -> Result<(), String> {
     create_and_checkout_branch(repo_path, name)
 }
@@ -268,6 +269,7 @@ pub fn stash_list(repo_path: &Path) -> Result<Vec<StashEntry>, String> {
 }
 
 /// Stash if there are untracked files that would be overwritten (protection).
+#[allow(dead_code)]
 pub fn stash_untracked_if_needed(repo_path: &Path) -> Result<Option<String>, String> {
     let status = get_status(repo_path)?;
     let has_untracked = status.files.iter().any(|f| f.status == "untracked");
@@ -369,7 +371,7 @@ fn get_status_files(repo: &Repository) -> Result<Vec<GitFile>, String> {
     Ok(files)
 }
 
-fn diff_to_string(repo: &Repository, diff: &git2::Diff) -> Result<String, String> {
+fn diff_to_string(_repo: &Repository, diff: &git2::Diff) -> Result<String, String> {
     let mut buf = String::new();
     diff.print(git2::DiffFormat::Patch, |_delta, _hunk, line| {
         let origin = line.origin();

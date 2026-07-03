@@ -4,6 +4,7 @@ import { useRef, useState } from "react"
 import {
   Plus,
   Send,
+  Square,
   Slash,
   ImageIcon,
   ScanLine,
@@ -40,6 +41,8 @@ export function ChatInput({
   onModelChange,
   disabled,
   degraded,
+  generating,
+  onStop,
   onValidationError,
 }: {
   mode: AgentMode
@@ -51,6 +54,8 @@ export function ChatInput({
   onModelChange: (id: string) => void
   disabled?: boolean
   degraded?: boolean
+  generating?: boolean
+  onStop?: () => void
   onValidationError?: (msg: string) => void
 }) {
   const [value, setValue] = useState("")
@@ -191,7 +196,7 @@ export function ChatInput({
           rows={3}
           placeholder="描述需求，粘贴截图，或输入 / 使用命令…"
           className="border-0 bg-transparent shadow-none focus-visible:ring-0"
-          disabled={disabled}
+          disabled={disabled || generating}
         />
 
         <div className="flex items-center gap-1 px-2 pb-2">
@@ -253,10 +258,22 @@ export function ChatInput({
           <ThinkingDepthSelect value={depth} onChange={setDepth} variant="outline" />
 
           <div className="ml-auto flex items-center gap-2">
-            <Button size="sm" onClick={submit} disabled={disabled || (!value.trim() && !pastedImage)}>
-              <Send />
-              发送
-            </Button>
+            {generating ? (
+              <Button
+                type="button"
+                size="icon-sm"
+                onClick={onStop}
+                aria-label="停止生成"
+                className="size-8 rounded-full bg-foreground text-background hover:bg-foreground/90"
+              >
+                <Square className="size-3 fill-current" />
+              </Button>
+            ) : (
+              <Button size="sm" onClick={submit} disabled={disabled || (!value.trim() && !pastedImage)}>
+                <Send />
+                发送
+              </Button>
+            )}
           </div>
         </div>
       </div>

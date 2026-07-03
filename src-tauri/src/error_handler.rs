@@ -1,6 +1,7 @@
 use serde::Serialize;
 
 /// Error severity classification per the requirements doc (Section 3.5)
+#[allow(dead_code)]
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub enum ErrorSeverity {
     /// Process cannot continue, must terminate and report
@@ -11,6 +12,7 @@ pub enum ErrorSeverity {
     Degraded,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Clone, Serialize)]
 pub struct AppError {
     pub code: String,
@@ -20,6 +22,7 @@ pub struct AppError {
     pub user_message: Option<String>,
 }
 
+#[allow(dead_code)]
 impl AppError {
     pub fn fatal(code: &str, message: &str) -> Self {
         AppError {
@@ -63,6 +66,7 @@ impl std::fmt::Display for AppError {
     }
 }
 
+#[allow(dead_code)]
 impl AppError {
     fn severity_code(&self) -> &str {
         match self.severity {
@@ -75,6 +79,7 @@ impl AppError {
 
 // ── Predefined error codes ──
 
+#[allow(dead_code)]
 impl AppError {
     pub fn file_not_found(path: &str) -> Self {
         AppError::recoverable("FILE_NOT_FOUND", &format!("File not found: {}", path))
@@ -184,9 +189,56 @@ pub struct SubsystemHealth {
     pub message: Option<String>,
 }
 
+pub fn check_disk_space(data_dir: &std::path::Path) -> serde_json::Value {
+    let available_mb = disk_available_mb(data_dir).unwrap_or(9999);
+    let warning = available_mb < 100;
+    serde_json::json!({
+        "available_mb": available_mb,
+        "warning": warning,
+        "message": if warning {
+            format!("磁盘空间不足 ({}MB)", available_mb)
+        } else {
+            String::new()
+        },
+    })
+}
+
+fn disk_available_mb(path: &std::path::Path) -> Option<u64> {
+    #[cfg(unix)]
+    {
+        let output = std::process::Command::new("df")
+            .args(["-m", path.to_str()?])
+            .output()
+            .ok()?;
+        let text = String::from_utf8_lossy(&output.stdout);
+        let line = text.lines().nth(1)?;
+        let avail = line.split_whitespace().nth(3)?.parse::<u64>().ok()?;
+        return Some(avail);
+    }
+    #[cfg(windows)]
+    {
+        let drive = path.to_str()?.chars().next()?.to_string() + ":\\";
+        let script = format!(
+            "(Get-PSDrive -Name '{}').Free / 1MB",
+            drive.chars().next()?
+        );
+        let output = std::process::Command::new("powershell")
+            .args(["-NoProfile", "-Command", &script])
+            .output()
+            .ok()?;
+        let text = String::from_utf8_lossy(&output.stdout);
+        return text.trim().parse::<u64>().ok();
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        None
+    }
+}
+
 pub async fn check_system_health(
     db_path: &std::path::Path,
     ollama_url: Option<&str>,
+    data_dir: Option<&std::path::Path>,
 ) -> SystemHealth {
     let mut subsystems = Vec::new();
 
@@ -210,6 +262,17 @@ pub async fn check_system_health(
             name: "ollama".into(),
             healthy,
             message: if healthy { None } else { Some("Ollama not reachable".into()) },
+        });
+    }
+
+    // Check disk space
+    if let Some(dir) = data_dir {
+        let disk = check_disk_space(dir);
+        let warning = disk["warning"].as_bool().unwrap_or(false);
+        subsystems.push(SubsystemHealth {
+            name: "disk".into(),
+            healthy: !warning,
+            message: disk["message"].as_str().filter(|s| !s.is_empty()).map(|s| s.to_string()),
         });
     }
 

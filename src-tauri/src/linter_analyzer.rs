@@ -86,7 +86,7 @@ fn parse_lint_output(raw: &str) -> Vec<LintIssue> {
     for line in raw.lines() {
         // Common format: file:line:col: message
         if let Some((rest, msg)) = line.split_once(": error") {
-            if let Some((file_part, col_msg)) = rest.rsplit_once(':') {
+            if let Some((file_part, _col_msg)) = rest.rsplit_once(':') {
                 if let Some((file_line, col)) = file_part.rsplit_once(':') {
                     if let Some((file, line_num)) = file_line.rsplit_once(':') {
                         issues.push(LintIssue {

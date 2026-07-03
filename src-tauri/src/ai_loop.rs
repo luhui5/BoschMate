@@ -1,13 +1,73 @@
 use crate::ai_client::{self, AiMessage, AiToolDef, ChatRequest, ChatResponse};
+use crate::chat_cancel;
 use crate::code_editor::{self, EditResult};
 use crate::code_graph;
 use crate::fs_ops;
 use crate::git_ops;
 use crate::sandbox;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::path::PathBuf;
+use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
 use tauri::{AppHandle, Emitter};
+
+/// One step in the AI loop timeline (thought phase or tool execution).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ActivityStep {
+    pub id: String,
+    pub kind: String, // "thought" | "tool"
+    pub round: u32,
+    pub label: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub args: Option<String>,
+    pub status: String, // "running" | "success" | "error"
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub result: Option<String>,
+}
+
+pub type ActivityLog = Arc<Mutex<Vec<ActivityStep>>>;
+
+fn emit_activity(app: &AppHandle, session_id: &str, message_id: &str, step: &ActivityStep) {
+    let _ = app.emit(
+        "loop-activity",
+        serde_json::json!({
+            "session_id": session_id,
+            "message_id": message_id,
+            "step": step,
+        }),
+    );
+}
+
+fn push_thought(log: &ActivityLog, app: &AppHandle, session_id: &str, message_id: &str, round: u32) -> String {
+    let id = uuid::Uuid::new_v4().to_string();
+    let step = ActivityStep {
+        id: id.clone(),
+        kind: "thought".into(),
+        round,
+        label: "思考".into(),
+        detail: Some("分析问题、规划工具调用或整合上一轮结果。".into()),
+        tool: None,
+        args: None,
+        status: "running".into(),
+        result: None,
+    };
+    log.lock().unwrap().push(step.clone());
+    emit_activity(app, session_id, message_id, &step);
+    id
+}
+
+fn finish_thought(log: &ActivityLog, app: &AppHandle, session_id: &str, message_id: &str, thought_id: &str) {
+    let mut steps = log.lock().unwrap();
+    if let Some(step) = steps.iter_mut().find(|s| s.id == thought_id) {
+        step.status = "success".into();
+        emit_activity(app, session_id, message_id, step);
+    }
+}
 
 /// Metadata needed to apply a pending edit after user confirmation.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -167,6 +227,17 @@ pub fn get_tools() -> Vec<AiToolDef> {
                 }
             }),
         },
+        AiToolDef {
+            name: "git_commit".into(),
+            description: "Create a git commit with staged changes. Does not push.".into(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "message": {"type": "string", "description": "Commit message"}
+                },
+                "required": ["message"]
+            }),
+        },
         // Code graph tools
         AiToolDef {
             name: "list_symbols".into(),
@@ -189,6 +260,17 @@ pub fn get_tools() -> Vec<AiToolDef> {
             parameters: serde_json::json!({"type":"object","properties":{"file_path":{"type":"string"},"symbol_name":{"type":"string"}},"required":["file_path"]}),
         },
     ]
+}
+
+/// Read-only tools for Plan mode (structured plan, no execution).
+pub fn get_plan_tools() -> Vec<AiToolDef> {
+    get_assistant_tools()
+}
+
+/// Write-capable tools excluded from plan mode.
+#[allow(dead_code)]
+pub fn get_write_tool_names() -> Vec<&'static str> {
+    vec!["write_file", "edit_file", "bash", "git_commit"]
 }
 
 /// Read-only tools for Bosch Assistant (workspace bound).
@@ -347,6 +429,11 @@ pub async fn execute_tool(
             }).collect();
             Ok(out.join("\n"))
         }
+        "git_commit" => {
+            let message = args["message"].as_str().ok_or("message required")?;
+            git_ops::commit(project_root.as_path(), message, None)?;
+            Ok(format!("Committed: {}", message))
+        }
         "list_symbols" => {
             let fp = args["file_path"].as_str().ok_or("file_path required")?;
             let kf = args["kind_filter"].as_str();
@@ -391,18 +478,48 @@ pub async fn run_loop(
     messages: Vec<AiMessage>,
     system_prompt: Option<String>,
     tools: Vec<AiToolDef>,
-    max_iterations: usize,
+    max_iterations: Option<usize>,
     config: LoopConfig,
+    cancel: Arc<AtomicBool>,
 ) -> Result<ChatResponse, String> {
     let mut current_messages = messages;
-    let mut iteration = 0;
+    let mut iteration = 0u32;
+    let mut last_response: Option<ChatResponse> = None;
     let collector: EditCollector = Arc::new(Mutex::new(Vec::new()));
+    let activity_log: ActivityLog = Arc::new(Mutex::new(Vec::new()));
 
     loop {
-        iteration += 1;
-        if iteration > max_iterations {
-            return Err(format!("AI Loop exceeded maximum iterations ({})", max_iterations));
+        if chat_cancel::ChatCancelRegistry::is_cancelled(&cancel) {
+            if let Some(mut resp) = last_response.take() {
+                resp.finish_reason = "cancelled".into();
+                return Ok(finalize_response(resp, &collector, &activity_log));
+            }
+            return Ok(finalize_response(
+                ChatResponse {
+                    content: String::new(),
+                    tool_calls: None,
+                    finish_reason: "cancelled".into(),
+                    usage: ai_client::UsageInfo {
+                        prompt_tokens: 0,
+                        completion_tokens: 0,
+                    },
+                    pending_edits: None,
+                    pending_edit_meta: None,
+                    activity_log: None,
+                },
+                &collector,
+                &activity_log,
+            ));
         }
+
+        iteration += 1;
+        if let Some(limit) = max_iterations {
+            if iteration > limit as u32 {
+                return Err(format!("AI Loop exceeded maximum iterations ({})", limit));
+            }
+        }
+
+        let thought_id = push_thought(&activity_log, &app, &session_id, &message_id, iteration);
 
         // Send request to AI
         let request = ChatRequest {
@@ -422,13 +539,23 @@ pub async fn run_loop(
             request,
             session_id.clone(),
             message_id.clone(),
+            cancel.clone(),
         )
         .await?;
+
+        last_response = Some(response.clone());
+
+        if response.finish_reason == "cancelled" {
+            finish_thought(&activity_log, &app, &session_id, &message_id, &thought_id);
+            return Ok(finalize_response(response, &collector, &activity_log));
+        }
+
+        finish_thought(&activity_log, &app, &session_id, &message_id, &thought_id);
 
         // If AI returned tool calls, execute them
         if let Some(tool_calls) = &response.tool_calls {
             if tool_calls.is_empty() {
-                return Ok(finalize_response(response, &collector));
+                return Ok(finalize_response(response, &collector, &activity_log));
             }
 
             // Add assistant message (with tool calls)
@@ -440,9 +567,34 @@ pub async fn run_loop(
             // Execute each tool call and add results
             let mut tool_results = Vec::new();
             for tc in tool_calls {
+                if chat_cancel::ChatCancelRegistry::is_cancelled(&cancel) {
+                    let mut resp = response.clone();
+                    resp.finish_reason = "cancelled".into();
+                    return Ok(finalize_response(resp, &collector, &activity_log));
+                }
+
+                let step_id = uuid::Uuid::new_v4().to_string();
+                let args_str = serde_json::to_string(&tc.arguments).unwrap_or_default();
+                {
+                    let step = ActivityStep {
+                        id: step_id.clone(),
+                        kind: "tool".into(),
+                        round: iteration,
+                        label: tc.name.clone(),
+                        detail: None,
+                        tool: Some(tc.name.clone()),
+                        args: Some(args_str.clone()),
+                        status: "running".into(),
+                        result: None,
+                    };
+                    activity_log.lock().unwrap().push(step.clone());
+                    emit_activity(&app, &session_id, &message_id, &step);
+                }
+
                 let _ = app.emit("tool-call-start", serde_json::json!({
                     "session_id": session_id,
                     "message_id": message_id,
+                    "call_id": step_id,
                     "tool": tc.name,
                     "args": tc.arguments,
                 }));
@@ -452,6 +604,16 @@ pub async fn run_loop(
                     Ok(output) => output.clone(),
                     Err(err) => format!("Error: {}", err),
                 };
+                let success = result.is_ok();
+
+                {
+                    let mut steps = activity_log.lock().unwrap();
+                    if let Some(step) = steps.iter_mut().find(|s| s.id == step_id) {
+                        step.status = if success { "success" } else { "error" }.into();
+                        step.result = Some(result_str.clone());
+                        emit_activity(&app, &session_id, &message_id, step);
+                    }
+                }
 
                 tool_results.push(format!(
                     "Tool: {}\nArguments: {}\nResult:\n{}",
@@ -463,8 +625,9 @@ pub async fn run_loop(
                 let _ = app.emit("tool-call-end", serde_json::json!({
                     "session_id": session_id,
                     "message_id": message_id,
+                    "call_id": step_id,
                     "tool": tc.name,
-                    "success": result.is_ok(),
+                    "success": success,
                     "result": result_str,
                 }));
             }
@@ -476,12 +639,17 @@ pub async fn run_loop(
             });
         } else {
             // No tool calls — this is the final response
-            return Ok(finalize_response(response, &collector));
+            return Ok(finalize_response(response, &collector, &activity_log));
         }
     }
 }
 
-fn finalize_response(mut response: ChatResponse, collector: &EditCollector) -> ChatResponse {
+fn finalize_response(
+    mut response: ChatResponse,
+    collector: &EditCollector,
+    activity_log: &ActivityLog,
+) -> ChatResponse {
+    response.activity_log = Some(activity_log.lock().unwrap().clone());
     let pending = collector.lock().unwrap();
     if !pending.is_empty() {
         response.pending_edits = Some(pending.iter().map(|p| p.result.clone()).collect());

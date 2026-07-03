@@ -1,6 +1,7 @@
 mod ai_client;
 mod ai_loop;
 mod audit;
+mod chat_cancel;
 mod changes_db;
 mod code_editor;
 mod code_graph;
@@ -12,11 +13,17 @@ mod file_watcher;
 mod fs_ops;
 mod git_ops;
 mod linter_analyzer;
+mod memory_compressor;
 mod models;
 mod path_guard;
 mod recovery;
+mod retriever;
 mod sandbox;
+mod skills;
+mod skills_runtime;
 mod test_runner;
+mod tools;
+mod tracing_log;
 mod vector_store;
 
 use ai_client::{stream_chat as ai_stream_chat, list_ollama_models as ai_list_ollama_models};
@@ -25,13 +32,15 @@ use models::*;
 use rusqlite::params;
 use std::path::PathBuf;
 use std::sync::Mutex;
-use tauri::{AppHandle, Emitter, State};
+use tauri::{AppHandle, State};
 
 struct AppState {
     db: Database,
+    #[allow(dead_code)]
     projects_dir: Mutex<PathBuf>,
     vector_store: Mutex<vector_store::VectorStore>,
     data_dir: PathBuf,
+    chat_cancel: chat_cancel::ChatCancelRegistry,
 }
 
 // ── Project commands ──
@@ -706,11 +715,14 @@ fn save_memory(
     let now = chrono::Utc::now().to_rfc3339();
 
     let conn = state.db.conn.lock().unwrap();
+    let content_for_fts = content.clone();
     conn.execute(
         "INSERT INTO memories (id, project_id, type, content, importance, source_session_id, encrypted, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, 0, ?7, ?8)",
         params![id, project_id, r#type, content, importance.unwrap_or(0.5), source_session_id, now, now],
     )
     .map_err(|e| e.to_string())?;
+
+    retriever::sync_fts(&conn, &id, &content_for_fts).ok();
 
     Ok(Memory {
         id,
@@ -730,28 +742,108 @@ fn save_memory(
 #[tauri::command]
 async fn search_memories(
     state: State<'_, AppState>,
+    project_id: String,
     query: String,
-    top_k: Option<usize>,
+    limit: Option<usize>,
     ollama_url: Option<String>,
 ) -> Result<Vec<Memory>, String> {
     let url = ollama_url.unwrap_or_else(|| "http://localhost:11434".into());
+    let top_k = limit.unwrap_or(10);
 
-    // Generate embedding for query
-    let query_embedding = vector_store::generate_embedding(&query, &url, "nomic-embed-text").await
-        .map_err(|e| format!("Embedding failed (is Ollama running with nomic-embed-text?): {}", e))?;
+    let corrupted = {
+        let vs = state.vector_store.lock().unwrap();
+        vs.is_corrupted()
+    };
 
-    // Search vector store
-    let vs = state.vector_store.lock().unwrap();
-    let results = vs.search(&query_embedding, top_k.unwrap_or(10), 0.6, 0.25, 0.15);
+    let embedding = if corrupted {
+        None
+    } else {
+        vector_store::generate_embedding(&query, &url, "nomic-embed-text")
+            .await
+            .ok()
+    };
 
-    // Fetch memory details from DB
     let conn = state.db.conn.lock().unwrap();
-    let mut memories = Vec::new();
-    for result in results {
-        if let Ok(mut stmt) = conn.prepare(
-            "SELECT id, project_id, type, content, summary, importance, source_session_id, access_count, last_accessed_at, encrypted, created_at FROM memories WHERE id = ?1"
-        ) {
-            if let Ok(memory) = stmt.query_row(params![result.id], |row| {
+    let vs = state.vector_store.lock().unwrap();
+    retriever::retrieve_sync(
+        &conn,
+        &vs,
+        &project_id,
+        &query,
+        top_k,
+        embedding.as_deref(),
+    )
+}
+
+#[tauri::command]
+async fn retrieve_memories(
+    state: State<'_, AppState>,
+    project_id: String,
+    query: String,
+    top_k: Option<usize>,
+    ollama_url: Option<String>,
+) -> Result<serde_json::Value, String> {
+    let memories = search_memories(
+        state.clone(),
+        project_id,
+        query,
+        top_k,
+        ollama_url,
+    )
+    .await?;
+    Ok(serde_json::json!({
+        "memories": memories,
+        "context": retriever::format_memory_context(&memories),
+    }))
+}
+
+#[tauri::command]
+fn update_memory(
+    state: State<AppState>,
+    id: String,
+    content: Option<String>,
+    summary: Option<String>,
+    importance: Option<f64>,
+    memory_type: Option<String>,
+) -> Result<Memory, String> {
+    let now = chrono::Utc::now().to_rfc3339();
+    let conn = state.db.conn.lock().unwrap();
+
+    if let Some(c) = &content {
+        conn.execute(
+            "UPDATE memories SET content = ?1, updated_at = ?2 WHERE id = ?3",
+            params![c, now, id],
+        )
+        .map_err(|e| e.to_string())?;
+        retriever::sync_fts(&conn, &id, c).ok();
+    }
+    if let Some(s) = &summary {
+        conn.execute(
+            "UPDATE memories SET summary = ?1, updated_at = ?2 WHERE id = ?3",
+            params![s, now, id],
+        )
+        .map_err(|e| e.to_string())?;
+    }
+    if let Some(imp) = importance {
+        conn.execute(
+            "UPDATE memories SET importance = ?1, updated_at = ?2 WHERE id = ?3",
+            params![imp, now, id],
+        )
+        .map_err(|e| e.to_string())?;
+    }
+    if let Some(t) = &memory_type {
+        conn.execute(
+            "UPDATE memories SET type = ?1, updated_at = ?2 WHERE id = ?3",
+            params![t, now, id],
+        )
+        .map_err(|e| e.to_string())?;
+    }
+
+    let memory = conn
+        .query_row(
+            "SELECT id, project_id, type, content, summary, importance, source_session_id, access_count, last_accessed_at, encrypted, created_at FROM memories WHERE id = ?1",
+            params![id],
+            |row| {
                 Ok(Memory {
                     id: row.get(0)?,
                     project_id: row.get(1)?,
@@ -765,13 +857,96 @@ async fn search_memories(
                     encrypted: row.get::<_, i32>(9)? != 0,
                     created_at: row.get(10)?,
                 })
-            }) {
-                memories.push(memory);
-            }
-        }
-    }
+            },
+        )
+        .map_err(|e| e.to_string())?;
+    Ok(memory)
+}
 
-    Ok(memories)
+#[tauri::command]
+fn export_memories(state: State<AppState>, project_id: String) -> Result<String, String> {
+    let conn = state.db.conn.lock().unwrap();
+    let mut stmt = conn
+        .prepare(
+            "SELECT id, project_id, type, content, summary, importance, version, compressed_from, encrypted, created_at, updated_at
+             FROM memories WHERE project_id = ?1 ORDER BY created_at",
+        )
+        .map_err(|e| e.to_string())?;
+
+    let rows: Vec<serde_json::Value> = stmt
+        .query_map(params![project_id], |row| {
+            Ok(serde_json::json!({
+                "id": row.get::<_, String>(0)?,
+                "project_id": row.get::<_, String>(1)?,
+                "type": row.get::<_, String>(2)?,
+                "content": row.get::<_, String>(3)?,
+                "summary": row.get::<_, Option<String>>(4)?,
+                "importance": row.get::<_, f64>(5)?,
+                "version": row.get::<_, i32>(6)?,
+                "compressed_from": row.get::<_, Option<String>>(7)?,
+                "encrypted": row.get::<_, i32>(8)? != 0,
+                "created_at": row.get::<_, String>(9)?,
+                "updated_at": row.get::<_, String>(10)?,
+            }))
+        })
+        .map_err(|e| e.to_string())?
+        .filter_map(|r| r.ok())
+        .collect();
+
+    serde_json::to_string_pretty(&rows).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn rebuild_vector_index(state: State<AppState>, project_id: Option<String>) -> Result<serde_json::Value, String> {
+    let conn = state.db.conn.lock().unwrap();
+    let vs = state.vector_store.lock().unwrap();
+    let count = vs.rebuild_from_db(&conn)?;
+    Database::rebuild_vector_index_meta(&conn, project_id.as_deref(), count as i64)?;
+    vs.save_to_disk().ok();
+    Ok(serde_json::json!({ "entry_count": count, "status": "ok" }))
+}
+
+#[tauri::command]
+fn check_database(state: State<AppState>) -> Result<serde_json::Value, String> {
+    let conn = state.db.conn.lock().unwrap();
+    let integrity = Database::check_db_integrity(&conn)?;
+    let vs = state.vector_store.lock().unwrap();
+    Ok(serde_json::json!({
+        "integrity_ok": integrity,
+        "vector_corrupted": vs.is_corrupted(),
+        "vector_entries": vs.len(),
+    }))
+}
+
+#[tauri::command]
+fn repair_database(state: State<AppState>) -> Result<serde_json::Value, String> {
+    tracing_log::info("db", "Starting database repair wizard");
+    let conn = state.db.conn.lock().unwrap();
+    conn.execute("PRAGMA wal_checkpoint(TRUNCATE)", [])
+        .map_err(|e| e.to_string())?;
+    let integrity = Database::check_db_integrity(&conn)?;
+    drop(conn);
+
+    let conn = state.db.conn.lock().unwrap();
+    let vs = state.vector_store.lock().unwrap();
+    let rebuilt = if !integrity || vs.is_corrupted() {
+        vs.rebuild_from_db(&conn).unwrap_or(0)
+    } else {
+        vs.len()
+    };
+    Database::rebuild_vector_index_meta(&conn, None, rebuilt as i64)?;
+    vs.save_to_disk().ok();
+
+    Ok(serde_json::json!({
+        "integrity_ok": integrity,
+        "vector_entries": rebuilt,
+        "repaired": true,
+    }))
+}
+
+#[tauri::command]
+fn check_disk_space(state: State<AppState>) -> Result<serde_json::Value, String> {
+    Ok(error_handler::check_disk_space(&state.data_dir))
 }
 
 #[tauri::command]
@@ -806,6 +981,7 @@ async fn embed_memory(
 #[tauri::command]
 fn compress_memories(
     state: State<AppState>,
+    project_id: Option<String>,
     similarity_threshold: Option<f32>,
     min_group_size: Option<usize>,
 ) -> Result<usize, String> {
@@ -815,57 +991,49 @@ fn compress_memories(
         similarity_threshold.unwrap_or(0.85),
         min_group_size.unwrap_or(2),
     );
+    drop(vs);
 
-    let group_count = groups.len();
     let conn = state.db.conn.lock().unwrap();
-    let now = chrono::Utc::now().to_rfc3339();
+    let mut applied = 0usize;
 
-    for group in &groups {
-        if group.len() < 2 { continue; }
-        // Create summary memory from group
-        let summary_id = uuid::Uuid::new_v4().to_string();
-        let ids_json = serde_json::to_string(group).unwrap_or_default();
-
-        // Get contents to summarize
-        let contents: Vec<String> = group.iter().filter_map(|id| {
-            conn.query_row(
-                "SELECT content FROM memories WHERE id = ?1",
-                params![id],
-                |row| row.get(0),
-            ).ok()
-        }).collect();
-
-        let summary = if contents.len() > 2 {
-            format!("Compressed memory from {} entries: {}", contents.len(),
-                contents.iter().take(3).map(|c| c.chars().take(100).collect::<String>()).collect::<Vec<_>>().join(" | "))
-        } else {
-            contents.join(" | ")
-        };
-
-        // Get the project_id from first memory in group
-        if let Some(first_id) = group.first() {
-            if let Ok(project_id) = conn.query_row(
-                "SELECT project_id FROM memories WHERE id = ?1",
-                params![first_id],
-                |row| row.get::<_, String>(0),
-            ) {
-                conn.execute(
-                    "INSERT INTO memories (id, project_id, type, content, summary, importance, version, compressed_from, encrypted, created_at, updated_at) VALUES (?1, ?2, 'fact', ?3, ?4, 0.7, 2, ?5, 0, ?6, ?7)",
-                    params![summary_id, project_id, summary, summary, ids_json, now, now],
-                ).ok();
+    if let Some(pid) = project_id {
+        let project_groups: Vec<Vec<String>> = groups
+            .into_iter()
+            .filter(|g| {
+                g.first()
+                    .and_then(|id| {
+                        conn.query_row(
+                            "SELECT project_id FROM memories WHERE id = ?1",
+                            params![id],
+                            |row| row.get::<_, String>(0),
+                        )
+                        .ok()
+                    })
+                    .map(|p| p == pid)
+                    .unwrap_or(false)
+            })
+            .collect();
+        applied = memory_compressor::apply_compression(&conn, &pid, &project_groups)?;
+    } else {
+        let mut by_project: std::collections::HashMap<String, Vec<Vec<String>>> =
+            std::collections::HashMap::new();
+        for group in groups {
+            if let Some(first_id) = group.first() {
+                if let Ok(pid) = conn.query_row(
+                    "SELECT project_id FROM memories WHERE id = ?1",
+                    params![first_id],
+                    |row| row.get::<_, String>(0),
+                ) {
+                    by_project.entry(pid).or_default().push(group);
+                }
             }
         }
-
-        // Update source memories
-        for id in group {
-            conn.execute(
-                "UPDATE memories SET version = version + 1, updated_at = ?1 WHERE id = ?2",
-                params![now, id],
-            ).ok();
+        for (pid, project_groups) in by_project {
+            applied += memory_compressor::apply_compression(&conn, &pid, &project_groups)?;
         }
     }
 
-    Ok(group_count)
+    Ok(applied)
 }
 
 #[tauri::command]
@@ -976,6 +1144,7 @@ async fn health_check(
     Ok(error_handler::check_system_health(
         &db_path,
         ollama_url.as_deref(),
+        Some(&state.data_dir),
     ).await)
 }
 
@@ -983,38 +1152,125 @@ async fn health_check(
 
 #[tauri::command]
 fn list_skills(state: State<AppState>) -> Result<Vec<Skill>, String> {
+    let skills_dir = skills_runtime::skills_dir(&state.data_dir);
+    let discovered = skills::discover_local_skills(&skills_dir);
+
     let conn = state.db.conn.lock().unwrap();
     let mut stmt = conn
         .prepare("SELECT name FROM skills WHERE enabled = 1")
         .map_err(|e| e.to_string())?;
 
-    let names: Vec<String> = stmt
+    let db_names: Vec<String> = stmt
         .query_map([], |row| row.get(0))
         .map_err(|e| e.to_string())?
         .filter_map(|r| r.ok())
         .collect();
 
-    let skills = names
+    let mut skills: Vec<Skill> = discovered
         .into_iter()
-        .map(|name| {
-            let (desc, cmd) = match name.as_str() {
-                "run-tests" => ("Auto-detect and run project tests", Some("/test")),
-                "format-code" => ("Run formatter (prettier/rustfmt)", Some("/format")),
-                "lint-check" => ("Run linter and generate fix suggestions", Some("/lint")),
-                "generate-changelog" => ("Generate changelog from Git history", Some("/changelog")),
-                "dependency-check" => ("Check outdated deps and CVEs", Some("/deps")),
-                "project-init" => ("Initialize a project from a template", Some("/init")),
-                _ => ("Unknown skill", None),
-            };
-            Skill {
-                name,
-                description: desc.to_string(),
-                command: cmd.map(|s| s.to_string()),
-            }
+        .map(|m| Skill {
+            name: m.name.clone(),
+            description: m.description.unwrap_or_else(|| m.name.clone()),
+            command: Some(format!("/skill {}", m.name)),
         })
         .collect();
 
+    for name in db_names {
+        if skills.iter().any(|s| s.name == name) {
+            continue;
+        }
+        let (desc, cmd) = match name.as_str() {
+            "run-tests" => ("Auto-detect and run project tests", Some("/test")),
+            "format-code" => ("Run formatter (prettier/rustfmt)", Some("/format")),
+            "lint-check" => ("Run linter and generate fix suggestions", Some("/lint")),
+            "generate-changelog" => ("Generate changelog from Git history", Some("/changelog")),
+            "dependency-check" => ("Check outdated deps and CVEs", Some("/deps")),
+            "project-init" => ("Initialize a project from a template", Some("/init")),
+            _ => ("Built-in skill", None),
+        };
+        skills.push(Skill {
+            name,
+            description: desc.to_string(),
+            command: cmd.map(|s| s.to_string()),
+        });
+    }
+
     Ok(skills)
+}
+
+#[tauri::command]
+fn install_skill(state: State<AppState>, source_path: String) -> Result<Skill, String> {
+    let skills_dir = skills_runtime::skills_dir(&state.data_dir);
+    std::fs::create_dir_all(&skills_dir).map_err(|e| e.to_string())?;
+    let manifest = skills_runtime::install_local_skill(&skills_dir, PathBuf::from(source_path).as_path())?;
+    let name = manifest.name.clone();
+    Ok(Skill {
+        name: name.clone(),
+        description: manifest.description.unwrap_or(name.clone()),
+        command: Some(format!("/skill {}", name)),
+    })
+}
+
+#[tauri::command]
+fn run_skill(
+    state: State<AppState>,
+    skill_name: String,
+    args: Option<Vec<String>>,
+) -> Result<skills_runtime::SkillRunResult, String> {
+    let skills_dir = skills_runtime::skills_dir(&state.data_dir);
+    let skill_dir = skills_dir.join(&skill_name);
+    skills_runtime::run_skill(&skill_dir, &args.unwrap_or_default())
+}
+
+#[tauri::command]
+fn list_ssh_connections(state: State<AppState>) -> Result<Vec<serde_json::Value>, String> {
+    let conn = state.db.conn.lock().unwrap();
+    let json = conn
+        .query_row(
+            "SELECT value FROM settings WHERE scope = 'global' AND key = 'ssh_connections'",
+            [],
+            |row| row.get::<_, String>(0),
+        )
+        .unwrap_or_else(|_| "[]".into());
+    serde_json::from_str(&json).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn save_ssh_connection(state: State<AppState>, host: String, user: String, port: Option<u16>) -> Result<(), String> {
+    let mut list = list_ssh_connections(state.clone())?;
+    list.push(serde_json::json!({
+        "host": host,
+        "user": user,
+        "port": port.unwrap_or(22),
+        "last_connected_at": chrono::Utc::now().to_rfc3339(),
+    }));
+    set_setting(state, "ssh_connections".into(), serde_json::to_string(&list).unwrap())
+}
+
+#[tauri::command]
+fn export_backup(state: State<AppState>, output_path: String) -> Result<(), String> {
+    let conn = state.db.conn.lock().unwrap();
+    let mut projects: Vec<serde_json::Value> = Vec::new();
+    if let Ok(mut stmt) = conn.prepare("SELECT id, name, local_path, settings FROM projects") {
+        if let Ok(rows) = stmt.query_map([], |row| {
+            Ok(serde_json::json!({
+                "id": row.get::<_, String>(0)?,
+                "name": row.get::<_, String>(1)?,
+                "local_path": row.get::<_, String>(2)?,
+                "settings": row.get::<_, String>(3)?,
+            }))
+        }) {
+            projects = rows.filter_map(|r| r.ok()).collect();
+        }
+    }
+
+    let backup = serde_json::json!({
+        "version": 1,
+        "exported_at": chrono::Utc::now().to_rfc3339(),
+        "projects": projects,
+    });
+    std::fs::write(&output_path, serde_json::to_string_pretty(&backup).unwrap())
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -1159,6 +1415,12 @@ struct AiLoopInput {
 }
 
 #[tauri::command]
+fn cancel_chat(app: AppHandle, state: State<AppState>, session_id: String) -> Result<(), String> {
+    state.chat_cancel.cancel(&session_id, &app);
+    Ok(())
+}
+
+#[tauri::command]
 async fn ai_loop_chat(
     app: AppHandle,
     state: State<'_, AppState>,
@@ -1183,17 +1445,29 @@ async fn ai_loop_chat(
         .map_err(|e| e.to_string())?;
     }
 
+    let agent_mode = input.agent_mode.as_deref().unwrap_or("ask");
+    let auto_mode = agent_mode == "auto";
+
     // Run AI Loop
     let tools = if input.assistant_mode.unwrap_or(false) {
         ai_loop::get_assistant_tools()
+    } else if agent_mode == "plan" {
+        ai_loop::get_plan_tools()
     } else {
         ai_loop::get_tools()
     };
 
-    let agent_mode = input.agent_mode.as_deref().unwrap_or("ask");
-    let auto_mode = agent_mode == "auto";
+    let mut system_prompt = input.system_prompt.clone();
+    if agent_mode == "plan" {
+        system_prompt = Some(format!(
+            "{}\n\nYou are in PLAN mode. Produce a structured Markdown plan only. Do NOT execute write/bash/git_commit tools.",
+            system_prompt.unwrap_or_default()
+        ));
+    }
+
     let write_count = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
 
+    let cancel = state.chat_cancel.register(&session_id);
     let response = ai_loop::run_loop(
         app,
         project_root.clone(),
@@ -1204,17 +1478,20 @@ async fn ai_loop_chat(
         input.api_key,
         input.base_url,
         input.messages,
-        input.system_prompt,
+        system_prompt,
         tools,
-        input.max_iterations.unwrap_or(10),
+        input.max_iterations,
         ai_loop::LoopConfig {
             dry_run_edits: input.edit_dry_run.unwrap_or(false),
             auto_mode,
             bulk_write_confirmed: input.bulk_write_confirmed.unwrap_or(false),
             write_count,
         },
+        cancel,
     )
-    .await?;
+    .await;
+    state.chat_cancel.clear(&session_id);
+    let response = response?;
 
     // Build diffs JSON and persist changes
     let mut change_ids: Vec<String> = Vec::new();
@@ -1263,9 +1540,15 @@ async fn ai_loop_chat(
     // Save assistant response
     let conn = state.db.conn.lock().unwrap();
     let tool_calls_json = response
-        .tool_calls
+        .activity_log
         .as_ref()
-        .map(|tc| serde_json::to_string(tc).unwrap_or_default());
+        .map(|log| serde_json::to_string(log).unwrap_or_default())
+        .or_else(|| {
+            response
+                .tool_calls
+                .as_ref()
+                .map(|tc| serde_json::to_string(tc).unwrap_or_default())
+        });
     let usage_json = serde_json::json!({
         "prompt_tokens": response.usage.prompt_tokens,
         "completion_tokens": response.usage.completion_tokens,
@@ -1299,7 +1582,7 @@ async fn ai_loop_chat(
         role: "assistant".into(),
         content: response.content,
         mode: input.agent_mode.or(Some("ask".into())),
-        tool_calls: response.tool_calls.map(|tc| serde_json::to_value(tc).unwrap_or_default()),
+        tool_calls: tool_calls_json.and_then(|d| serde_json::from_str(&d).ok()),
         diffs: diffs_json.and_then(|d| serde_json::from_str(&d).ok()),
         file_refs: None,
         token_usage: Some(usage_json),
@@ -1499,7 +1782,10 @@ async fn stream_chat(
     }
 
     // Call AI with streaming
-    let response = ai_stream_chat(app, request, session_id.clone(), msg_id.clone()).await?;
+    let cancel = state.chat_cancel.register(&session_id);
+    let response = ai_stream_chat(app, request, session_id.clone(), msg_id.clone(), cancel).await;
+    state.chat_cancel.clear(&session_id);
+    let response = response?;
 
     // Save assistant response
     let conn = state.db.conn.lock().unwrap();
@@ -1604,6 +1890,9 @@ fn main() {
         .unwrap_or_else(|| PathBuf::from("."))
         .join("BoschCode");
 
+    tracing_log::init(&app_dir);
+    tracing_log::info("app", "BoschCode starting");
+
     let db = Database::new(&app_dir).expect("Failed to initialize database");
     db.seed_builtin_skills().ok();
 
@@ -1614,6 +1903,7 @@ fn main() {
         projects_dir: Mutex::new(app_dir.clone()),
         vector_store: Mutex::new(vs),
         data_dir: app_dir.clone(),
+        chat_cancel: chat_cancel::ChatCancelRegistry::new(),
     };
 
     tauri::Builder::default()
@@ -1633,6 +1923,7 @@ fn main() {
             create_session,
             delete_session,
             update_session_title,
+            cancel_chat,
             // Messages
             list_messages,
             send_message,
@@ -1683,6 +1974,13 @@ fn main() {
             save_memory,
             delete_memory,
             search_memories,
+            retrieve_memories,
+            update_memory,
+            export_memories,
+            rebuild_vector_index,
+            check_database,
+            repair_database,
+            check_disk_space,
             embed_memory,
             compress_memories,
             // Notes
@@ -1698,6 +1996,11 @@ fn main() {
             health_check,
             // Skills & Settings
             list_skills,
+            install_skill,
+            run_skill,
+            list_ssh_connections,
+            save_ssh_connection,
+            export_backup,
             get_setting,
             set_setting,
             save_credential,

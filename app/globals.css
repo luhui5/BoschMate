@@ -198,4 +198,34 @@
   .scrollbar-thin::-webkit-scrollbar-track {
     background: transparent;
   }
+
+  /* Vertical scroll: hidden until hover; no horizontal bar */
+  .scrollbar-hover-y {
+    overflow-x: hidden;
+    overflow-y: auto;
+    scrollbar-width: none;
+  }
+  .scrollbar-hover-y::-webkit-scrollbar {
+    width: 6px;
+    height: 0;
+  }
+  .scrollbar-hover-y::-webkit-scrollbar-thumb {
+    background-color: transparent;
+    border-radius: 9999px;
+  }
+  .scrollbar-hover-y::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  .group\/activity-scroll:hover .scrollbar-hover-y {
+    scrollbar-width: thin;
+    scrollbar-color: var(--border) transparent;
+  }
+  .scrollbar-hover-y:hover {
+    scrollbar-width: thin;
+    scrollbar-color: var(--border) transparent;
+  }
+  .group\/activity-scroll:hover .scrollbar-hover-y::-webkit-scrollbar-thumb,
+  .scrollbar-hover-y:hover::-webkit-scrollbar-thumb {
+    background-color: var(--border);
+  }
 }

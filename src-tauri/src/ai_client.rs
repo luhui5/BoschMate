@@ -2,6 +2,8 @@ use futures::StreamExt;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
+use std::sync::atomic::AtomicBool;
+use std::sync::Arc;
 use tauri::{AppHandle, Emitter};
 
 // ── Unified request / response types ──
@@ -33,12 +35,14 @@ pub struct ChatRequest {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[allow(dead_code)]
 pub struct ChatDelta {
     pub content: String,
     pub tool_calls: Option<Vec<ToolCallDelta>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[allow(dead_code)]
 pub struct ToolCallDelta {
     pub index: usize,
     pub id: Option<String>,
@@ -56,6 +60,8 @@ pub struct ChatResponse {
     pub pending_edits: Option<Vec<crate::code_editor::EditResult>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pending_edit_meta: Option<Vec<serde_json::Value>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub activity_log: Option<Vec<crate::ai_loop::ActivityStep>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -114,22 +120,46 @@ pub async fn stream_chat(
     req: ChatRequest,
     session_id: String,
     message_id: String,
+    cancel: Arc<AtomicBool>,
 ) -> Result<ChatResponse, String> {
     crate::error_handler::retry_with_backoff(3, || {
         let app = app.clone();
         let req = req.clone();
         let session_id = session_id.clone();
         let message_id = message_id.clone();
+        let cancel = cancel.clone();
         async move {
+            if cancelled(&cancel) {
+                return Ok(cancelled_response(String::new()));
+            }
             match req.provider.as_str() {
-                "anthropic" => stream_anthropic(app, req, session_id, message_id).await,
-                "openai" => stream_openai(app, req, session_id, message_id).await,
-                "ollama" => stream_ollama(app, req, session_id, message_id).await,
+                "anthropic" => stream_anthropic(app, req, session_id, message_id, cancel).await,
+                "openai" => stream_openai(app, req, session_id, message_id, cancel).await,
+                "ollama" => stream_ollama(app, req, session_id, message_id, cancel).await,
                 _ => Err(format!("Unknown provider: {}", req.provider)),
             }
         }
     })
     .await
+}
+
+fn cancelled(cancel: &Arc<AtomicBool>) -> bool {
+    crate::chat_cancel::ChatCancelRegistry::is_cancelled(cancel)
+}
+
+fn cancelled_response(content: String) -> ChatResponse {
+    ChatResponse {
+        content,
+        tool_calls: None,
+        finish_reason: "cancelled".into(),
+        usage: UsageInfo {
+            prompt_tokens: 0,
+            completion_tokens: 0,
+        },
+        pending_edits: None,
+        pending_edit_meta: None,
+        activity_log: None,
+    }
 }
 
 // ── Anthropic ──
@@ -139,6 +169,7 @@ async fn stream_anthropic(
     req: ChatRequest,
     session_id: String,
     message_id: String,
+    cancel: Arc<AtomicBool>,
 ) -> Result<ChatResponse, String> {
     let api_key = req.api_key.clone().ok_or("Anthropic API key required")?;
     let client = reqwest::Client::new();
@@ -187,6 +218,10 @@ async fn stream_anthropic(
     let mut buf = String::new();
 
     while let Some(chunk) = stream.next().await {
+        if cancelled(&cancel) {
+            finish_reason = "cancelled".into();
+            break;
+        }
         let chunk = chunk.map_err(|e| format!("Stream error: {}", e))?;
         buf.push_str(&String::from_utf8_lossy(&chunk));
 
@@ -291,6 +326,7 @@ async fn stream_anthropic(
         },
         pending_edits: None,
         pending_edit_meta: None,
+        activity_log: None,
     })
 }
 
@@ -312,6 +348,7 @@ async fn stream_openai(
     req: ChatRequest,
     session_id: String,
     message_id: String,
+    cancel: Arc<AtomicBool>,
 ) -> Result<ChatResponse, String> {
     let client = reqwest::Client::new();
     let base = req.base_url.unwrap_or_else(|| "https://api.openai.com/v1".into());
@@ -371,6 +408,10 @@ async fn stream_openai(
     let mut buf = String::new();
 
     while let Some(chunk) = stream.next().await {
+        if cancelled(&cancel) {
+            finish_reason = "cancelled".into();
+            break;
+        }
         let chunk = chunk.map_err(|e| format!("Stream error: {}", e))?;
         buf.push_str(&String::from_utf8_lossy(&chunk));
 
@@ -464,6 +505,7 @@ async fn stream_openai(
         },
         pending_edits: None,
         pending_edit_meta: None,
+        activity_log: None,
     })
 }
 
@@ -474,6 +516,7 @@ async fn stream_ollama(
     req: ChatRequest,
     session_id: String,
     message_id: String,
+    cancel: Arc<AtomicBool>,
 ) -> Result<ChatResponse, String> {
     let client = reqwest::Client::new();
     let base = req.base_url.unwrap_or_else(|| "http://localhost:11434/v1".into());
@@ -517,13 +560,18 @@ async fn stream_ollama(
 
     // Parse Ollama SSE stream (OpenAI-compatible)
     let mut full_content = String::new();
-    let mut prompt_tokens: u32 = 0;
-    let mut completion_tokens: u32 = 0;
+    let mut finish_reason = String::from("stop");
+    let prompt_tokens: u32 = 0;
+    let completion_tokens: u32 = 0;
 
     let mut stream = response.bytes_stream();
     let mut buf = String::new();
 
     while let Some(chunk) = stream.next().await {
+        if cancelled(&cancel) {
+            finish_reason = "cancelled".into();
+            break;
+        }
         let chunk = chunk.map_err(|e| format!("Stream error: {}", e))?;
         buf.push_str(&String::from_utf8_lossy(&chunk));
 
@@ -559,13 +607,14 @@ async fn stream_ollama(
     Ok(ChatResponse {
         content: full_content,
         tool_calls: None,
-        finish_reason: "stop".into(),
+        finish_reason,
         usage: UsageInfo {
             prompt_tokens,
             completion_tokens,
         },
         pending_edits: None,
         pending_edit_meta: None,
+        activity_log: None,
     })
 }
 

@@ -119,6 +119,10 @@ export async function deleteSession(id: string): Promise<void> {
   return invoke<void>('delete_session', { id });
 }
 
+export async function cancelChat(sessionId: string): Promise<void> {
+  return invoke<void>('cancel_chat', { sessionId });
+}
+
 export async function updateSessionTitle(id: string, title: string): Promise<void> {
   return invoke<void>('update_session_title', { id, title });
 }
@@ -610,11 +614,191 @@ export async function sandboxExec(
   };
 }
 
-export async function compressMemories(_projectId?: string): Promise<number> {
-  return invoke<number>('compress_memories', {});
+export async function compressMemories(projectId?: string): Promise<number> {
+  return invoke<number>('compress_memories', { projectId });
 }
 
 export async function searchMemories(projectId: string, query: string, limit?: number): Promise<Memory[]> {
   const raw = await invoke<RawMemory[]>('search_memories', { projectId, query, limit });
   return raw.map(mapMemory);
+}
+
+export async function retrieveMemories(
+  projectId: string,
+  query: string,
+  topK?: number,
+): Promise<{ memories: Memory[]; context: string }> {
+  const raw = await invoke<{ memories: RawMemory[]; context: string }>('retrieve_memories', {
+    projectId,
+    query,
+    topK,
+  });
+  return { memories: raw.memories.map(mapMemory), context: raw.context };
+}
+
+export async function updateMemory(
+  id: string,
+  patch: { content?: string; summary?: string; importance?: number; memoryType?: string },
+): Promise<Memory> {
+  const raw = await invoke<RawMemory>('update_memory', {
+    id,
+    content: patch.content,
+    summary: patch.summary,
+    importance: patch.importance,
+    memoryType: patch.memoryType,
+  });
+  return mapMemory(raw);
+}
+
+export async function exportMemories(projectId: string): Promise<string> {
+  return invoke<string>('export_memories', { projectId });
+}
+
+export async function rebuildVectorIndex(projectId?: string): Promise<{ entry_count: number; status: string }> {
+  return invoke('rebuild_vector_index', { projectId });
+}
+
+export async function checkDatabase(): Promise<{ integrity_ok: boolean; vector_corrupted: boolean; vector_entries: number }> {
+  return invoke('check_database');
+}
+
+export async function repairDatabase(): Promise<{ integrity_ok: boolean; vector_entries: number; repaired: boolean }> {
+  return invoke('repair_database');
+}
+
+export async function checkDiskSpace(): Promise<{ available_mb: number; warning: boolean; message: string }> {
+  return invoke('check_disk_space');
+}
+
+export interface AuditEntry {
+  id: string;
+  sessionId: string;
+  messageId?: string;
+  command: string;
+  cwd: string;
+  exitCode: number;
+  stdout: string;
+  stderr: string;
+  durationMs: number;
+  sandboxed: boolean;
+  createdAt: string;
+}
+
+export async function getAuditLog(sessionId: string, limit?: number): Promise<AuditEntry[]> {
+  const raw = await invoke<Array<{
+    id: string;
+    session_id: string;
+    message_id?: string;
+    command: string;
+    cwd: string;
+    exit_code: number;
+    stdout: string;
+    stderr: string;
+    duration_ms: number;
+    sandboxed: boolean;
+    created_at: string;
+  }>>('get_audit_log', { sessionId, limit });
+  return raw.map((r) => ({
+    id: r.id,
+    sessionId: r.session_id,
+    messageId: r.message_id,
+    command: r.command,
+    cwd: r.cwd,
+    exitCode: r.exit_code,
+    stdout: r.stdout,
+    stderr: r.stderr,
+    durationMs: r.duration_ms,
+    sandboxed: r.sandboxed,
+    createdAt: r.created_at,
+  }));
+}
+
+export interface ToolCallEvent {
+  session_id: string;
+  message_id: string;
+  call_id?: string;
+  tool: string;
+  args?: unknown;
+  success?: boolean;
+  result?: string;
+}
+
+export interface RawActivityStep {
+  id: string;
+  kind: string;
+  round: number;
+  label: string;
+  detail?: string;
+  tool?: string;
+  args?: string;
+  status: string;
+  result?: string;
+}
+
+export interface LoopActivityEvent {
+  session_id: string;
+  message_id: string;
+  step: RawActivityStep;
+}
+
+export function mapActivityStep(raw: RawActivityStep): import('./types').ActivityStep {
+  return {
+    id: raw.id,
+    kind: raw.kind === 'thought' ? 'thought' : 'tool',
+    round: raw.round,
+    label: raw.label,
+    detail: raw.detail,
+    tool: raw.tool,
+    args: raw.args,
+    status: raw.status === 'running' || raw.status === 'error' ? raw.status : 'success',
+    result: raw.result,
+  };
+}
+
+export function onLoopActivity(callback: (event: LoopActivityEvent) => void): () => void {
+  if (!isTauri()) return () => {};
+  const { listen } = require('@tauri-apps/api/event');
+  let unlisten: (() => void) | null = null;
+  listen('loop-activity', (event: { payload: LoopActivityEvent }) => {
+    callback(event.payload);
+  }).then((fn: () => void) => {
+    unlisten = fn;
+  });
+  return () => { if (unlisten) unlisten(); };
+}
+
+export function onToolCallStart(callback: (event: ToolCallEvent) => void): () => void {
+  if (!isTauri()) return () => {};
+  const { listen } = require('@tauri-apps/api/event');
+  let unlisten: (() => void) | null = null;
+  listen('tool-call-start', (event: { payload: ToolCallEvent }) => {
+    callback(event.payload);
+  }).then((fn: () => void) => {
+    unlisten = fn;
+  });
+  return () => { if (unlisten) unlisten(); };
+}
+
+export function onToolCallEnd(callback: (event: ToolCallEvent) => void): () => void {
+  if (!isTauri()) return () => {};
+  const { listen } = require('@tauri-apps/api/event');
+  let unlisten: (() => void) | null = null;
+  listen('tool-call-end', (event: { payload: ToolCallEvent }) => {
+    callback(event.payload);
+  }).then((fn: () => void) => {
+    unlisten = fn;
+  });
+  return () => { if (unlisten) unlisten(); };
+}
+
+export async function listSshConnections(): Promise<Array<{ host: string; user: string; port: number; last_connected_at?: string }>> {
+  return invoke('list_ssh_connections');
+}
+
+export async function saveSshConnection(host: string, user: string, port?: number): Promise<void> {
+  return invoke('save_ssh_connection', { host, user, port });
+}
+
+export async function exportBackup(outputPath: string): Promise<void> {
+  return invoke('export_backup', { outputPath });
 }

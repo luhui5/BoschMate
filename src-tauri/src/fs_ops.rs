@@ -87,7 +87,7 @@ pub fn read_file(root: &Path, rel_path: &str, offset: Option<usize>, limit: Opti
 /// Write file content
 pub fn write_file(root: &Path, rel_path: &str, content: &str) -> Result<String, String> {
     crate::path_guard::reject_protected_path(rel_path)?;
-    let safe_path = sanitize_path(root, rel_path)?;
+    let safe_path = resolve_under_root(root, rel_path)?;
     // Create parent dirs if needed
     if let Some(parent) = safe_path.parent() {
         fs::create_dir_all(parent).map_err(|e| format!("Failed to create dirs: {}", e))?;
@@ -208,9 +208,50 @@ pub fn grep_search(
 
 // ── Helpers ──
 
+/// Resolve `rel_path` under `root`, rejecting traversal escapes. Does not require the target to exist.
+fn resolve_under_root(root: &Path, rel_path: &str) -> Result<PathBuf, String> {
+    let rel = Path::new(rel_path);
+    if rel.is_absolute() {
+        return Err(format!("Access denied: absolute path '{}'", rel_path));
+    }
+
+    let canonical_root = root
+        .canonicalize()
+        .map_err(|e| format!("Root not found: {}", e))?;
+
+    let mut resolved = canonical_root.clone();
+    for component in rel.components() {
+        match component {
+            std::path::Component::Normal(part) => resolved.push(part),
+            std::path::Component::ParentDir => {
+                if resolved == canonical_root {
+                    return Err(format!(
+                        "Access denied: path '{}' is outside the project directory",
+                        rel_path
+                    ));
+                }
+                resolved.pop();
+            }
+            std::path::Component::CurDir => {}
+            _ => {
+                return Err(format!("Invalid path component in '{}'", rel_path));
+            }
+        }
+    }
+
+    if !resolved.starts_with(&canonical_root) {
+        return Err(format!(
+            "Access denied: path '{}' is outside the project directory",
+            rel_path
+        ));
+    }
+
+    Ok(resolved)
+}
+
 /// Sanitize a path relative to the project root. Prevents path traversal attacks.
 fn sanitize_path(root: &Path, rel_path: &str) -> Result<PathBuf, String> {
-    let resolved = root.join(rel_path);
+    let resolved = resolve_under_root(root, rel_path)?;
     let canonical = resolved
         .canonicalize()
         .map_err(|e| format!("Path not found: {}", e))?;
@@ -247,5 +288,14 @@ mod tests {
         let root = Path::new("/tmp/test-project");
         let result = sanitize_path(root, "../etc/passwd");
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_resolve_under_root_allows_new_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let target = resolve_under_root(root, "new_file.py").unwrap();
+        assert_eq!(target, root.join("new_file.py"));
+        assert!(!target.exists());
     }
 }

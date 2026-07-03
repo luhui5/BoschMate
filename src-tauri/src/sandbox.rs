@@ -3,7 +3,7 @@ use std::os::unix::process::ChildExt;
 
 use regex::Regex;
 use std::path::PathBuf;
-use std::process::{Command, Stdio};
+use std::process::Command;
 use std::sync::OnceLock;
 
 // ── Dangerous command patterns ──
@@ -57,7 +57,9 @@ pub struct SandboxConfig {
     pub project_root: PathBuf,
     pub allowed_dirs: Vec<PathBuf>,
     pub allow_network: bool,
+    #[allow(dead_code)]
     pub network_whitelist: Vec<String>, // e.g. ["*.npmjs.org", "*.github.com"]
+    #[allow(dead_code)]
     pub timeout_ms: u64,
     pub max_output_bytes: usize,
 }
@@ -85,6 +87,7 @@ pub fn execute_sandboxed(
     dry_run: bool,
     audit_id: Option<&str>,
 ) -> Result<SandboxResult, String> {
+    let _ = audit_id;
     // 1. Check for dangerous patterns
     if let Some(reason) = check_dangerous(command) {
         if dry_run {
