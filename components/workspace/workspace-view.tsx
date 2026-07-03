@@ -20,7 +20,8 @@ import { Badge } from "@/components/ui/badge"
 import { useApp } from "@/components/app-provider"
 import { LeftSidebar } from "@/components/workspace/left-sidebar"
 import { RightSidebar } from "@/components/workspace/right-sidebar"
-import { ChatMessageView, findLastUserIndex } from "@/components/workspace/chat-message"
+import { ChatMessageView, getReplyLayoutState } from "@/components/workspace/chat-message"
+import { useFloatingUserMessage } from "@/components/workspace/use-floating-user-message"
 import { ChatInput } from "@/components/workspace/chat-input"
 import { FilePreviewPanel } from "@/components/file-preview-panel"
 import { BulkWriteDialog } from "@/components/bulk-write-dialog"
@@ -140,6 +141,49 @@ export function WorkspaceView({ projectId }: { projectId: string }) {
   const [projectNotes, setProjectNotes] = useState(mockNotes)
 
   const scrollRef = useRef<HTMLDivElement>(null)
+  const userScrolledUpRef = useRef(false)
+  const prevPinnedRef = useRef(false)
+  const prevMsgCountRef = useRef(0)
+
+  const activeSession = sessions.find((s) => s.id === activeSessionId) ?? null
+
+  const chatLayout = useMemo(() => {
+    const empty = {
+      usePinned: false,
+      pinnedUser: null as ChatMessage | null,
+      history: [] as ChatMessage[],
+      currentTurn: [] as ChatMessage[],
+      allMessages: [] as ChatMessage[],
+    }
+    if (!activeSession) return empty
+    const msgs = activeSession.messages
+    const { lastUserIdx, awaitingReply, afterUser } = getReplyLayoutState(
+      msgs,
+      thinking,
+      generating,
+    )
+    const usePinned = awaitingReply && lastUserIdx >= 0
+    return {
+      usePinned,
+      pinnedUser: usePinned ? msgs[lastUserIdx] : null,
+      history: usePinned ? msgs.slice(0, lastUserIdx) : [],
+      currentTurn: usePinned ? afterUser : [],
+      allMessages: msgs,
+    }
+  }, [activeSession, thinking, generating])
+
+  const scrollMessages = useMemo(() => {
+    if (!activeSession) return [] as ChatMessage[]
+    if (chatLayout.usePinned && chatLayout.pinnedUser) {
+      return [...chatLayout.history, chatLayout.pinnedUser, ...chatLayout.currentTurn]
+    }
+    return chatLayout.allMessages
+  }, [activeSession, chatLayout])
+
+  const { floatingMessage, registerUserMessageRef } = useFloatingUserMessage(
+    scrollRef,
+    scrollMessages,
+  )
 
   const refreshModels = useCallback(() => {
     loadModels()
@@ -158,8 +202,6 @@ export function WorkspaceView({ projectId }: { projectId: string }) {
     window.addEventListener("focus", refreshModels)
     return () => window.removeEventListener("focus", refreshModels)
   }, [refreshModels])
-
-  const activeSession = sessions.find((s) => s.id === activeSessionId) ?? null
 
   const changes = useMemo(() => {
     if (!activeSession) return []
@@ -281,8 +323,39 @@ export function WorkspaceView({ projectId }: { projectId: string }) {
   }, [project, refreshFileTree, refreshGit])
 
   useEffect(() => {
-    scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" })
-  }, [activeSession?.messages.length, thinking])
+    const container = scrollRef.current
+    if (!container) return
+    const onScroll = () => {
+      const distanceFromBottom =
+        container.scrollHeight - container.scrollTop - container.clientHeight
+      userScrolledUpRef.current = distanceFromBottom > 96
+    }
+    container.addEventListener("scroll", onScroll, { passive: true })
+    return () => container.removeEventListener("scroll", onScroll)
+  }, [])
+
+  useEffect(() => {
+    const container = scrollRef.current
+    if (!container || !activeSession) return
+
+    const justPinned = chatLayout.usePinned && !prevPinnedRef.current
+    const msgCount = activeSession.messages.length
+    const newTurn = msgCount > prevMsgCountRef.current
+    prevPinnedRef.current = chatLayout.usePinned
+    prevMsgCountRef.current = msgCount
+
+    if (justPinned || (newTurn && chatLayout.usePinned)) {
+      userScrolledUpRef.current = false
+    }
+
+    requestAnimationFrame(() => {
+      if (userScrolledUpRef.current && !justPinned) return
+      container.scrollTo({
+        top: container.scrollHeight,
+        behavior: justPinned ? "instant" : "smooth",
+      })
+    })
+  }, [activeSession?.messages, thinking, generating, chatLayout.usePinned])
 
   useEffect(() => {
     if (!toast) return
@@ -972,129 +1045,85 @@ export function WorkspaceView({ projectId }: { projectId: string }) {
             </div>
           )}
 
-          <div ref={scrollRef} className="flex-1 overflow-auto scrollbar-thin">
-            {!activeSession || activeSession.messages.length === 0 ? (
-              <div className="flex h-full flex-col items-center justify-center gap-4 px-6 text-center">
-                <span className="flex size-12 items-center justify-center rounded-xl bg-primary text-primary-foreground font-mono text-lg font-bold">
-                  {"</>"}
-                </span>
-                <div>
-                  <p className="text-sm font-medium">开始与 BoschCode 协作</p>
-                  <p className="mt-1 max-w-sm text-xs text-muted-foreground">
-                    描述你的需求，Agent 会检索项目上下文与长期记忆，按当前模式理解、计划、执行并验证。
-                  </p>
-                </div>
-                <div className="flex flex-wrap justify-center gap-2">
-                  {["解释这个项目的架构", "修复登录的会话过期问题", "为压缩器补充单元测试"].map((s) => (
-                    <button
-                      key={s}
-                      type="button"
-                      onClick={() => send(s)}
-                      className="rounded-full border border-border px-3 py-1.5 text-xs text-muted-foreground transition-colors hover:border-primary/40 hover:text-foreground"
-                    >
-                      {s}
-                    </button>
-                  ))}
+          <div className="relative flex min-h-0 flex-1 flex-col">
+            {floatingMessage && activeSession && activeSession.messages.length > 0 && (
+              <div className="pointer-events-none absolute inset-x-0 top-0 z-20 border-b border-border bg-background/95 px-4 py-2 shadow-sm backdrop-blur supports-[backdrop-filter]:bg-background/85">
+                <div className="pointer-events-auto w-full">
+                  <ChatMessageView
+                    message={floatingMessage}
+                    variant="float"
+                    onDiffAction={onDiffAction}
+                    onOpenFile={openFile}
+                  />
                 </div>
               </div>
-            ) : (
-              (() => {
-                const msgs = activeSession.messages
-                const lastUserIdx = findLastUserIndex(msgs)
-                const afterUser = lastUserIdx >= 0 ? msgs.slice(lastUserIdx + 1) : []
-                const awaitingReply =
-                  lastUserIdx >= 0 &&
-                  (afterUser.length === 0 ||
-                    afterUser.some((m) => m.role === "assistant" && m.streaming) ||
-                    thinking ||
-                    generating)
-                const usePinnedLayout = awaitingReply && lastUserIdx >= 0
+            )}
 
-                if (!usePinnedLayout) {
-                  return (
-                    <div className="mx-auto flex max-w-3xl flex-col gap-6 p-4 pb-8">
-                      {msgs.map((m) => (
-                        <ChatMessageView
-                          key={m.id}
-                          message={m}
-                          variant={m.role === "user" ? "user-query" : "default"}
-                          onDiffAction={onDiffAction}
-                          onOpenFile={openFile}
-                        />
-                      ))}
-                      {thinking &&
-                        !msgs.some((m) => m.role === "assistant" && m.streaming) && (
-                          <div className="flex items-center gap-2 text-sm text-muted-foreground">
-                            <span className="flex size-7 items-center justify-center rounded-md bg-primary text-primary-foreground font-mono text-xs font-bold">
-                              {"</>"}
-                            </span>
-                            <span className="flex gap-1">
-                              <span className="size-1.5 animate-bounce rounded-full bg-muted-foreground [animation-delay:-0.3s]" />
-                              <span className="size-1.5 animate-bounce rounded-full bg-muted-foreground [animation-delay:-0.15s]" />
-                              <span className="size-1.5 animate-bounce rounded-full bg-muted-foreground" />
-                            </span>
-                          </div>
-                        )}
-                    </div>
-                  )
-                }
-
-                const history = msgs.slice(0, lastUserIdx)
-                const pinnedUser = msgs[lastUserIdx]
-                const currentTurn = afterUser
-
-                return (
-                  <div className="mx-auto flex max-w-3xl flex-col p-4 pb-8">
-                    {history.length > 0 && (
-                      <div className="mb-6 flex flex-col gap-6">
-                        {history.map((m) => (
-                          <ChatMessageView
-                            key={m.id}
-                            message={m}
-                            variant={m.role === "user" ? "user-query" : "default"}
-                            onDiffAction={onDiffAction}
-                            onOpenFile={openFile}
-                          />
-                        ))}
-                      </div>
-                    )}
-
-                    <div className="sticky top-0 z-10 -mx-4 border-b border-border bg-background/95 px-4 py-3 backdrop-blur supports-[backdrop-filter]:bg-background/80">
+            <div ref={scrollRef} className="flex-1 overflow-y-auto scrollbar-thin">
+              {!activeSession || activeSession.messages.length === 0 ? (
+                <div className="flex h-full flex-col items-start justify-center gap-4 px-6 text-left">
+                  <span className="flex size-12 items-center justify-center rounded-xl bg-primary text-primary-foreground font-mono text-lg font-bold">
+                    {"</>"}
+                  </span>
+                  <div>
+                    <p className="text-sm font-medium">开始与 BoschCode 协作</p>
+                    <p className="mt-1 max-w-sm text-xs text-muted-foreground">
+                      描述你的需求，Agent 会检索项目上下文与长期记忆，按当前模式理解、计划、执行并验证。
+                    </p>
+                  </div>
+                  <div className="flex flex-wrap justify-center gap-2">
+                    {["解释这个项目的架构", "修复登录的会话过期问题", "为压缩器补充单元测试"].map((s) => (
+                      <button
+                        key={s}
+                        type="button"
+                        onClick={() => send(s)}
+                        className="rounded-full border border-border px-3 py-1.5 text-xs text-muted-foreground transition-colors hover:border-primary/40 hover:text-foreground"
+                      >
+                        {s}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              ) : (
+                <div className="flex w-full flex-col gap-6 px-4 pb-8 pt-4 text-left">
+                  {scrollMessages.map((m) => {
+                    const view = (
                       <ChatMessageView
-                        message={pinnedUser}
-                        variant="pinned"
+                        message={m}
+                        variant={m.role === "user" ? "user-query" : "default"}
                         onDiffAction={onDiffAction}
                         onOpenFile={openFile}
                       />
-                    </div>
-
-                    <div className="mt-4 flex flex-col gap-4">
-                      {currentTurn.map((m) => (
-                        <ChatMessageView
+                    )
+                    if (m.role === "user") {
+                      return (
+                        <div
                           key={m.id}
-                          message={m}
-                          onDiffAction={onDiffAction}
-                          onOpenFile={openFile}
-                        />
-                      ))}
-                      {thinking &&
-                        !currentTurn.some((m) => m.role === "assistant" && m.streaming) && (
-                          <div className="flex items-center gap-2 text-sm text-muted-foreground">
-                            <span className="flex size-7 items-center justify-center rounded-md bg-primary text-primary-foreground font-mono text-xs font-bold">
-                              {"</>"}
-                            </span>
-                            <span className="flex gap-1">
-                              <span className="size-1.5 animate-bounce rounded-full bg-muted-foreground [animation-delay:-0.3s]" />
-                              <span className="size-1.5 animate-bounce rounded-full bg-muted-foreground [animation-delay:-0.15s]" />
-                              <span className="size-1.5 animate-bounce rounded-full bg-muted-foreground" />
-                            </span>
-                          </div>
-                        )}
-                    </div>
-                  </div>
-                )
-              })()
-            )}
+                          ref={(el) => registerUserMessageRef(m.id, el)}
+                          className="scroll-mt-2"
+                        >
+                          {view}
+                        </div>
+                      )
+                    }
+                    return <div key={m.id}>{view}</div>
+                  })}
+                  {thinking &&
+                    !scrollMessages.some((m) => m.role === "assistant" && m.streaming) && (
+                      <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                        <span className="flex size-7 items-center justify-center rounded-md bg-primary text-primary-foreground font-mono text-xs font-bold">
+                          {"</>"}
+                        </span>
+                        <span className="flex gap-1">
+                          <span className="size-1.5 animate-bounce rounded-full bg-muted-foreground [animation-delay:-0.3s]" />
+                          <span className="size-1.5 animate-bounce rounded-full bg-muted-foreground [animation-delay:-0.15s]" />
+                          <span className="size-1.5 animate-bounce rounded-full bg-muted-foreground" />
+                        </span>
+                      </div>
+                    )}
+                </div>
+              )}
+            </div>
           </div>
 
           <ChatInput

@@ -4,6 +4,7 @@ import { useEffect, useState } from "react"
 import { Minus, Square, X } from "lucide-react"
 import { useApp } from "@/components/app-provider"
 import { BoschLogo } from "@/components/bosch-logo"
+import { BOSCH_GRADIENT } from "@/lib/bosch-brand"
 
 export function TitleBar() {
   const { resolvedTheme } = useApp()
@@ -53,9 +54,7 @@ export function TitleBar() {
       {/* Bosch gradient strip */}
       <div
         className="h-[2px] w-full"
-        style={{
-          background: "linear-gradient(to right, #8B0000, #DC143C, #800080, #00008B, #4169E1, #006400, #2E8B57)",
-        }}
+        style={{ background: BOSCH_GRADIENT }}
       />
 
       {/* Title bar */}

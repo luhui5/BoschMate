@@ -229,3 +229,19 @@
     background-color: var(--border);
   }
 }
+
+@keyframes bosch-border-rotate {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.bosch-border-spin-layer {
+  animation: bosch-border-rotate 3s linear infinite;
+  animation-play-state: paused;
+}
+
+.group:hover .bosch-border-spin-layer,
+.group:focus-within .bosch-border-spin-layer {
+  animation-play-state: running;
+}

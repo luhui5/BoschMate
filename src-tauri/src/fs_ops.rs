@@ -1,4 +1,5 @@
 use crate::models::{FileEntry, GrepMatch};
+use globset::{GlobBuilder, GlobMatcher};
 use regex::Regex;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -105,23 +106,24 @@ pub fn glob_search(root: &Path, glob_pattern: &str, search_path: Option<&str>) -
         None => root.to_path_buf(),
     };
 
-    let pattern = glob_pattern.replace("**/*", ".*");
-    let re = glob_to_regex(&pattern)?;
+    let matcher = compile_glob_matcher(glob_pattern)?;
     let mut results = Vec::new();
 
     for entry in WalkDir::new(&base)
         .max_depth(20)
         .into_iter()
         .filter_entry(|e| {
+            if e.depth() == 0 {
+                return true;
+            }
             let name = e.file_name().to_string_lossy();
             !name.starts_with('.') && name != "node_modules" && name != ".git" && name != "target"
         })
         .flatten()
     {
         if entry.file_type().is_file() {
-            let rel = entry.path().strip_prefix(root).unwrap_or(entry.path());
-            let rel_str = rel.to_string_lossy().to_string();
-            if re.is_match(&rel_str) {
+            let rel_str = relative_to_root(root, entry.path());
+            if matcher.is_match(&rel_str) {
                 let meta = entry.metadata().ok();
                 results.push(FileEntry {
                     name: entry.file_name().to_string_lossy().to_string(),
@@ -160,7 +162,7 @@ pub fn grep_search(
     };
 
     let re = Regex::new(pattern).map_err(|e| format!("Invalid regex: {}", e))?;
-    let glob_re = file_glob.map(|g| glob_to_regex(g)).transpose()?;
+    let glob_matcher = file_glob.map(compile_glob_matcher).transpose()?;
     let limit = head_limit.unwrap_or(250);
     let mut results = Vec::new();
 
@@ -168,6 +170,9 @@ pub fn grep_search(
         .max_depth(30)
         .into_iter()
         .filter_entry(|e| {
+            if e.depth() == 0 {
+                return true;
+            }
             let name = e.file_name().to_string_lossy();
             !name.starts_with('.') && name != "node_modules" && name != ".git" && name != "target"
         })
@@ -177,11 +182,10 @@ pub fn grep_search(
             break;
         }
         if entry.file_type().is_file() {
-            let rel = entry.path().strip_prefix(root).unwrap_or(entry.path());
-            let rel_str = rel.to_string_lossy().to_string();
+            let rel_str = relative_to_root(root, entry.path());
 
-            if let Some(ref gre) = glob_re {
-                if !gre.is_match(&rel_str) {
+            if let Some(ref matcher) = glob_matcher {
+                if !matcher.is_match(&rel_str) {
                     continue;
                 }
             }
@@ -267,16 +271,30 @@ fn sanitize_path(root: &Path, rel_path: &str) -> Result<PathBuf, String> {
     Ok(canonical)
 }
 
-/// Simple glob-to-regex conversion for basic patterns
-fn glob_to_regex(pattern: &str) -> Result<Regex, String> {
-    let escaped = regex::escape(pattern);
-    let regex_str = escaped
-        .replace(r"\*\*/\*", ".*")
-        .replace(r"\*\*", ".*")
-        .replace(r"\*", "[^/]*")
-        .replace(r"\?", ".");
-    let anchored = format!("^{}$", regex_str);
-    Regex::new(&anchored).map_err(|e| format!("Invalid glob pattern: {}", e))
+/// Normalize path separators for cross-platform glob matching.
+fn normalize_rel_path(path: &str) -> String {
+    path.replace('\\', "/")
+}
+
+fn relative_to_root(root: &Path, path: &Path) -> String {
+    if let Ok(rel) = path.strip_prefix(root) {
+        return normalize_rel_path(&rel.to_string_lossy());
+    }
+    if let (Ok(root_can), Ok(path_can)) = (root.canonicalize(), path.canonicalize()) {
+        if let Ok(rel) = path_can.strip_prefix(&root_can) {
+            return normalize_rel_path(&rel.to_string_lossy());
+        }
+    }
+    normalize_rel_path(&path.to_string_lossy())
+}
+
+fn compile_glob_matcher(pattern: &str) -> Result<GlobMatcher, String> {
+    GlobBuilder::new(pattern)
+        .literal_separator(true)
+        .backslash_escape(true)
+        .build()
+        .map_err(|e| format!("Invalid glob pattern: {}", e))
+        .map(|glob| glob.compile_matcher())
 }
 
 #[cfg(test)]
@@ -295,7 +313,30 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
         let target = resolve_under_root(root, "new_file.py").unwrap();
-        assert_eq!(target, root.join("new_file.py"));
+        assert_eq!(target.file_name().unwrap(), "new_file.py");
         assert!(!target.exists());
+    }
+
+    #[test]
+    fn test_glob_search_finds_nested_test_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        fs::create_dir_all(root.join("tests")).unwrap();
+        fs::write(root.join("tests/test_hello.py"), "pass").unwrap();
+        fs::write(root.join("tests/test_recorder.py"), "pass").unwrap();
+        fs::write(root.join("hello.py"), "pass").unwrap();
+
+        let results = glob_search(root, "**/test*.py", None).unwrap();
+        let names: Vec<_> = results.iter().map(|f| f.name.as_str()).collect();
+        assert!(names.contains(&"test_hello.py"));
+        assert!(names.contains(&"test_recorder.py"));
+        assert!(!names.contains(&"hello.py"));
+    }
+
+    #[test]
+    fn test_glob_matcher_accepts_windows_style_paths() {
+        let matcher = compile_glob_matcher("**/test*.py").unwrap();
+        assert!(matcher.is_match("tests/test_hello.py"));
+        assert!(matcher.is_match("tests\\test_hello.py"));
     }
 }

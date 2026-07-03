@@ -24,9 +24,10 @@ import { applyProjectPins, toggleProjectPinned, clearProjectPin } from "@/lib/pr
 import { pickAndOpenLocalProject } from "@/lib/open-local-project"
 import { projectPath } from "@/lib/project-route"
 import { ASSISTANT_PROJECT_ID } from "@/lib/constants"
+import { isAssistantDefaultWorkspacePath } from "@/lib/assistant-workspace"
 
 function isCodingProject(p: Project): boolean {
-  return p.id !== ASSISTANT_PROJECT_ID
+  return p.id !== ASSISTANT_PROJECT_ID && !isAssistantDefaultWorkspacePath(p.localPath)
 }
 
 type LoadStatus = "loading" | "error" | "ready"
@@ -133,6 +134,11 @@ export function HomeView() {
   const handleDeleteProject = async (id: string) => {
     if (id === ASSISTANT_PROJECT_ID) {
       setDeleteError("Bosch Assistant 是内置助手，请从左侧栏进入，不能作为 Coding 项目移除。")
+      return
+    }
+    const target = projects.find((p) => p.id === id)
+    if (target && isAssistantDefaultWorkspacePath(target.localPath)) {
+      setDeleteError("Bosch Assistant 默认工作区不能作为 Coding 项目移除。")
       return
     }
     setDeleteError(null)

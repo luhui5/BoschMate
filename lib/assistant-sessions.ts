@@ -1,6 +1,8 @@
 import type { ThinkingDepth } from "@/lib/thinking-depth"
+import type { ActivityStep, AgentMode, DiffHunk } from "@/lib/types"
 import { DEFAULT_MODELS, resolveActiveModelId, resolveDefaultModelForNewSession } from "@/lib/models"
 import { ASSISTANT_PROJECT_ID } from "@/lib/constants"
+import { resolveDefaultAssistantWorkspace } from "@/lib/assistant-workspace"
 import {
   isTauri,
   createSession as tauriCreateSession,
@@ -14,6 +16,11 @@ export interface AssistantMessage {
   id: string
   role: "user" | "assistant"
   content: string
+  streaming?: boolean
+  activitySteps?: ActivityStep[]
+  diffs?: DiffHunk[]
+  mode?: AgentMode
+  createdAt?: string
 }
 
 export interface AssistantSession {
@@ -90,10 +97,17 @@ export async function createPersistedSession(
       title: overrides.title ?? "新对话",
       mode: "ask",
     })
+    const folder =
+      overrides.folder !== undefined
+        ? overrides.folder
+        : await resolveDefaultAssistantWorkspace()
+    if (folder) {
+      await saveSessionFolder(db.id, folder)
+    }
     return toAssistantSession(
       { id: db.id, title: db.title, updatedAt: db.updatedAt },
       model,
-      overrides.folder ?? null,
+      folder ?? null,
     )
   }
   return createSession({ ...overrides, model })
@@ -109,7 +123,11 @@ export async function loadPersistedSessions(): Promise<AssistantSession[]> {
   const sessions = await Promise.all(
     rows.map(async (s) => {
       const msgs = await tauriListMessages(s.id)
-      const folder = await loadSessionFolder(s.id)
+      let folder = await loadSessionFolder(s.id)
+      if (!folder) {
+        folder = await resolveDefaultAssistantWorkspace()
+        if (folder) await saveSessionFolder(s.id, folder)
+      }
       return toAssistantSession(
         {
           id: s.id,
@@ -119,6 +137,7 @@ export async function loadPersistedSessions(): Promise<AssistantSession[]> {
             id: m.id,
             role: m.role as "user" | "assistant",
             content: m.content,
+            createdAt: m.createdAt,
           })),
         },
         preferredModel,

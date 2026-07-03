@@ -50,7 +50,7 @@ fn push_thought(log: &ActivityLog, app: &AppHandle, session_id: &str, message_id
         kind: "thought".into(),
         round,
         label: "思考".into(),
-        detail: Some("分析问题、规划工具调用或整合上一轮结果。".into()),
+        detail: None,
         tool: None,
         args: None,
         status: "running".into(),
@@ -61,10 +61,20 @@ fn push_thought(log: &ActivityLog, app: &AppHandle, session_id: &str, message_id
     id
 }
 
-fn finish_thought(log: &ActivityLog, app: &AppHandle, session_id: &str, message_id: &str, thought_id: &str) {
+fn finish_thought(
+    log: &ActivityLog,
+    app: &AppHandle,
+    session_id: &str,
+    message_id: &str,
+    thought_id: &str,
+    content: &str,
+) {
     let mut steps = log.lock().unwrap();
     if let Some(step) = steps.iter_mut().find(|s| s.id == thought_id) {
         step.status = "success".into();
+        if !content.trim().is_empty() {
+            step.detail = Some(content.to_string());
+        }
         emit_activity(app, session_id, message_id, step);
     }
 }
@@ -259,12 +269,52 @@ pub fn get_tools() -> Vec<AiToolDef> {
             description: "Analyze what files would be affected by changing a symbol or file.".into(),
             parameters: serde_json::json!({"type":"object","properties":{"file_path":{"type":"string"},"symbol_name":{"type":"string"}},"required":["file_path"]}),
         },
+        AiToolDef {
+            name: "open".into(),
+            description: "Open a URL, application, file, or folder in the OS default or specified app. Use for 打开微信/浏览器/文件夹/文件/VS Code.".into(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "target": {"type": "string", "description": "URL, app name, exe path, or file/folder path (relative paths resolve under workspace)"},
+                    "kind": {"type": "string", "enum": ["auto", "url", "app", "file", "folder", "reveal"], "description": "Default: auto-detect"},
+                    "with": {"type": "string", "description": "Optional app id (e.g. code, firefox)"}
+                },
+                "required": ["target"]
+            }),
+        },
+        AiToolDef {
+            name: "open_vscode".into(),
+            description: "Open the workspace or a subfolder in Visual Studio Code (alias for open with VS Code).".into(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "Relative path under workspace (default: workspace root)"}
+                }
+            }),
+        },
     ]
 }
 
+const READONLY_TOOL_NAMES: &[&str] = &[
+    "read_file",
+    "grep",
+    "glob",
+    "list_directory",
+    "git_status",
+    "git_diff",
+    "git_log",
+    "list_symbols",
+    "find_references",
+    "file_deps",
+    "blast_radius",
+];
+
 /// Read-only tools for Plan mode (structured plan, no execution).
 pub fn get_plan_tools() -> Vec<AiToolDef> {
-    get_assistant_tools()
+    get_tools()
+        .into_iter()
+        .filter(|t| READONLY_TOOL_NAMES.contains(&t.name.as_str()))
+        .collect()
 }
 
 /// Write-capable tools excluded from plan mode.
@@ -273,27 +323,9 @@ pub fn get_write_tool_names() -> Vec<&'static str> {
     vec!["write_file", "edit_file", "bash", "git_commit"]
 }
 
-/// Read-only tools for Bosch Assistant (workspace bound).
-pub fn get_assistant_tools() -> Vec<AiToolDef> {
-    let read_only = [
-        "read_file",
-        "grep",
-        "glob",
-        "list_directory",
-        "git_status",
-        "git_diff",
-        "git_log",
-        "list_symbols",
-        "file_deps",
-    ];
-    get_tools()
-        .into_iter()
-        .filter(|t| read_only.contains(&t.name.as_str()))
-        .collect()
-}
-
 /// Execute a tool call and return the result
 pub async fn execute_tool(
+    app: &AppHandle,
     project_root: &PathBuf,
     tool_name: &str,
     args: &Value,
@@ -405,6 +437,22 @@ pub async fn execute_tool(
                 "Exit code: {}\nStdout:\n{}\nStderr:\n{}",
                 result.exit_code, result.stdout, result.stderr
             ))
+        }
+        "open" => {
+            let target = args["target"].as_str().ok_or("target required")?;
+            let kind = crate::os_open::parse_open_kind(args["kind"].as_str());
+            let with_app = args["with"].as_str();
+            crate::os_open::open_target(
+                app,
+                target,
+                kind,
+                with_app,
+                Some(project_root.as_path()),
+            )
+        }
+        "open_vscode" => {
+            let rel = args["path"].as_str().unwrap_or(".");
+            crate::os_open::open_vscode_workspace(app, project_root.as_path(), rel)
         }
         "git_status" => {
             let status = git_ops::get_status(project_root.as_path())?;
@@ -546,11 +594,25 @@ pub async fn run_loop(
         last_response = Some(response.clone());
 
         if response.finish_reason == "cancelled" {
-            finish_thought(&activity_log, &app, &session_id, &message_id, &thought_id);
+            finish_thought(
+                &activity_log,
+                &app,
+                &session_id,
+                &message_id,
+                &thought_id,
+                &response.content,
+            );
             return Ok(finalize_response(response, &collector, &activity_log));
         }
 
-        finish_thought(&activity_log, &app, &session_id, &message_id, &thought_id);
+        finish_thought(
+            &activity_log,
+            &app,
+            &session_id,
+            &message_id,
+            &thought_id,
+            &response.content,
+        );
 
         // If AI returned tool calls, execute them
         if let Some(tool_calls) = &response.tool_calls {
@@ -599,7 +661,7 @@ pub async fn run_loop(
                     "args": tc.arguments,
                 }));
 
-                let result = execute_tool(&project_root, &tc.name, &tc.arguments, &config, &collector).await;
+                let result = execute_tool(&app, &project_root, &tc.name, &tc.arguments, &config, &collector).await;
                 let result_str = match &result {
                     Ok(output) => output.clone(),
                     Err(err) => format!("Error: {}", err),

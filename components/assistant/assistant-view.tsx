@@ -2,51 +2,40 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import {
-  ArrowUp,
-  Square,
-  Paperclip,
   BookUp,
   ChevronDown,
-  Plus,
-  PenLine,
-  FileText,
-  Languages,
-  BarChart3,
-  ListTodo,
   Code2,
-  Sparkles,
+  FileText,
   Folder,
   FolderOpen,
+  Languages,
+  ListTodo,
+  PenLine,
+  Sparkles,
+  BarChart3,
   X,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { Button } from "@/components/ui/button"
 import { BoschLogo } from "@/components/bosch-logo"
-import { ThinkingDepthSelect } from "@/components/thinking-depth-select"
-import type { ThinkingDepth } from "@/lib/thinking-depth"
-
-function TypingDots() {
-  return (
-    <span className="inline-flex items-center gap-1 py-0.5">
-      <span className="size-1.5 animate-bounce rounded-full bg-muted-foreground [animation-delay:-0.3s]" />
-      <span className="size-1.5 animate-bounce rounded-full bg-muted-foreground [animation-delay:-0.15s]" />
-      <span className="size-1.5 animate-bounce rounded-full bg-muted-foreground" />
-    </span>
-  )
-}
 import { SessionSidebar } from "@/components/assistant/session-sidebar"
 import { FolderPicker } from "@/components/assistant/folder-picker"
 import {
   SEED_SESSIONS,
-  createSession,
   createPersistedSession,
   loadPersistedSessions,
   deriveTitle,
   saveSessionFolder,
   type AssistantSession,
+  type AssistantMessage,
 } from "@/lib/assistant-sessions"
 import { buildAssistantSystemPrompt } from "@/lib/assistant-prompt"
 import { ensureProjectForFolder } from "@/lib/assistant-project"
+import {
+  resolveAssistantFolder,
+  resolveDefaultAssistantWorkspace,
+  shortFolderLabel,
+} from "@/lib/assistant-workspace"
 import {
   loadModels,
   findModel,
@@ -56,10 +45,28 @@ import {
   resolveActiveModelId,
   type ModelConfig,
 } from "@/lib/models"
-import { streamChat, aiLoopChat, sendMessage as tauriSendMessage, deleteSession as tauriDeleteSession, cancelChat, isTauri, onChatToken, type AiChatRequest } from "@/lib/tauri-api"
+import {
+  streamChat,
+  aiLoopChat,
+  sendMessage as tauriSendMessage,
+  deleteSession as tauriDeleteSession,
+  cancelChat,
+  applyChange,
+  rejectChange,
+  revertChange,
+  isTauri,
+  onChatToken,
+  onLoopActivity,
+  mapActivityStep,
+  type AiChatRequest,
+} from "@/lib/tauri-api"
 import { isChatCancelled } from "@/lib/chat-cancel"
 import { parseLlmError } from "@/lib/llm-error"
 import { LlmErrorCard } from "@/components/llm-error-card"
+import { ChatInput } from "@/components/workspace/chat-input"
+import { ChatMessageView, getReplyLayoutState } from "@/components/workspace/chat-message"
+import { useFloatingUserMessage } from "@/components/workspace/use-floating-user-message"
+import type { ActivityStep, AgentMode, ChatMessage } from "@/lib/types"
 
 interface Suggestion {
   icon: React.ComponentType<{ className?: string }>
@@ -107,6 +114,40 @@ const SUGGESTIONS: Suggestion[] = [
   },
 ]
 
+function upsertActivityStep(steps: ActivityStep[], step: ActivityStep): ActivityStep[] {
+  const i = steps.findIndex((s) => s.id === step.id)
+  if (i >= 0) {
+    const next = [...steps]
+    next[i] = step
+    return next
+  }
+  return [...steps, step]
+}
+
+function toChatMessage(m: AssistantMessage): ChatMessage {
+  return {
+    id: m.id,
+    role: m.role,
+    content: m.content,
+    createdAt: m.createdAt ?? new Date().toISOString(),
+    mode: m.mode ?? "auto",
+    streaming: m.streaming,
+    activitySteps: m.activitySteps,
+    diffs: m.diffs,
+  }
+}
+
+function finalizeCancelledMessage(m: AssistantMessage): AssistantMessage {
+  return {
+    ...m,
+    streaming: false,
+    content: m.content.trim() || "（已中止）",
+    activitySteps: m.activitySteps?.map((s) =>
+      s.status === "running" ? { ...s, status: "error" as const, result: "已中止" } : s,
+    ),
+  }
+}
+
 export function AssistantView({
   knowledgeCount,
   onOpenKnowledge,
@@ -118,7 +159,6 @@ export function AssistantView({
   const [activeId, setActiveId] = useState<string>("")
   const didInit = useRef(false)
 
-  // One-time init: restore from DB or create a persisted session
   useEffect(() => {
     if (!didInit.current) {
       didInit.current = true
@@ -132,7 +172,7 @@ export function AssistantView({
               return
             }
           } catch {
-            /* fall through to new session */
+            /* fall through */
           }
         }
         const fresh = await createPersistedSession()
@@ -142,57 +182,88 @@ export function AssistantView({
     }
   }, [])
 
-  const [input, setInput] = useState("")
-  const [thinking, setThinking] = useState(false)
+  const [generating, setGenerating] = useState(false)
   const generatingSessionRef = useRef<string | null>(null)
   const stopRequestedRef = useRef(false)
   const activeAssistantMsgRef = useRef<string | null>(null)
   const [llmError, setLlmError] = useState<ReturnType<typeof parseLlmError> | null>(null)
-  const [modelOpen, setModelOpen] = useState(false)
+  const [mode, setMode] = useState<AgentMode>("auto")
   const [folderOpen, setFolderOpen] = useState(false)
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
+  const [toast, setToast] = useState<string | null>(null)
   const scrollRef = useRef<HTMLDivElement>(null)
-  const textareaRef = useRef<HTMLTextAreaElement>(null)
+  const userScrolledUpRef = useRef(false)
+  const prevPinnedRef = useRef(false)
+  const prevMsgCountRef = useRef(0)
 
-  // ── Model list (shared source of truth) ──
   const [availableModels, setAvailableModels] = useState<ModelConfig[]>([])
 
   const refreshModels = useCallback(() => {
-    loadModels().then(async (models) => {
-      setAvailableModels(models)
-      if (models.length === 0 || !activeId) return
-      const preferred = await resolveActiveModelId(models)
-      setSessions((prev) =>
-        prev.map((s) => {
-          if (s.id !== activeId) return s
-          const valid = models.some((m) => m.id === s.model)
-          return valid ? s : { ...s, model: preferred }
-        }),
-      )
-    }).catch(() => {})
+    loadModels()
+      .then(async (models) => {
+        setAvailableModels(models)
+        if (models.length === 0 || !activeId) return
+        const preferred = await resolveActiveModelId(models)
+        setSessions((prev) =>
+          prev.map((s) => {
+            if (s.id !== activeId) return s
+            const valid = models.some((m) => m.id === s.model)
+            return valid ? s : { ...s, model: preferred }
+          }),
+        )
+      })
+      .catch(() => {})
   }, [activeId])
 
   useEffect(() => {
     refreshModels()
-  }, [refreshModels])
-
-  // Re-sync on window focus (user may have changed models in settings)
-  useEffect(() => {
     window.addEventListener("focus", refreshModels)
     return () => window.removeEventListener("focus", refreshModels)
   }, [refreshModels])
+
+  useEffect(() => {
+    if (!toast) return
+    const t = setTimeout(() => setToast(null), 2500)
+    return () => clearTimeout(t)
+  }, [toast])
 
   const active = useMemo(
     () => sessions.find((s) => s.id === activeId) ?? sessions[0],
     [sessions, activeId],
   )
-  const messages = active?.messages ?? []
-  const hasChat = messages.length > 0
+  const chatMessages = useMemo(
+    () => (active?.messages ?? []).map(toChatMessage),
+    [active?.messages],
+  )
+  const hasChat = chatMessages.length > 0
+
+  const chatLayout = useMemo(() => {
+    const msgs = chatMessages
+    const { lastUserIdx, awaitingReply, afterUser } = getReplyLayoutState(msgs, false, generating)
+    const usePinned = awaitingReply && lastUserIdx >= 0
+    return {
+      usePinned,
+      pinnedUser: usePinned ? msgs[lastUserIdx] : null,
+      history: usePinned ? msgs.slice(0, lastUserIdx) : [],
+      currentTurn: usePinned ? afterUser : [],
+      allMessages: msgs,
+    }
+  }, [chatMessages, generating])
+
+  const scrollMessages = useMemo(() => {
+    if (chatLayout.usePinned && chatLayout.pinnedUser) {
+      return [...chatLayout.history, chatLayout.pinnedUser, ...chatLayout.currentTurn]
+    }
+    return chatLayout.allMessages
+  }, [chatLayout])
+
+  const { floatingMessage, registerUserMessageRef } = useFloatingUserMessage(
+    scrollRef,
+    scrollMessages,
+  )
 
   const patchActive = (patch: Partial<AssistantSession>) => {
-    if (patch.model) {
-      void saveLastUsedModelId(patch.model)
-    }
+    if (patch.model) void saveLastUsedModelId(patch.model)
     if ("folder" in patch && activeId) {
       void saveSessionFolder(activeId, patch.folder ?? null)
     }
@@ -203,18 +274,59 @@ export function AssistantView({
     )
   }
 
+  const updateActiveMessages = (fn: (msgs: AssistantMessage[]) => AssistantMessage[]) => {
+    setSessions((prev) =>
+      prev.map((s) =>
+        s.id === activeId
+          ? { ...s, messages: fn(s.messages), updatedAt: new Date().toISOString() }
+          : s,
+      ),
+    )
+  }
+
   useEffect(() => {
-    scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" })
-  }, [messages, thinking])
+    const container = scrollRef.current
+    if (!container) return
+    const onScroll = () => {
+      const distanceFromBottom =
+        container.scrollHeight - container.scrollTop - container.clientHeight
+      userScrolledUpRef.current = distanceFromBottom > 96
+    }
+    container.addEventListener("scroll", onScroll, { passive: true })
+    return () => container.removeEventListener("scroll", onScroll)
+  }, [])
+
+  useEffect(() => {
+    const container = scrollRef.current
+    if (!container || !active) return
+
+    const justPinned = chatLayout.usePinned && !prevPinnedRef.current
+    const msgCount = active.messages.length
+    const newTurn = msgCount > prevMsgCountRef.current
+    prevPinnedRef.current = chatLayout.usePinned
+    prevMsgCountRef.current = msgCount
+
+    if (justPinned || (newTurn && chatLayout.usePinned)) {
+      userScrolledUpRef.current = false
+    }
+
+    requestAnimationFrame(() => {
+      if (userScrolledUpRef.current && !justPinned) return
+      container.scrollTo({
+        top: container.scrollHeight,
+        behavior: justPinned ? "instant" : "smooth",
+      })
+    })
+  }, [active?.messages, generating, chatLayout.usePinned, active])
 
   const newSession = () => {
     void (async () => {
+      const defaultFolder = await resolveDefaultAssistantWorkspace()
       const fresh = await createPersistedSession({
-        folder: active?.folder ?? null,
+        folder: active?.folder ?? defaultFolder,
       })
       setSessions((prev) => [fresh, ...prev])
       setActiveId(fresh.id)
-      setInput("")
     })()
   }
 
@@ -249,12 +361,17 @@ export function AssistantView({
     })()
   }
 
-  // ── Real AI send ──
-  const send = async (text: string) => {
+  const send = async (text: string, _imageDataUrl?: string) => {
     const content = text.trim()
-    if (!content || thinking || !active) return
+    if (!content || generating || !active) return
 
-    const userMsg = { id: `u-${Date.now()}`, role: "user" as const, content }
+    const userMsg: AssistantMessage = {
+      id: `u-${Date.now()}`,
+      role: "user",
+      content,
+      mode,
+      createdAt: new Date().toISOString(),
+    }
     const isFirst = active.messages.length === 0
 
     setSessions((prev) =>
@@ -269,53 +386,43 @@ export function AssistantView({
           : s,
       ),
     )
-    setInput("")
-    setThinking(true)
+
+    setGenerating(true)
     generatingSessionRef.current = activeId
     stopRequestedRef.current = false
 
-    // Look up the model config
     const modelCfg = findModel(availableModels, active.model)
+
     if (!isTauri()) {
-      // Web browser mode: show template reply since there's no backend
       setTimeout(() => {
-        const fallback = `已收到你的请求：「${content.slice(0, 40)}${content.length > 40 ? "…" : ""}」。\n\n作为本地全能助手，我可以在不离开本机的前提下完成写作、文档总结、翻译、数据分析、计划制定与代码编写。请告诉我更多细节，或从知识库中选择相关文档，我会据此给出更精准的结果。${active.folder ? `\n\n（当前工作文件夹：${active.folder}，我会在该目录范围内读取与检索相关内容。）` : ""}`
-        setSessions((prev) =>
-          prev.map((s) =>
-            s.id === activeId
-              ? {
-                  ...s,
-                  messages: [
-                    ...s.messages,
-                    { id: `a-${Date.now()}`, role: "assistant" as const, content: fallback },
-                  ],
-                  updatedAt: new Date().toISOString(),
-                }
-              : s,
-          ),
-        )
-        setThinking(false)
+        const fallback = `已收到你的请求：「${content.slice(0, 40)}${content.length > 40 ? "…" : ""}」。\n\n（浏览器预览模式，请使用桌面应用获得完整 Assistant 能力）`
+        updateActiveMessages((msgs) => [
+          ...msgs,
+          {
+            id: `a-${Date.now()}`,
+            role: "assistant",
+            content: fallback,
+            createdAt: new Date().toISOString(),
+          },
+        ])
+        setGenerating(false)
+        generatingSessionRef.current = null
       }, 900)
       return
     }
 
     if (!modelCfg) {
-      const noModelMsg = "未选择模型。请先在输入框左侧的模型下拉菜单中选择一个可用的模型，或前往 设置 → 模型配置 添加新模型。"
-      setSessions((prev) =>
-        prev.map((s) =>
-          s.id === activeId
-            ? {
-                ...s,
-                messages: [
-                  ...s.messages,
-                  { id: `a-${Date.now()}`, role: "assistant" as const, content: noModelMsg },
-                ],
-                updatedAt: new Date().toISOString(),
-              }
-            : s,
-        ),
-      )
-      setThinking(false)
+      updateActiveMessages((msgs) => [
+        ...msgs,
+        {
+          id: `a-${Date.now()}`,
+          role: "assistant",
+          content: "未选择模型。请点击发送栏旁的模型选择，或前往 设置 → 模型配置 添加模型。",
+          createdAt: new Date().toISOString(),
+        },
+      ])
+      setGenerating(false)
+      generatingSessionRef.current = null
       return
     }
 
@@ -323,54 +430,56 @@ export function AssistantView({
     activeAssistantMsgRef.current = assistantMsgId
     setLlmError(null)
 
-    setSessions((prev) =>
-      prev.map((s) =>
-        s.id === activeId
-          ? {
-              ...s,
-              messages: [...s.messages, { id: assistantMsgId, role: "assistant" as const, content: "" }],
-            }
-          : s,
-      ),
-    )
+    const folder = await resolveAssistantFolder(active.folder)
+    const toolsEnabled = Boolean(folder)
 
-    const unlisten = onChatToken((e) => {
+    updateActiveMessages((msgs) => [
+      ...msgs,
+      {
+        id: assistantMsgId,
+        role: "assistant",
+        content: "",
+        streaming: true,
+        createdAt: new Date().toISOString(),
+      },
+    ])
+
+    const unlistenToken = onChatToken((e) => {
       if (e.session_id !== activeId) return
-      setSessions((prev) =>
-        prev.map((s) =>
-          s.id === activeId
-            ? {
-                ...s,
-                messages: s.messages.map((m) =>
-                  m.id === assistantMsgId ? { ...m, content: e.content } : m,
-                ),
-              }
-            : s,
+      updateActiveMessages((msgs) =>
+        msgs.map((m) =>
+          m.id === assistantMsgId ? { ...m, content: e.content, streaming: true } : m,
         ),
       )
     })
 
-    // Load API key if available
+    const unlistenActivity = toolsEnabled
+      ? onLoopActivity((e) => {
+          if (e.session_id !== activeId) return
+          const step = mapActivityStep(e.step)
+          updateActiveMessages((msgs) =>
+            msgs.map((m) =>
+              m.id === assistantMsgId
+                ? {
+                    ...m,
+                    activitySteps: upsertActivityStep(m.activitySteps ?? [], step),
+                  }
+                : m,
+            ),
+          )
+        })
+      : () => {}
+
     const apiKey = (await loadApiKey(modelCfg.id)) ?? undefined
-
-    // Build conversation history
-    const history = active.messages.map((m) => ({
-      role: m.role,
-      content: m.content,
-    }))
-
-    const folder = active.folder
-    const toolsEnabled = Boolean(folder && isTauri())
-    const system = buildAssistantSystemPrompt({ folder, toolsEnabled })
+    const history = active.messages.map((m) => ({ role: m.role, content: m.content }))
+    const system = buildAssistantSystemPrompt({ folder, toolsEnabled, mode })
 
     try {
-      if (isTauri()) {
-        await tauriSendMessage({
-          session_id: activeId,
-          content,
-          mode: "ask",
-        })
-      }
+      await tauriSendMessage({
+        session_id: activeId,
+        content,
+        mode,
+      })
 
       let response
       if (toolsEnabled && folder) {
@@ -384,6 +493,8 @@ export function AssistantView({
             api_key: apiKey,
             base_url: modelCfg.endpoint ?? undefined,
             assistant_mode: true,
+            agent_mode: mode,
+            edit_dry_run: mode === "edit",
           },
           activeId,
           projectId,
@@ -404,56 +515,41 @@ export function AssistantView({
 
       await recordModelUsage(modelCfg.id)
       if (stopRequestedRef.current) return
-      setSessions((prev) =>
-        prev.map((s) =>
-          s.id === activeId
-            ? {
-                ...s,
-                messages: s.messages.map((m) =>
-                  m.id === assistantMsgId
-                    ? { id: response.id, role: "assistant" as const, content: response.content }
-                    : m,
-                ),
-                updatedAt: new Date().toISOString(),
-              }
-            : s,
-        ),
+
+      updateActiveMessages((msgs) =>
+        msgs.map((m) => {
+          if (m.id !== assistantMsgId) return m
+          return {
+            id: response.id,
+            role: "assistant" as const,
+            content: response.content || m.content,
+            streaming: false,
+            mode: response.mode ?? mode,
+            diffs: response.diffs,
+            activitySteps:
+              response.activitySteps?.length
+                ? response.activitySteps
+                : m.activitySteps?.length
+                  ? m.activitySteps
+                  : response.activitySteps,
+            createdAt: m.createdAt,
+          }
+        }),
       )
     } catch (err) {
       if (isChatCancelled(err)) {
-        setSessions((prev) =>
-          prev.map((s) =>
-            s.id === activeId
-              ? {
-                  ...s,
-                  messages: s.messages.map((m) =>
-                    m.id === assistantMsgId
-                      ? { ...m, content: m.content.trim() || "（已中止）" }
-                      : m,
-                  ),
-                  updatedAt: new Date().toISOString(),
-                }
-              : s,
-          ),
+        updateActiveMessages((msgs) =>
+          msgs.map((m) => (m.id === assistantMsgId ? finalizeCancelledMessage(m) : m)),
         )
         return
       }
       const parsed = parseLlmError(err)
       setLlmError(parsed)
-      setSessions((prev) =>
-        prev.map((s) =>
-          s.id === activeId
-            ? {
-                ...s,
-                messages: s.messages.filter((m) => m.id !== assistantMsgId),
-                updatedAt: new Date().toISOString(),
-              }
-            : s,
-        ),
-      )
+      updateActiveMessages((msgs) => msgs.filter((m) => m.id !== assistantMsgId))
     } finally {
-      unlisten()
-      setThinking(false)
+      unlistenToken()
+      unlistenActivity()
+      setGenerating(false)
       generatingSessionRef.current = null
       activeAssistantMsgRef.current = null
     }
@@ -461,41 +557,79 @@ export function AssistantView({
 
   const stopGeneration = () => {
     const sessionId = generatingSessionRef.current
-    if (!sessionId || !thinking) return
+    if (!sessionId || !generating) return
     stopRequestedRef.current = true
     if (isTauri()) void cancelChat(sessionId).catch(() => {})
     const msgId = activeAssistantMsgRef.current
-    setSessions((prev) =>
-      prev.map((s) =>
-        s.id === sessionId
-          ? {
-              ...s,
-              messages: s.messages.map((m) =>
-                msgId && m.id === msgId
-                  ? { ...m, content: m.content.trim() || "（已中止）" }
-                  : m,
-              ),
-              updatedAt: new Date().toISOString(),
-            }
-          : s,
-      ),
+    updateActiveMessages((msgs) =>
+      msgs.map((m) => (msgId && m.id === msgId ? finalizeCancelledMessage(m) : m)),
     )
-    setThinking(false)
+    setGenerating(false)
     generatingSessionRef.current = null
   }
 
-  const onKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-    if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing && e.keyCode !== 229) {
-      e.preventDefault()
-      send(input)
+  const onQuickAction = (action: string) => {
+    if (action === "upload") {
+      setToast("请使用 + 菜单中的 Image，或粘贴图片到输入框")
+      return
+    }
+    if (action === "knowledge") {
+      onOpenKnowledge()
     }
   }
 
-  // Resolve current model display name
-  const currentModelName = useMemo(() => {
-    const cfg = findModel(availableModels, active?.model ?? "")
-    return cfg?.name ?? "选择模型"
-  }, [availableModels, active?.model])
+  const onDiffAction = async (
+    messageId: string,
+    diffIndex: number,
+    action: "accept" | "reject" | "revert",
+  ) => {
+    if (!active) return
+    const msg = active.messages.find((m) => m.id === messageId)
+    const diff = msg?.diffs?.[diffIndex]
+    if (!diff) return
+
+    const folder = await resolveAssistantFolder(active.folder)
+    if (!folder) return
+
+    const statusMap = { accept: "applied", reject: "rejected", revert: "reverted" } as const
+
+    try {
+      const projectId = await ensureProjectForFolder(folder)
+      if (action === "accept" && diff.editMeta && diff.changeId && isTauri()) {
+        await applyChange(projectId, {
+          change_id: diff.changeId,
+          path: diff.editMeta.path ?? diff.filePath,
+          old_string: diff.editMeta.old_string ?? "",
+          new_string: diff.editMeta.new_string ?? "",
+          replace_all: diff.editMeta.replace_all,
+        })
+      } else if (action === "reject" && diff.changeId && isTauri()) {
+        await rejectChange(diff.changeId)
+      } else if (action === "revert" && diff.changeId && isTauri()) {
+        await revertChange(projectId, diff.changeId)
+      }
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : String(err)
+      setToast(`操作失败：${reason}`)
+      return
+    }
+
+    updateActiveMessages((msgs) =>
+      msgs.map((m) =>
+        m.id === messageId
+          ? {
+              ...m,
+              diffs: m.diffs?.map((d, i) =>
+                i === diffIndex ? { ...d, status: statusMap[action] } : d,
+              ),
+            }
+          : m,
+      ),
+    )
+    setToast(action === "accept" ? "已采纳变更" : action === "reject" ? "已拒绝变更" : "已回滚变更")
+  }
+
+  const noopOpenFile = (_path: string) => {}
 
   return (
     <div className="flex h-[calc(100vh-34px)]">
@@ -510,7 +644,6 @@ export function AssistantView({
       />
 
       <div className="flex min-w-0 flex-1 flex-col">
-        {/* Header */}
         <header className="flex items-center justify-between gap-3 border-b border-border px-5 py-2.5">
           <div className="flex min-w-0 items-center gap-2">
             <Sparkles className="size-5 shrink-0 text-primary" />
@@ -519,25 +652,16 @@ export function AssistantView({
               本地全能助手
             </span>
           </div>
-          {/* Folder binding */}
           <Button
             variant={active?.folder ? "secondary" : "ghost"}
             size="sm"
-            className="max-w-[240px] gap-1.5"
-            onClick={async () => {
-              // Windows / Tauri: when no folder is bound, directly open native picker
-              if (!active?.folder && isTauri()) {
-                const { pickFolder } = await import("@/lib/tauri-api")
-                const selected = await pickFolder()
-                if (selected) patchActive({ folder: selected })
-                return
-              }
-              setFolderOpen(true)
-            }}
+            className="max-w-[280px] gap-1.5"
+            onClick={() => setFolderOpen(true)}
+            title={active?.folder ?? undefined}
           >
-            {active?.folder ? <FolderOpen className="size-4" /> : <Folder className="size-4" />}
+            {active?.folder ? <FolderOpen className="size-4 shrink-0" /> : <Folder className="size-4 shrink-0" />}
             <span className="truncate font-mono text-xs">
-              {active?.folder ?? "指定文件夹"}
+              {shortFolderLabel(active?.folder)}
             </span>
             {active?.folder && (
               <span
@@ -545,16 +669,21 @@ export function AssistantView({
                 tabIndex={0}
                 onClick={(e) => {
                   e.stopPropagation()
-                  patchActive({ folder: null })
+                  void (async () => {
+                    const fallback = await resolveDefaultAssistantWorkspace()
+                    patchActive({ folder: fallback })
+                  })()
                 }}
                 onKeyDown={(e) => {
                   if (e.key === "Enter") {
                     e.stopPropagation()
-                    patchActive({ folder: null })
+                    void resolveDefaultAssistantWorkspace().then((fallback) =>
+                      patchActive({ folder: fallback }),
+                    )
                   }
                 }}
                 className="ml-0.5 rounded p-0.5 hover:bg-background/60"
-                aria-label="解除文件夹绑定"
+                aria-label="恢复默认工作区"
               >
                 <X className="size-3" />
               </span>
@@ -564,185 +693,141 @@ export function AssistantView({
 
         {llmError && (
           <div className="border-b border-border px-5 py-2">
-            <LlmErrorCard error={llmError} onRetry={() => { setLlmError(null); if (active?.messages.length) { const last = [...active.messages].reverse().find(m => m.role === 'user'); if (last) void send(last.content) } }} />
+            <LlmErrorCard
+              error={llmError}
+              onRetry={() => {
+                setLlmError(null)
+                const last = [...(active?.messages ?? [])].reverse().find((m) => m.role === "user")
+                if (last) void send(last.content)
+              }}
+            />
           </div>
         )}
 
-        {/* Message area */}
-        <div ref={scrollRef} className="flex-1 overflow-y-auto">
-          {!hasChat ? (
-            <div className="mx-auto flex min-h-full max-w-2xl flex-col items-center justify-center px-5 py-10">
-              <div className="mb-4 flex size-14 items-center justify-center rounded-2xl bg-foreground text-background">
-                <BoschLogo className="size-7" />
+        {toast && (
+          <div className="border-b border-border px-5 py-2 text-center text-xs text-muted-foreground">
+            {toast}
+          </div>
+        )}
+
+        <div className="relative flex min-h-0 flex-1 flex-col">
+          {floatingMessage && hasChat && (
+            <div className="pointer-events-none absolute inset-x-0 top-0 z-20 border-b border-border bg-background/95 px-4 py-2 shadow-sm backdrop-blur supports-[backdrop-filter]:bg-background/85">
+              <div className="pointer-events-auto w-full">
+                <ChatMessageView
+                  message={floatingMessage}
+                  variant="float"
+                  onDiffAction={onDiffAction}
+                  onOpenFile={noopOpenFile}
+                />
               </div>
-              <h1 className="text-balance text-center text-2xl font-semibold tracking-tight">
-                我能帮你做什么？
-              </h1>
-              <p className="mt-2 text-pretty text-center text-sm text-muted-foreground">
-                Bosch Assistant 是完全本地运行的全能助手，数据不出本机。选择下面的能力，或直接开始输入。
-              </p>
-              <div className="mt-6 grid w-full grid-cols-1 gap-2.5 sm:grid-cols-2">
-                {SUGGESTIONS.map((s) => {
-                  const Icon = s.icon
-                  return (
-                    <button
-                      key={s.title}
-                      onClick={() => send(s.prompt)}
-                      className="flex items-start gap-3 rounded-xl border border-border bg-card p-3 text-left transition-colors hover:border-primary/40 hover:bg-accent/40"
-                    >
-                      <span className={cn("flex size-8 shrink-0 items-center justify-center rounded-md", s.className)}>
-                        <Icon className="size-4" />
-                      </span>
-                      <span className="min-w-0">
-                        <span className="block text-sm font-medium">{s.title}</span>
-                        <span className="mt-0.5 line-clamp-2 block text-xs text-muted-foreground">
-                          {s.prompt}
-                        </span>
-                      </span>
-                    </button>
-                  )
-                })}
-              </div>
-            </div>
-          ) : (
-            <div className="mx-auto max-w-2xl space-y-5 px-5 py-6">
-              {messages.map((m) => (
-                <div key={m.id} className={cn("flex gap-3", m.role === "user" && "flex-row-reverse")}>
-                  <span
-                    className={cn(
-                      "flex size-8 shrink-0 items-center justify-center rounded-md text-xs font-semibold",
-                      m.role === "assistant"
-                        ? "bg-foreground text-background"
-                        : "bg-secondary text-secondary-foreground",
-                    )}
-                  >
-                    {m.role === "assistant" ? <BoschLogo className="size-4" /> : "你"}
-                  </span>
-                  <div
-                    className={cn(
-                      "max-w-[80%] whitespace-pre-wrap rounded-2xl px-3.5 py-2.5 text-sm leading-relaxed",
-                      m.role === "assistant"
-                        ? "bg-card text-card-foreground"
-                        : "bg-primary text-primary-foreground",
-                    )}
-                  >
-                    {m.content ||
-                      (m.role === "assistant" && thinking ? <TypingDots /> : null)}
-                  </div>
-                </div>
-              ))}
-              {thinking &&
-                !messages.some((m) => m.role === "assistant" && !m.content.trim()) && (
-                <div className="flex gap-3">
-                  <span className="flex size-8 shrink-0 items-center justify-center rounded-md bg-foreground text-background">
-                    <BoschLogo className="size-4" />
-                  </span>
-                  <div className="flex items-center gap-1 rounded-2xl bg-card px-4 py-3">
-                    <TypingDots />
-                  </div>
-                </div>
-              )}
             </div>
           )}
-        </div>
 
-        {/* Composer */}
-        <div className="border-t border-border px-5 py-3">
-          <div className="mx-auto max-w-2xl">
-            <div className="rounded-2xl border border-border bg-card p-2 focus-within:border-ring">
-              <textarea
-                ref={textareaRef}
-                value={input}
-                onChange={(e) => setInput(e.target.value)}
-                onKeyDown={onKeyDown}
-                rows={1}
-                placeholder="给 Bosch Assistant 发送消息…（Enter 发送，Shift+Enter 换行）"
-                className="max-h-40 w-full resize-none bg-transparent px-2 py-1.5 text-sm outline-none placeholder:text-muted-foreground"
-              />
-              <div className="flex items-center justify-between gap-2 px-1">
-                <div className="flex items-center gap-1">
-                  <Button variant="ghost" size="icon-sm" onClick={onOpenKnowledge} aria-label="附加文件">
-                    <Paperclip className="size-4" />
-                  </Button>
-                  <Button variant="ghost" size="sm" onClick={onOpenKnowledge} className="gap-1.5">
-                    <BookUp className="size-4" />
-                    知识库
-                    <span className="rounded-full bg-secondary px-1.5 text-[11px] text-muted-foreground">
-                      {knowledgeCount}
-                    </span>
-                  </Button>
-                  {/* Model selector */}
-                  <div className="relative">
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      className="gap-1.5"
-                      onClick={() => setModelOpen((o) => !o)}
-                    >
-                      {currentModelName}
-                      <ChevronDown className="size-3.5" />
-                    </Button>
-                    {modelOpen && (
-                      <>
-                        <div className="fixed inset-0 z-10" onClick={() => setModelOpen(false)} aria-hidden />
-                        <div className="absolute bottom-full left-0 z-20 mb-1 w-56 rounded-lg border border-border bg-popover p-1 shadow-lg">
-                          {availableModels.length === 0 ? (
-                            <p className="px-2 py-1.5 text-xs text-muted-foreground">
-                              暂无模型，请前往设置添加
-                            </p>
-                          ) : (
-                            availableModels.map((m) => (
-                              <button
-                                key={m.id}
-                                onClick={() => {
-                                  patchActive({ model: m.id })
-                                  setModelOpen(false)
-                                }}
-                                className={cn(
-                                  "flex w-full items-center rounded-md px-2 py-1.5 text-left text-sm transition-colors hover:bg-accent",
-                                  m.id === active?.model && "text-primary",
-                                )}
-                              >
-                                {m.name}
-                              </button>
-                            ))
-                          )}
-                        </div>
-                      </>
-                    )}
-                  </div>
-                  <ThinkingDepthSelect
-                    value={active?.depth ?? "default"}
-                    onChange={(d: ThinkingDepth) => patchActive({ depth: d })}
-                  />
+          <div ref={scrollRef} className="flex-1 overflow-y-auto scrollbar-thin">
+            {!hasChat ? (
+              <div className="mx-auto flex min-h-full max-w-2xl flex-col items-start justify-center px-5 py-10">
+                <div className="mb-4 flex size-14 items-center justify-center rounded-2xl bg-foreground text-background">
+                  <BoschLogo className="size-7" />
                 </div>
-                {thinking ? (
-                  <Button
-                    type="button"
-                    size="icon-sm"
-                    onClick={stopGeneration}
-                    aria-label="停止生成"
-                    className="size-8 rounded-full bg-foreground text-background hover:bg-foreground/90"
-                  >
-                    <Square className="size-3 fill-current" />
-                  </Button>
-                ) : (
-                  <Button
-                    size="icon-sm"
-                    disabled={!input.trim()}
-                    onClick={() => send(input)}
-                    aria-label="发送"
-                  >
-                    <ArrowUp className="size-4" />
-                  </Button>
-                )}
+                <h1 className="text-balance text-left text-2xl font-semibold tracking-tight">
+                  我能帮你做什么？
+                </h1>
+                <p className="mt-2 text-pretty text-left text-sm text-muted-foreground">
+                  Bosch Assistant 是完全本地运行的智能体，可读写文件、执行命令、调用工具。选择下面的能力，或直接开始输入。
+                </p>
+                <div className="mt-6 grid w-full grid-cols-1 gap-2.5 sm:grid-cols-2">
+                  {SUGGESTIONS.map((s) => {
+                    const Icon = s.icon
+                    return (
+                      <button
+                        key={s.title}
+                        type="button"
+                        onClick={() => void send(s.prompt)}
+                        className="flex items-start gap-3 rounded-xl border border-border bg-card p-3 text-left transition-colors hover:border-primary/40 hover:bg-accent/40"
+                      >
+                        <span
+                          className={cn(
+                            "flex size-8 shrink-0 items-center justify-center rounded-md",
+                            s.className,
+                          )}
+                        >
+                          <Icon className="size-4" />
+                        </span>
+                        <span className="min-w-0">
+                          <span className="block text-sm font-medium">{s.title}</span>
+                          <span className="mt-0.5 line-clamp-2 block text-xs text-muted-foreground">
+                            {s.prompt}
+                          </span>
+                        </span>
+                      </button>
+                    )
+                  })}
+                </div>
               </div>
-            </div>
-            <p className="mt-1.5 text-center text-[11px] text-muted-foreground">
-              所有对话与文档均在本地处理，不会上传云端。
-            </p>
+            ) : (
+              <div className="flex w-full flex-col gap-6 px-4 pb-8 pt-4 text-left">
+                {scrollMessages.map((m) => {
+                  const view = (
+                    <ChatMessageView
+                      message={m}
+                      variant={m.role === "user" ? "user-query" : "default"}
+                      onDiffAction={onDiffAction}
+                      onOpenFile={noopOpenFile}
+                    />
+                  )
+                  if (m.role === "user") {
+                    return (
+                      <div
+                        key={m.id}
+                        ref={(el) => registerUserMessageRef(m.id, el)}
+                        className="scroll-mt-2"
+                      >
+                        {view}
+                      </div>
+                    )
+                  }
+                  return <div key={m.id}>{view}</div>
+                })}
+              </div>
+            )}
           </div>
         </div>
+
+        <ChatInput
+          mode={mode}
+          onModeChange={setMode}
+          onSend={(t, img) => { void send(t, img) }}
+          onQuickAction={onQuickAction}
+          models={availableModels}
+          selectedModelId={active?.model ?? ""}
+          onModelChange={(id) => patchActive({ model: id })}
+          generating={generating}
+          onStop={stopGeneration}
+          onValidationError={setToast}
+          enableSlashCommands={false}
+          placeholder="给 Bosch Assistant 发送消息…"
+          extraMenuItems={[
+            {
+              id: "knowledge",
+              label: "知识库",
+              icon: BookUp,
+              onClick: onOpenKnowledge,
+              trailing: (
+                <span className="rounded-full bg-secondary px-1.5 text-[10px] text-muted-foreground">
+                  {knowledgeCount}
+                </span>
+              ),
+            },
+            {
+              id: "folder",
+              label: "工作文件夹",
+              icon: FolderOpen,
+              onClick: () => setFolderOpen(true),
+              trailing: <ChevronDown className="size-3.5 rotate-[-90deg] text-muted-foreground" />,
+            },
+          ]}
+        />
       </div>
 
       <FolderPicker

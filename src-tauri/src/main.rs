@@ -15,6 +15,7 @@ mod git_ops;
 mod linter_analyzer;
 mod memory_compressor;
 mod models;
+mod os_open;
 mod path_guard;
 mod recovery;
 mod retriever;
@@ -165,6 +166,14 @@ fn open_project(state: State<AppState>, id: String) -> Result<Project, String> {
 }
 
 // ── Session commands ──
+
+#[tauri::command]
+fn ensure_assistant_workspace() -> Result<String, String> {
+    let home = dirs::home_dir().ok_or("无法定位用户主目录")?;
+    let path = home.join(".boschassistant").join("workspace");
+    std::fs::create_dir_all(&path).map_err(|e| format!("创建工作区失败: {}", e))?;
+    Ok(path.to_string_lossy().to_string())
+}
 
 #[tauri::command]
 fn list_sessions(state: State<AppState>, project_id: String) -> Result<Vec<Session>, String> {
@@ -1404,7 +1413,7 @@ struct AiLoopInput {
     api_key: Option<String>,
     base_url: Option<String>,
     max_iterations: Option<usize>,
-    /// When true, use read-only assistant tools instead of full coding tools.
+    #[allow(dead_code)]
     assistant_mode: Option<bool>,
     /// When true, edit_file runs dry_run (edit mode — wait for user confirm).
     edit_dry_run: Option<bool>,
@@ -1448,10 +1457,8 @@ async fn ai_loop_chat(
     let agent_mode = input.agent_mode.as_deref().unwrap_or("ask");
     let auto_mode = agent_mode == "auto";
 
-    // Run AI Loop
-    let tools = if input.assistant_mode.unwrap_or(false) {
-        ai_loop::get_assistant_tools()
-    } else if agent_mode == "plan" {
+    // Run AI Loop — plan mode gets read-only tools; all other modes get the full set.
+    let tools = if agent_mode == "plan" {
         ai_loop::get_plan_tools()
     } else {
         ai_loop::get_tools()
@@ -1908,6 +1915,7 @@ fn main() {
 
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
+        .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_process::init())
@@ -1919,6 +1927,7 @@ fn main() {
             remove_project,
             open_project,
             // Sessions
+            ensure_assistant_workspace,
             list_sessions,
             create_session,
             delete_session,

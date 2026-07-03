@@ -73,6 +73,15 @@ export async function pickFolder(): Promise<string | null> {
   return selected ?? null;
 }
 
+export async function ensureAssistantWorkspace(): Promise<string | null> {
+  if (!tauriAvailable) return null;
+  try {
+    return await invoke<string>('ensure_assistant_workspace');
+  } catch {
+    return null;
+  }
+}
+
 // ── Projects ──
 
 export async function listProjects(): Promise<Project[]> {
