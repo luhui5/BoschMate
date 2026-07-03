@@ -1037,6 +1037,8 @@ struct AiLoopInput {
     api_key: Option<String>,
     base_url: Option<String>,
     max_iterations: Option<usize>,
+    /// When true, use read-only assistant tools instead of full coding tools.
+    assistant_mode: Option<bool>,
 }
 
 #[tauri::command]
@@ -1065,6 +1067,12 @@ async fn ai_loop_chat(
     }
 
     // Run AI Loop
+    let tools = if input.assistant_mode.unwrap_or(false) {
+        ai_loop::get_assistant_tools()
+    } else {
+        ai_loop::get_tools()
+    };
+
     let response = ai_loop::run_loop(
         app,
         project_root,
@@ -1076,6 +1084,7 @@ async fn ai_loop_chat(
         input.base_url,
         input.messages,
         input.system_prompt,
+        tools,
         input.max_iterations.unwrap_or(10),
     )
     .await?;
@@ -1132,6 +1141,16 @@ async fn stream_chat(
     let now = chrono::Utc::now().to_rfc3339();
     {
         let conn = state.db.conn.lock().unwrap();
+        let exists: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sessions WHERE id = ?1",
+                params![session_id],
+                |r| r.get(0),
+            )
+            .map_err(|e| e.to_string())?;
+        if exists == 0 {
+            return Err("会话未同步到数据库，请点击左侧「新对话」后重试".into());
+        }
         conn.execute(
             "UPDATE sessions SET updated_at = ?1 WHERE id = ?2",
             params![now, session_id],

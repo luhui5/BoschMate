@@ -86,6 +86,13 @@ export interface GitFile {
   deletions: number
 }
 
+export interface GitStatus {
+  branch: string
+  files: GitFile[]
+  ahead: number
+  behind: number
+}
+
 export type MemoryType = "fact" | "interaction" | "behavior" | "plan"
 
 export interface Memory {

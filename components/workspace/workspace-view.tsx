@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useMemo, useRef, useState } from "react"
+import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { useRouter } from "next/navigation"
 import Link from "next/link"
 import {
@@ -14,6 +14,7 @@ import {
   TriangleAlert,
   FileCode2,
   X,
+  Loader2,
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
@@ -23,47 +24,75 @@ import { RightSidebar } from "@/components/workspace/right-sidebar"
 import { ChatMessageView } from "@/components/workspace/chat-message"
 import { ChatInput } from "@/components/workspace/chat-input"
 import {
-  projects as allProjects,
-  sessions as allSessions,
-  memories as allMemories,
-  notes as allNotes,
+  projects as mockProjects,
+  sessions as mockSessions,
+  memories as mockMemories,
+  notes as mockNotes,
 } from "@/lib/mock-data"
-import type { AgentMode, ChatMessage, DiffHunk, Session } from "@/lib/types"
+import type { AgentMode, ChatMessage, DiffHunk, FileNode, GitFile, Project, Session } from "@/lib/types"
 import { cn } from "@/lib/utils"
-import { isTauri, listSessions, listMessages, createSession, sendMessage as tauriSendMessage } from "@/lib/tauri-api"
+import {
+  isTauri,
+  listProjects,
+  openProject,
+  listSessions,
+  listMessages,
+  createSession,
+  sendMessage as tauriSendMessage,
+  streamChat,
+  aiLoopChat,
+  listDirectoryTree,
+  gitStatus,
+  listMemories,
+  listNotes,
+  type AiChatRequest,
+} from "@/lib/tauri-api"
+import { loadModels, findModel, loadApiKey, resolveActiveModelId, recordModelUsage } from "@/lib/models"
 
 let idCounter = 1
 const nextId = () => `gen-${idCounter++}`
+
+function modeSystemPrompt(mode: AgentMode): string {
+  switch (mode) {
+    case "ask":
+      return "You are BoschCode assistant. Answer questions about the project. Do not modify files."
+    case "plan":
+      return "You are BoschCode planner. Produce a structured Markdown plan. Do not modify files or run commands."
+    case "edit":
+      return "You are BoschCode editor. Propose changes using tools. Wait for user confirmation before applying destructive edits when possible."
+    case "auto":
+      return "You are BoschCode automation agent. Use tools to read, edit, test and verify changes in the project."
+    default:
+      return ""
+  }
+}
 
 export function WorkspaceView({ projectId }: { projectId: string }) {
   const router = useRouter()
   const { resolvedTheme, toggleTheme, runMode, setRunMode } = useApp()
 
-  const project = allProjects.find((p) => p.id === projectId) ?? allProjects[0]
-  const projectSessions = useMemo(
-    () => allSessions.filter((s) => s.projectId === project.id),
-    [project.id],
-  )
-  const projectMemories = allMemories.filter((m) => m.projectId === project.id)
-
-  const [sessions, setSessions] = useState<Session[]>(() =>
-    projectSessions.length ? projectSessions.map((s) => ({ ...s })) : [],
-  )
-  const [activeSessionId, setActiveSessionId] = useState<string>(
-    projectSessions[0]?.id ?? "",
-  )
-  const [mode, setMode] = useState<AgentMode>(projectSessions[0]?.mode ?? "edit")
+  const [project, setProject] = useState<Project | null>(null)
+  const [allProjectsList, setAllProjectsList] = useState<Project[]>([])
+  const [projectLoading, setProjectLoading] = useState(true)
+  const [sessions, setSessions] = useState<Session[]>([])
+  const [activeSessionId, setActiveSessionId] = useState<string>("")
+  const [mode, setMode] = useState<AgentMode>("edit")
   const [leftOpen, setLeftOpen] = useState(true)
   const [rightOpen, setRightOpen] = useState(true)
   const [activeFile, setActiveFile] = useState<string | null>(null)
   const [thinking, setThinking] = useState(false)
   const [toast, setToast] = useState<string | null>(null)
+  const [fileTree, setFileTree] = useState<FileNode[]>([])
+  const [fileTreeLoading, setFileTreeLoading] = useState(false)
+  const [gitFiles, setGitFiles] = useState<GitFile[]>([])
+  const [gitBranch, setGitBranch] = useState("main")
+  const [projectMemories, setProjectMemories] = useState(mockMemories)
+  const [projectNotes, setProjectNotes] = useState(mockNotes)
 
   const scrollRef = useRef<HTMLDivElement>(null)
 
   const activeSession = sessions.find((s) => s.id === activeSessionId) ?? null
 
-  // Aggregate all diffs in the active session for the "changes" view
   const changes = useMemo(() => {
     if (!activeSession) return []
     const out: { messageId: string; index: number; diff: DiffHunk }[] = []
@@ -73,18 +102,83 @@ export function WorkspaceView({ projectId }: { projectId: string }) {
     return out
   }, [activeSession])
 
-  useEffect(() => {
-    scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" })
-  }, [activeSession?.messages.length, thinking])
+  const refreshGit = useCallback(async () => {
+    if (!isTauri() || !project) return
+    try {
+      const status = await gitStatus(project.id)
+      setGitFiles(status.files)
+      setGitBranch(status.branch)
+    } catch {
+      setGitFiles([])
+    }
+  }, [project])
 
-  // Sync sessions from Tauri backend when available
+  const refreshFileTree = useCallback(async () => {
+    if (!isTauri() || !project) return
+    setFileTreeLoading(true)
+    try {
+      const nodes = await listDirectoryTree(project.id, project.localPath)
+      setFileTree(nodes)
+    } catch {
+      setFileTree([])
+    } finally {
+      setFileTreeLoading(false)
+    }
+  }, [project])
+
+  // Load project + project list
   useEffect(() => {
-    if (!isTauri()) return
+    let cancelled = false
+    const load = async () => {
+      setProjectLoading(true)
+      if (isTauri()) {
+        try {
+          const [opened, all] = await Promise.all([
+            openProject(projectId),
+            listProjects(),
+          ])
+          if (cancelled) return
+          setProject(opened)
+          setAllProjectsList(all)
+          setGitBranch(opened.gitBranch)
+          const [mems, notes] = await Promise.all([
+            listMemories(projectId).catch(() => []),
+            listNotes(projectId).catch(() => []),
+          ])
+          if (!cancelled) {
+            setProjectMemories(mems.length ? mems : mockMemories.filter((m) => m.projectId === projectId))
+            setProjectNotes(notes.length ? notes.map((n) => ({ id: n.id, title: n.title, body: n.body, updatedAt: n.updatedAt })) : mockNotes)
+          }
+        } catch {
+          if (!cancelled) {
+            const fallback = mockProjects.find((p) => p.id === projectId) ?? mockProjects[0]
+            setProject(fallback ?? null)
+            setAllProjectsList(mockProjects as Project[])
+          }
+        } finally {
+          if (!cancelled) setProjectLoading(false)
+        }
+        return
+      }
+      const fallback = mockProjects.find((p) => p.id === projectId) ?? mockProjects[0]
+      if (!cancelled) {
+        setProject(fallback ?? null)
+        setAllProjectsList(mockProjects as Project[])
+        setProjectLoading(false)
+      }
+    }
+    load()
+    return () => { cancelled = true }
+  }, [projectId])
+
+  // Load sessions
+  useEffect(() => {
+    if (!project) return
+    let cancelled = false
     const sync = async () => {
-      try {
-        const realSessions = await listSessions(project.id)
-        if (realSessions.length > 0) {
-          // Load messages for each session
+      if (isTauri()) {
+        try {
+          const realSessions = await listSessions(project.id)
           const sessionsWithMessages = await Promise.all(
             realSessions.map(async (rs) => {
               try {
@@ -93,19 +187,40 @@ export function WorkspaceView({ projectId }: { projectId: string }) {
               } catch {
                 return { ...rs, messages: [] as ChatMessage[] }
               }
-            })
+            }),
           )
+          if (cancelled) return
           setSessions(sessionsWithMessages)
-          if (sessionsWithMessages.length > 0 && !activeSessionId) {
-            setActiveSessionId(sessionsWithMessages[0].id)
+          if (sessionsWithMessages.length > 0) {
+            setActiveSessionId((prev) => prev || sessionsWithMessages[0].id)
+            setMode(sessionsWithMessages[0].mode)
           }
+          return
+        } catch { /* fallback */ }
+      }
+      const mock = mockSessions.filter((s) => s.projectId === project.id)
+      if (!cancelled) {
+        setSessions(mock.length ? mock.map((s) => ({ ...s })) : [])
+        if (mock[0]) {
+          setActiveSessionId(mock[0].id)
+          setMode(mock[0].mode)
         }
-      } catch {
-        // Fallback to mock data (already loaded)
       }
     }
     sync()
-  }, [project.id])
+    return () => { cancelled = true }
+  }, [project])
+
+  // File tree + git
+  useEffect(() => {
+    if (!project) return
+    refreshFileTree()
+    refreshGit()
+  }, [project, refreshFileTree, refreshGit])
+
+  useEffect(() => {
+    scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" })
+  }, [activeSession?.messages.length, thinking])
 
   useEffect(() => {
     if (!toast) return
@@ -117,6 +232,7 @@ export function WorkspaceView({ projectId }: { projectId: string }) {
     setSessions((prev) => prev.map((s) => (s.id === id ? fn(s) : s)))
 
   const newSession = async () => {
+    if (!project) return
     if (isTauri()) {
       try {
         const s = await createSession({ project_id: project.id, title: "新会话", mode })
@@ -124,7 +240,7 @@ export function WorkspaceView({ projectId }: { projectId: string }) {
         setSessions((prev) => [session, ...prev])
         setActiveSessionId(s.id)
         return
-      } catch { /* fallback to local */ }
+      } catch { /* fallback */ }
     }
     const id = nextId()
     const s: Session = {
@@ -141,16 +257,138 @@ export function WorkspaceView({ projectId }: { projectId: string }) {
     setActiveSessionId(id)
   }
 
-  const send = (text: string) => {
-    if (!activeSession) {
-      // create one on the fly
-      const id = nextId()
-      const userMsg: ChatMessage = {
+  const requestAiReply = async (sessionId: string, history: ChatMessage[], userText: string) => {
+    if (!project) return
+
+    if (!isTauri()) {
+      simulateReply(sessionId, userText)
+      return
+    }
+
+    const models = await loadModels()
+    const preferredId = await resolveActiveModelId(models)
+    const modelCfg = findModel(models, preferredId) ?? models[0]
+    if (!modelCfg) {
+      const errMsg: ChatMessage = {
         id: nextId(),
-        role: "user",
-        content: text,
+        role: "assistant",
+        content: "未配置模型。请前往 设置 → 模型配置 添加 Ollama 或云端 API 模型。",
         createdAt: new Date().toISOString(),
+        mode,
       }
+      updateSession(sessionId, (s) => ({
+        ...s,
+        messages: [...s.messages, errMsg],
+        updatedAt: new Date().toISOString(),
+      }))
+      return
+    }
+
+    const apiKey = (await loadApiKey(modelCfg.id)) ?? undefined
+    const convo = history.map((m) => ({ role: m.role, content: m.content }))
+    const system = modeSystemPrompt(mode)
+
+    try {
+      let reply: ChatMessage
+      if (mode === "edit" || mode === "auto") {
+        reply = await aiLoopChat(
+          {
+            provider: modelCfg.provider,
+            model: modelCfg.name,
+            messages: convo,
+            system_prompt: system,
+            api_key: apiKey,
+            base_url: modelCfg.endpoint ?? undefined,
+            max_iterations: mode === "auto" ? 15 : 8,
+          },
+          sessionId,
+          project.id,
+        )
+      } else {
+        const request: AiChatRequest = {
+          provider: modelCfg.provider,
+          model: modelCfg.name,
+          messages: convo,
+          temperature: modelCfg.temperature,
+          max_tokens: 4096,
+          api_key: apiKey,
+          base_url: modelCfg.endpoint ?? undefined,
+          system,
+        }
+        reply = await streamChat(request, sessionId)
+      }
+      reply.mode = mode
+      updateSession(sessionId, (s) => ({
+        ...s,
+        messages: [...s.messages, reply],
+        updatedAt: new Date().toISOString(),
+      }))
+      if (modelCfg) await recordModelUsage(modelCfg.id)
+      await refreshGit()
+      await refreshFileTree()
+    } catch (err) {
+      const reason = typeof err === "string" ? err : err instanceof Error ? err.message : "未知错误"
+      updateSession(sessionId, (s) => ({
+        ...s,
+        messages: [
+          ...s.messages,
+          {
+            id: nextId(),
+            role: "assistant",
+            content: `请求失败：${reason}\n\n请检查模型配置与 Ollama/API 是否可访问。`,
+            createdAt: new Date().toISOString(),
+            mode,
+          },
+        ],
+        updatedAt: new Date().toISOString(),
+      }))
+    }
+  }
+
+  const simulateReply = (sessionId: string, prompt: string) => {
+    setThinking(true)
+    setTimeout(() => {
+      setThinking(false)
+      const content =
+        mode === "plan"
+          ? `## 计划\n\n1. 分析需求：${prompt.slice(0, 30)}\n2. 检索相关上下文\n3. 生成执行步骤\n\n（浏览器预览模式，请使用桌面应用获得完整 Agent 能力）`
+          : mode === "ask"
+            ? `根据项目上下文：${prompt.slice(0, 40)}…\n\n（浏览器预览模式）`
+            : `已理解需求。（浏览器预览模式，桌面版将执行真实代码修改）`
+      updateSession(sessionId, (s) => ({
+        ...s,
+        messages: [
+          ...s.messages,
+          {
+            id: nextId(),
+            role: "assistant",
+            mode,
+            content,
+            createdAt: new Date().toISOString(),
+          },
+        ],
+        updatedAt: new Date().toISOString(),
+      }))
+    }, 900)
+  }
+
+  const send = async (text: string) => {
+    if (!project) return
+
+    const ensureSession = async (): Promise<{ id: string; messages: ChatMessage[] }> => {
+      if (activeSession) return { id: activeSession.id, messages: activeSession.messages }
+      if (isTauri()) {
+        const s = await createSession({
+          project_id: project.id,
+          title: text.slice(0, 20),
+          mode,
+        })
+        const session: Session = { ...s, messages: [] }
+        setSessions((prev) => [session, ...prev])
+        setActiveSessionId(s.id)
+        return { id: s.id, messages: [] }
+      }
+      const id = nextId()
       const s: Session = {
         id,
         projectId: project.id,
@@ -159,83 +397,46 @@ export function WorkspaceView({ projectId }: { projectId: string }) {
         status: "active",
         updatedAt: new Date().toISOString(),
         tokenCount: 0,
-        messages: [userMsg],
+        messages: [],
       }
       setSessions((prev) => [s, ...prev])
       setActiveSessionId(id)
-      simulateReply(id, text)
-      return
+      return { id, messages: [] }
     }
 
-    const userMsg: ChatMessage = {
-      id: nextId(),
-      role: "user",
-      content: text,
-      createdAt: new Date().toISOString(),
-    }
-    updateSession(activeSession.id, (s) => ({
-      ...s,
-      title: s.messages.length === 0 ? text.slice(0, 20) : s.title,
-      messages: [...s.messages, userMsg],
-      updatedAt: new Date().toISOString(),
-    }))
-    simulateReply(activeSession.id, text)
-  }
-
-  const simulateReply = (sessionId: string, prompt: string) => {
     setThinking(true)
-    const replyId = nextId()
-    setTimeout(() => {
-      setThinking(false)
-      const content =
-        mode === "plan"
-          ? `## 计划\n\n1. 分析需求：${prompt.slice(0, 30)}\n2. 检索相关上下文与历史记忆\n3. 生成执行步骤并等待确认\n\n是否将此计划导出为 Plan 文档？`
-          : mode === "ask"
-            ? `根据当前项目上下文，我的理解是：${prompt.slice(0, 40)}…\n\n这是一个**只读**回答，不会修改任何文件。如需我执行修改，请切换到 *Ask before edits* 或 *Edit automation* 模式。`
-            : `已理解需求并检索上下文。我准备进行如下修改，请审阅下方变更卡片后采纳。`
+    try {
+      const { id: sessionId, messages: prior } = await ensureSession()
 
-      const reply: ChatMessage = {
-        id: replyId,
-        role: "assistant",
-        mode,
-        content,
-        createdAt: new Date().toISOString(),
-        toolCalls:
-          mode === "edit" || mode === "auto"
-            ? [
-                { tool: "Retriever", args: "query: " + prompt.slice(0, 16), status: "success", result: "命中 3 条" },
-                { tool: "CodeEditor", args: "apply patch", status: "success", result: "1 个文件" },
-              ]
-            : undefined,
-        diffs:
-          mode === "edit" || mode === "auto"
-            ? [
-                {
-                  filePath: "src/main.rs",
-                  additions: 3,
-                  deletions: 1,
-                  language: "rust",
-                  status: mode === "auto" ? "applied" : "pending",
-                  lines: [
-                    { type: "meta", text: "@@ -1,4 +1,6 @@" },
-                    { type: "context", text: "fn main() {", oldNo: 1, newNo: 1 },
-                    { type: "del", text: '    println!("hello");', oldNo: 2 },
-                    { type: "add", text: '    // 根据需求调整', newNo: 2 },
-                    { type: "add", text: '    println!("hello, bosch");', newNo: 3 },
-                    { type: "context", text: "}", oldNo: 3, newNo: 4 },
-                  ],
-                },
-              ]
-            : undefined,
-        fileRefs: mode === "edit" || mode === "auto" ? ["src/main.rs"] : undefined,
+      let userMsg: ChatMessage
+      if (isTauri()) {
+        userMsg = await tauriSendMessage({
+          session_id: sessionId,
+          content: text,
+          mode,
+        })
+      } else {
+        userMsg = {
+          id: nextId(),
+          role: "user",
+          content: text,
+          createdAt: new Date().toISOString(),
+          mode,
+        }
       }
+
+      const nextMessages = [...prior, userMsg]
       updateSession(sessionId, (s) => ({
         ...s,
-        messages: [...s.messages, reply],
-        tokenCount: s.tokenCount + 1200,
+        title: s.messages.length === 0 ? text.slice(0, 20) : s.title,
+        messages: nextMessages,
         updatedAt: new Date().toISOString(),
       }))
-    }, 1100)
+
+      await requestAiReply(sessionId, nextMessages, text)
+    } finally {
+      setThinking(false)
+    }
   }
 
   const onDiffAction = (
@@ -275,9 +476,28 @@ export function WorkspaceView({ projectId }: { projectId: string }) {
     setToast(`已打开 ${path}`)
   }
 
+  if (projectLoading) {
+    return (
+      <div className="flex h-dvh items-center justify-center gap-2 text-sm text-muted-foreground">
+        <Loader2 className="size-5 animate-spin" />
+        加载项目…
+      </div>
+    )
+  }
+
+  if (!project) {
+    return (
+      <div className="flex h-dvh flex-col items-center justify-center gap-4">
+        <p className="text-sm text-muted-foreground">项目不存在或无法加载</p>
+        <Button nativeButton={false} render={<Link href="/">返回主页</Link>}>
+          返回主页
+        </Button>
+      </div>
+    )
+  }
+
   return (
     <div className="flex h-dvh flex-col bg-background">
-      {/* Top bar */}
       <header className="flex h-12 shrink-0 items-center gap-2 border-b border-border px-3">
         <Button
           variant="ghost"
@@ -303,11 +523,11 @@ export function WorkspaceView({ projectId }: { projectId: string }) {
         </div>
 
         <div className="ml-auto flex items-center gap-1.5">
-          {/* Run mode selector */}
           <div className="flex items-center rounded-md border border-border p-0.5">
             {(["full", "degraded", "offline"] as const).map((m) => (
               <button
                 key={m}
+                type="button"
                 onClick={() => setRunMode(m)}
                 className={cn(
                   "flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-medium transition-colors",
@@ -351,15 +571,14 @@ export function WorkspaceView({ projectId }: { projectId: string }) {
         </div>
       </header>
 
-      {/* Body */}
       <div className="flex min-h-0 flex-1">
         {leftOpen && (
           <LeftSidebar
             project={project}
-            projects={allProjects}
+            projects={allProjectsList.length ? allProjectsList : mockProjects}
             sessions={sessions}
             memories={projectMemories}
-            notes={allNotes}
+            notes={projectNotes}
             activeSessionId={activeSessionId}
             onSelectSession={(id) => {
               setActiveSessionId(id)
@@ -371,7 +590,6 @@ export function WorkspaceView({ projectId }: { projectId: string }) {
           />
         )}
 
-        {/* Center chat */}
         <main className="flex min-w-0 flex-1 flex-col">
           {activeFile && (
             <div className="flex items-center gap-2 border-b border-border bg-card px-3 py-1.5">
@@ -400,6 +618,7 @@ export function WorkspaceView({ projectId }: { projectId: string }) {
                   {["解释这个项目的架构", "修复登录的会话过期问题", "为压缩器补充单元测试"].map((s) => (
                     <button
                       key={s}
+                      type="button"
                       onClick={() => send(s)}
                       className="rounded-full border border-border px-3 py-1.5 text-xs text-muted-foreground transition-colors hover:border-primary/40 hover:text-foreground"
                     >
@@ -437,7 +656,7 @@ export function WorkspaceView({ projectId }: { projectId: string }) {
           <ChatInput
             mode={mode}
             onModeChange={setMode}
-            onSend={send}
+            onSend={(t) => { void send(t) }}
             onQuickAction={onQuickAction}
             disabled={runMode === "offline"}
           />
@@ -445,16 +664,21 @@ export function WorkspaceView({ projectId }: { projectId: string }) {
 
         {rightOpen && (
           <RightSidebar
-            project={project}
+            projectId={project.id}
+            gitBranch={gitBranch}
+            gitRemote={project.gitRemote}
+            fileTree={fileTree}
+            gitFiles={gitFiles}
+            fileTreeLoading={fileTreeLoading}
             changes={changes}
             activeFile={activeFile}
             onOpenFile={openFile}
             onDiffAction={onDiffAction}
+            onGitRefresh={refreshGit}
           />
         )}
       </div>
 
-      {/* Toast */}
       {toast && (
         <div className="fixed bottom-24 left-1/2 z-50 -translate-x-1/2 rounded-lg border border-border bg-popover px-4 py-2 text-sm shadow-xl">
           {toast}

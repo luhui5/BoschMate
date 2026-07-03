@@ -28,16 +28,24 @@ import { FolderPicker } from "@/components/assistant/folder-picker"
 import {
   SEED_SESSIONS,
   createSession,
+  createPersistedSession,
+  loadPersistedSessions,
   deriveTitle,
+  saveSessionFolder,
   type AssistantSession,
 } from "@/lib/assistant-sessions"
+import { buildAssistantSystemPrompt } from "@/lib/assistant-prompt"
+import { ensureProjectForFolder } from "@/lib/assistant-project"
 import {
   loadModels,
   findModel,
   loadApiKey,
+  saveLastUsedModelId,
+  recordModelUsage,
+  resolveActiveModelId,
   type ModelConfig,
 } from "@/lib/models"
-import { streamChat, isTauri, type AiChatRequest } from "@/lib/tauri-api"
+import { streamChat, aiLoopChat, sendMessage as tauriSendMessage, deleteSession as tauriDeleteSession, isTauri, type AiChatRequest } from "@/lib/tauri-api"
 
 interface Suggestion {
   icon: React.ComponentType<{ className?: string }>
@@ -96,13 +104,27 @@ export function AssistantView({
   const [activeId, setActiveId] = useState<string>("")
   const didInit = useRef(false)
 
-  // One-time init: create a fresh session on first mount (no race condition)
+  // One-time init: restore from DB or create a persisted session
   useEffect(() => {
     if (!didInit.current) {
       didInit.current = true
-      const fresh = createSession()
-      setSessions((prev) => [fresh, ...prev])
-      setActiveId(fresh.id)
+      void (async () => {
+        if (isTauri()) {
+          try {
+            const saved = await loadPersistedSessions()
+            if (saved.length > 0) {
+              setSessions(saved)
+              setActiveId(saved[0].id)
+              return
+            }
+          } catch {
+            /* fall through to new session */
+          }
+        }
+        const fresh = await createPersistedSession()
+        setSessions((prev) => [fresh, ...prev])
+        setActiveId(fresh.id)
+      })()
     }
   }, [])
 
@@ -118,8 +140,19 @@ export function AssistantView({
   const [availableModels, setAvailableModels] = useState<ModelConfig[]>([])
 
   const refreshModels = useCallback(() => {
-    loadModels().then(setAvailableModels).catch(() => {})
-  }, [])
+    loadModels().then(async (models) => {
+      setAvailableModels(models)
+      if (models.length === 0 || !activeId) return
+      const preferred = await resolveActiveModelId(models)
+      setSessions((prev) =>
+        prev.map((s) => {
+          if (s.id !== activeId) return s
+          const valid = models.some((m) => m.id === s.model)
+          return valid ? s : { ...s, model: preferred }
+        }),
+      )
+    }).catch(() => {})
+  }, [activeId])
 
   useEffect(() => {
     refreshModels()
@@ -139,6 +172,12 @@ export function AssistantView({
   const hasChat = messages.length > 0
 
   const patchActive = (patch: Partial<AssistantSession>) => {
+    if (patch.model) {
+      void saveLastUsedModelId(patch.model)
+    }
+    if ("folder" in patch && activeId) {
+      void saveSessionFolder(activeId, patch.folder ?? null)
+    }
     setSessions((prev) =>
       prev.map((s) =>
         s.id === activeId ? { ...s, ...patch, updatedAt: new Date().toISOString() } : s,
@@ -151,22 +190,31 @@ export function AssistantView({
   }, [messages, thinking])
 
   const newSession = () => {
-    const fresh = createSession({ model: active?.model, folder: active?.folder ?? null })
-    setSessions((prev) => [fresh, ...prev])
-    setActiveId(fresh.id)
-    setInput("")
+    void (async () => {
+      const fresh = await createPersistedSession({
+        folder: active?.folder ?? null,
+      })
+      setSessions((prev) => [fresh, ...prev])
+      setActiveId(fresh.id)
+      setInput("")
+    })()
   }
 
   const deleteSession = (id: string) => {
+    if (isTauri()) {
+      tauriDeleteSession(id).catch(() => {})
+    }
     setSessions((prev) => {
       const next = prev.filter((s) => s.id !== id)
       if (id === activeId) {
         if (next.length > 0) {
           setActiveId(next[0].id)
         } else {
-          const fresh = createSession()
-          setActiveId(fresh.id)
-          return [fresh]
+          void createPersistedSession().then((fresh) => {
+            setActiveId(fresh.id)
+            setSessions([fresh])
+          })
+          return []
         }
       }
       return next
@@ -252,18 +300,51 @@ export function AssistantView({
       content: m.content,
     }))
 
-    const request: AiChatRequest = {
-      provider: modelCfg.provider,
-      model: modelCfg.name,
-      messages: [...history, { role: "user", content }],
-      temperature: modelCfg.temperature,
-      max_tokens: modelCfg.contextWindow >= 4096 ? 4096 : undefined,
-      api_key: apiKey,
-      base_url: modelCfg.endpoint ?? undefined,
-    }
+    const folder = active.folder
+    const toolsEnabled = Boolean(folder && isTauri())
+    const system = buildAssistantSystemPrompt({ folder, toolsEnabled })
 
     try {
-      const response = await streamChat(request, activeId)
+      if (isTauri()) {
+        await tauriSendMessage({
+          session_id: activeId,
+          content,
+          mode: "ask",
+        })
+      }
+
+      let response
+      if (toolsEnabled && folder) {
+        const projectId = await ensureProjectForFolder(folder)
+        response = await aiLoopChat(
+          {
+            provider: modelCfg.provider,
+            model: modelCfg.name,
+            messages: [...history, { role: "user", content }],
+            system_prompt: system,
+            api_key: apiKey,
+            base_url: modelCfg.endpoint ?? undefined,
+            max_iterations: 8,
+            assistant_mode: true,
+          },
+          activeId,
+          projectId,
+        )
+      } else {
+        const request: AiChatRequest = {
+          provider: modelCfg.provider,
+          model: modelCfg.name,
+          messages: [...history, { role: "user", content }],
+          temperature: modelCfg.temperature,
+          max_tokens: modelCfg.contextWindow >= 4096 ? 4096 : undefined,
+          api_key: apiKey,
+          base_url: modelCfg.endpoint ?? undefined,
+          system,
+        }
+        response = await streamChat(request, activeId)
+      }
+
+      await recordModelUsage(modelCfg.id)
       setSessions((prev) =>
         prev.map((s) =>
           s.id === activeId
@@ -271,7 +352,7 @@ export function AssistantView({
                 ...s,
                 messages: [
                   ...s.messages,
-                  { id: assistantMsgId, role: "assistant" as const, content: response.content },
+                  { id: response.id, role: "assistant" as const, content: response.content },
                 ],
                 updatedAt: new Date().toISOString(),
               }

@@ -17,6 +17,8 @@ import {
   loadApiKey,
   saveApiKey,
   deleteApiKey,
+  saveLastUsedModelId,
+  resolveActiveModelId,
 } from "@/lib/models"
 
 const EMPTY_DRAFT: ModelConfig = {
@@ -54,7 +56,9 @@ export function ModelSection() {
     const init = async () => {
       const saved = await loadModels()
       setModels(saved)
-      if (saved.length > 0) setSelected(saved[0].id)
+      if (saved.length > 0) {
+        setSelected(await resolveActiveModelId(saved))
+      }
     }
     init()
   }, [])
@@ -95,6 +99,7 @@ export function ModelSection() {
         return updated
       })
       setSelected(modelId)
+      void saveLastUsedModelId(modelId)
     }
     // Persist API key separately (same modelId)
     if (apiKeyDraft.trim()) {
@@ -163,7 +168,10 @@ export function ModelSection() {
                 )}
               >
                 <button
-                  onClick={() => setSelected(m.id)}
+                  onClick={() => {
+                    setSelected(m.id)
+                    void saveLastUsedModelId(m.id)
+                  }}
                   className="flex min-w-0 flex-1 items-center gap-3 text-left"
                 >
                   <span

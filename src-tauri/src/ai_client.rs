@@ -67,6 +67,41 @@ pub struct UsageInfo {
     pub completion_tokens: u32,
 }
 
+/// Convert internal tool defs to OpenAI / OpenAI-compatible API format.
+fn to_openai_tools(tools: &[AiToolDef]) -> Value {
+    Value::Array(
+        tools
+            .iter()
+            .map(|t| {
+                serde_json::json!({
+                    "type": "function",
+                    "function": {
+                        "name": t.name,
+                        "description": t.description,
+                        "parameters": t.parameters,
+                    }
+                })
+            })
+            .collect(),
+    )
+}
+
+/// Convert internal tool defs to Anthropic Messages API format.
+fn to_anthropic_tools(tools: &[AiToolDef]) -> Value {
+    Value::Array(
+        tools
+            .iter()
+            .map(|t| {
+                serde_json::json!({
+                    "name": t.name,
+                    "description": t.description,
+                    "input_schema": t.parameters,
+                })
+            })
+            .collect(),
+    )
+}
+
 // ── Async streaming chat ──
 
 /// Stream chat tokens via Tauri events. Each token is emitted as `chat-token` event.
@@ -109,7 +144,7 @@ async fn stream_anthropic(
     }
 
     if let Some(ref tools) = req.tools {
-        body["tools"] = serde_json::json!(tools);
+        body["tools"] = to_anthropic_tools(tools);
     }
 
     let response = client
@@ -287,7 +322,7 @@ async fn stream_openai(
     });
 
     if let Some(ref tools) = req.tools {
-        body["tools"] = serde_json::json!(tools);
+        body["tools"] = to_openai_tools(tools);
     }
 
     let mut request_builder = client
@@ -438,13 +473,17 @@ async fn stream_ollama(
         }));
     }
 
-    let body = serde_json::json!({
+    let mut body = serde_json::json!({
         "model": model,
         "messages": messages,
         "max_tokens": req.max_tokens.unwrap_or(4096),
         "temperature": req.temperature.unwrap_or(0.7),
         "stream": true,
     });
+
+    if let Some(ref tools) = req.tools {
+        body["tools"] = to_openai_tools(tools);
+    }
 
     let response = client
         .post(format!("{}/chat/completions", base))

@@ -1,28 +1,39 @@
 "use client"
 
 import { useState } from "react"
-import { FolderTree, FileDiff, GitMerge } from "lucide-react"
+import { FolderTree, FileDiff, GitMerge, Loader2 } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { FileTree } from "@/components/workspace/file-tree"
 import { GitPanel } from "@/components/workspace/git-panel"
 import { DiffCard } from "@/components/workspace/diff-card"
-import { fileTree, gitFiles } from "@/lib/mock-data"
-import type { DiffHunk, Project } from "@/lib/types"
+import type { DiffHunk, FileNode, GitFile } from "@/lib/types"
 
 type View = "files" | "changes" | "git"
 
 export function RightSidebar({
-  project,
+  projectId,
+  gitBranch,
+  gitRemote,
+  fileTree,
+  gitFiles,
+  fileTreeLoading,
   changes,
   activeFile,
   onOpenFile,
   onDiffAction,
+  onGitRefresh,
 }: {
-  project: Project
+  projectId: string
+  gitBranch: string
+  gitRemote?: string
+  fileTree: FileNode[]
+  gitFiles: GitFile[]
+  fileTreeLoading?: boolean
   changes: { messageId: string; index: number; diff: DiffHunk }[]
   activeFile: string | null
   onOpenFile: (path: string) => void
   onDiffAction: (messageId: string, diffIndex: number, action: "accept" | "reject" | "revert") => void
+  onGitRefresh?: () => void
 }) {
   const [view, setView] = useState<View>("files")
 
@@ -40,6 +51,7 @@ export function RightSidebar({
           return (
             <button
               key={v.id}
+              type="button"
               onClick={() => setView(v.id)}
               className={cn(
                 "flex flex-1 items-center justify-center gap-1.5 rounded-md py-1.5 text-xs transition-colors",
@@ -57,7 +69,18 @@ export function RightSidebar({
       </div>
 
       <div className="min-h-0 flex-1">
-        {view === "files" && <FileTree nodes={fileTree} activePath={activeFile} onOpen={onOpenFile} />}
+        {view === "files" && (
+          fileTreeLoading ? (
+            <div className="flex items-center justify-center gap-2 py-16 text-xs text-muted-foreground">
+              <Loader2 className="size-4 animate-spin" />
+              加载文件树…
+            </div>
+          ) : fileTree.length === 0 ? (
+            <p className="px-3 py-16 text-center text-xs text-muted-foreground">无法加载文件树或目录为空。</p>
+          ) : (
+            <FileTree nodes={fileTree} activePath={activeFile} onOpen={onOpenFile} />
+          )
+        )}
 
         {view === "changes" && (
           <div className="h-full overflow-auto p-2 scrollbar-thin">
@@ -83,7 +106,16 @@ export function RightSidebar({
           </div>
         )}
 
-        {view === "git" && <GitPanel project={project} files={gitFiles} onOpenFile={onOpenFile} />}
+        {view === "git" && (
+          <GitPanel
+            projectId={projectId}
+            branch={gitBranch}
+            gitRemote={gitRemote}
+            files={gitFiles}
+            onOpenFile={onOpenFile}
+            onCommitted={onGitRefresh}
+          />
+        )}
       </div>
     </aside>
   )

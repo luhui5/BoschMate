@@ -22,6 +22,7 @@ impl Database {
 
         let db = Database { conn: Mutex::new(conn) };
         db.run_migrations()?;
+        db.seed_assistant_project(app_dir)?;
         Ok(db)
     }
 
@@ -147,6 +148,20 @@ impl Database {
             );
         ")?;
 
+        Ok(())
+    }
+
+    /// Virtual project for Bosch Assistant standalone chat (FK target for assistant sessions).
+    pub fn seed_assistant_project(&self, app_dir: &PathBuf) -> Result<()> {
+        let assistant_dir = app_dir.join("assistant");
+        std::fs::create_dir_all(&assistant_dir).ok();
+        let conn = self.conn.lock().unwrap();
+        let now = chrono::Utc::now().to_rfc3339();
+        let path = assistant_dir.to_string_lossy().to_string();
+        conn.execute(
+            "INSERT OR IGNORE INTO projects (id, name, local_path, created_at, opened_at) VALUES ('__assistant__', 'Bosch Assistant', ?1, ?2, ?2)",
+            params![path, now],
+        )?;
         Ok(())
     }
 

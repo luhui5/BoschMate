@@ -16,7 +16,6 @@ import { Input } from "@/components/ui/input"
 import { ProjectCard } from "@/components/home/project-card"
 import { NewProjectDialog } from "@/components/home/new-project-dialog"
 import { EmptyState, ErrorState, ProjectCardSkeleton, Skeleton } from "@/components/states"
-import { projects as seedProjects } from "@/lib/mock-data"
 import type { Project } from "@/lib/types"
 import { isTauri, listProjects as tauriListProjects } from "@/lib/tauri-api"
 
@@ -25,7 +24,7 @@ type LoadStatus = "loading" | "error" | "ready"
 const CARDS_PER_PAGE = 12 // fills up to 4 columns x 3 rows on wide desktop windows
 
 export function HomeView() {
-  const [projects, setProjects] = useState<Project[]>(seedProjects)
+  const [projects, setProjects] = useState<Project[]>([])
   const [query, setQuery] = useState("")
   const [dialog, setDialog] = useState<null | "new" | "ssh">(null)
   const [projectPage, setProjectPage] = useState(0)
@@ -40,18 +39,22 @@ export function HomeView() {
       if (isTauri()) {
         try {
           const realProjects = await tauriListProjects()
-          if (!cancelled && realProjects.length > 0) {
+          if (!cancelled) {
             setProjects(realProjects)
             setStatus("ready")
-            return
           }
-        } catch { /* fallback to mock */ }
+          return
+        } catch {
+          if (!cancelled) setStatus("error")
+          return
+        }
       }
       if (!cancelled) {
+        const { projects: seedProjects } = await import("@/lib/mock-data")
         tid = setTimeout(() => {
           if (!cancelled) {
-            setStatus("ready")
             setProjects(seedProjects as Project[])
+            setStatus("ready")
           }
         }, 700)
       }

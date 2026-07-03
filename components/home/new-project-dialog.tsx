@@ -6,7 +6,7 @@ import { Modal } from "@/components/ui/modal"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import type { Project } from "@/lib/types"
-import { isTauri, pickFolder } from "@/lib/tauri-api"
+import { isTauri, pickFolder, createProject, openProject } from "@/lib/tauri-api"
 
 export function NewProjectDialog({
   open,
@@ -24,6 +24,8 @@ export function NewProjectDialog({
   const [path, setPath] = useState("")
   const [host, setHost] = useState("")
   const [browsing, setBrowsing] = useState(false)
+  const [submitting, setSubmitting] = useState(false)
+  const [error, setError] = useState<string | null>(null)
 
   const reset = () => {
     setName("")
@@ -31,25 +33,68 @@ export function NewProjectDialog({
     setHost("")
   }
 
-  const submit = () => {
+  const submit = async () => {
     if (!name.trim()) return
-    const now = new Date().toISOString()
-    onCreate({
-      id: `p${Date.now()}`,
-      name: name.trim(),
-      localPath: path.trim() || (isSsh ? `~/${name.trim()}` : `~/dev/${name.trim()}`),
-      language: "TypeScript",
-      framework: "—",
-      gitBranch: "main",
-      ciStatus: "none",
-      openedAt: now,
-      createdAt: now,
-      lastChatSummary: "新项目，尚无聊天记录。",
-      kind: isSsh ? "ssh" : "local",
-      sshHost: isSsh ? host.trim() || "remote-host" : undefined,
-    })
-    reset()
-    onClose()
+    setError(null)
+    setSubmitting(true)
+    try {
+      if (isSsh) {
+        const now = new Date().toISOString()
+        onCreate({
+          id: `p${Date.now()}`,
+          name: name.trim(),
+          localPath: path.trim() || `~/${name.trim()}`,
+          language: "—",
+          framework: "—",
+          gitBranch: "main",
+          ciStatus: "none",
+          openedAt: now,
+          createdAt: now,
+          lastChatSummary: "新项目，尚无聊天记录。",
+          kind: "ssh",
+          sshHost: host.trim() || "remote-host",
+        })
+        reset()
+        onClose()
+        return
+      }
+
+      const localPath = path.trim()
+      if (!localPath) {
+        setError("请选择本地项目目录")
+        return
+      }
+
+      if (isTauri()) {
+        const created = await createProject({
+          name: name.trim(),
+          local_path: localPath,
+        })
+        const opened = await openProject(created.id)
+        onCreate(opened)
+      } else {
+        const now = new Date().toISOString()
+        onCreate({
+          id: `p${Date.now()}`,
+          name: name.trim(),
+          localPath,
+          language: "—",
+          framework: "—",
+          gitBranch: "main",
+          ciStatus: "none",
+          openedAt: now,
+          createdAt: now,
+          lastChatSummary: "新项目，尚无聊天记录。",
+          kind: "local",
+        })
+      }
+      reset()
+      onClose()
+    } catch (e) {
+      setError(typeof e === "string" ? e : e instanceof Error ? e.message : "创建项目失败")
+    } finally {
+      setSubmitting(false)
+    }
   }
 
   return (
@@ -77,7 +122,8 @@ export function NewProjectDialog({
           >
             取消
           </Button>
-          <Button size="sm" onClick={submit} disabled={!name.trim()}>
+          <Button size="sm" onClick={submit} disabled={!name.trim() || submitting}>
+            {submitting ? <Loader2 className="size-4 animate-spin" /> : null}
             {isSsh ? "连接" : "打开项目"}
           </Button>
         </>
@@ -143,6 +189,7 @@ export function NewProjectDialog({
             </div>
           )}
         </label>
+        {error && <p className="text-xs text-destructive">{error}</p>}
       </div>
     </Modal>
   )

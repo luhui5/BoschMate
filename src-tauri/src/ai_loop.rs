@@ -148,6 +148,25 @@ pub fn get_tools() -> Vec<AiToolDef> {
     ]
 }
 
+/// Read-only tools for Bosch Assistant (workspace bound).
+pub fn get_assistant_tools() -> Vec<AiToolDef> {
+    let read_only = [
+        "read_file",
+        "grep",
+        "glob",
+        "list_directory",
+        "git_status",
+        "git_diff",
+        "git_log",
+        "list_symbols",
+        "file_deps",
+    ];
+    get_tools()
+        .into_iter()
+        .filter(|t| read_only.contains(&t.name.as_str()))
+        .collect()
+}
+
 /// Execute a tool call and return the result
 pub async fn execute_tool(
     project_root: &PathBuf,
@@ -305,9 +324,9 @@ pub async fn run_loop(
     base_url: Option<String>,
     messages: Vec<AiMessage>,
     system_prompt: Option<String>,
+    tools: Vec<AiToolDef>,
     max_iterations: usize,
 ) -> Result<ChatResponse, String> {
-    let tools = get_tools();
     let mut current_messages = messages;
     let mut iteration = 0;
 

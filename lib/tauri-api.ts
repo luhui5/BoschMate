@@ -8,7 +8,6 @@ import type {
   Project,
   Session,
   ChatMessage,
-  FileEntry,
   GrepMatch,
   GitStatus,
   GitDiff,
@@ -17,13 +16,29 @@ import type {
   Note,
   Skill,
   UpdateInfo,
+  FileNode,
 } from './types';
+import {
+  mapProject,
+  mapSession,
+  mapChatMessage,
+  mapGitFile,
+  mapMemory,
+  mapNote,
+  fileEntryToNode,
+  type RawProject,
+  type RawSession,
+  type RawChatMessage,
+  type RawFileEntry,
+  type RawGitStatus,
+  type RawMemory,
+  type RawNote,
+} from './ipc-mapper';
 
 // ── Helpers ──
 
 let tauriAvailable = false;
 try {
-  // Lazily detect Tauri environment
   tauriAvailable = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
 } catch {
   tauriAvailable = false;
@@ -44,17 +59,8 @@ export function isTauri(): boolean {
 
 // ── Native Dialogs ──
 
-/**
- * Open the OS-native folder picker dialog.
- * On Windows this uses the Win32 folder browser,
- * on Linux it uses the GTK/Qt file chooser.
- * Returns the selected folder path or null if cancelled.
- */
 export async function pickFolder(): Promise<string | null> {
-  if (!tauriAvailable) {
-    console.warn('[tauri-api] Tauri not available, cannot open native folder dialog.');
-    return null;
-  }
+  if (!tauriAvailable) return null;
   const { open } = await import('@tauri-apps/plugin-dialog');
   const selected = await open({
     directory: true,
@@ -67,7 +73,8 @@ export async function pickFolder(): Promise<string | null> {
 // ── Projects ──
 
 export async function listProjects(): Promise<Project[]> {
-  return invoke<Project[]>('list_projects');
+  const raw = await invoke<RawProject[]>('list_projects');
+  return raw.map(mapProject);
 }
 
 export async function createProject(input: {
@@ -76,7 +83,8 @@ export async function createProject(input: {
   language?: string;
   framework?: string;
 }): Promise<Project> {
-  return invoke<Project>('create_project', { input });
+  const raw = await invoke<RawProject>('create_project', { input });
+  return mapProject(raw);
 }
 
 export async function removeProject(id: string): Promise<void> {
@@ -84,13 +92,15 @@ export async function removeProject(id: string): Promise<void> {
 }
 
 export async function openProject(id: string): Promise<Project> {
-  return invoke<Project>('open_project', { id });
+  const raw = await invoke<RawProject>('open_project', { id });
+  return mapProject(raw);
 }
 
 // ── Sessions ──
 
 export async function listSessions(projectId: string): Promise<Session[]> {
-  return invoke<Session[]>('list_sessions', { projectId });
+  const raw = await invoke<RawSession[]>('list_sessions', { projectId });
+  return raw.map((s) => mapSession(s));
 }
 
 export async function createSession(input: {
@@ -98,7 +108,8 @@ export async function createSession(input: {
   title?: string;
   mode?: string;
 }): Promise<Session> {
-  return invoke<Session>('create_session', { input });
+  const raw = await invoke<RawSession>('create_session', { input });
+  return mapSession(raw);
 }
 
 export async function deleteSession(id: string): Promise<void> {
@@ -112,7 +123,8 @@ export async function updateSessionTitle(id: string, title: string): Promise<voi
 // ── Messages ──
 
 export async function listMessages(sessionId: string): Promise<ChatMessage[]> {
-  return invoke<ChatMessage[]>('list_messages', { sessionId });
+  const raw = await invoke<RawChatMessage[]>('list_messages', { sessionId });
+  return raw.map(mapChatMessage);
 }
 
 export async function sendMessage(input: {
@@ -120,7 +132,8 @@ export async function sendMessage(input: {
   content: string;
   mode?: string;
 }): Promise<ChatMessage> {
-  return invoke<ChatMessage>('send_message', { input });
+  const raw = await invoke<RawChatMessage>('send_message', { input });
+  return mapChatMessage(raw);
 }
 
 export async function saveAssistantMessage(
@@ -128,16 +141,19 @@ export async function saveAssistantMessage(
   content: string,
   mode?: string
 ): Promise<ChatMessage> {
-  return invoke<ChatMessage>('save_assistant_message', { sessionId, content, mode });
+  const raw = await invoke<RawChatMessage>('save_assistant_message', { sessionId, content, mode });
+  return mapChatMessage(raw);
 }
 
 // ── File System ──
 
-export async function listDirectory(
+export async function listDirectoryTree(
   projectId: string,
+  projectRoot: string,
   path?: string
-): Promise<FileEntry[]> {
-  return invoke<FileEntry[]>('list_directory', { projectId, path });
+): Promise<FileNode[]> {
+  const raw = await invoke<RawFileEntry[]>('list_directory', { projectId, path });
+  return raw.map((e) => fileEntryToNode(e, projectRoot));
 }
 
 export async function readFile(
@@ -155,13 +171,6 @@ export async function writeFile(
   return invoke<string>('write_file', { projectId, path, content });
 }
 
-export async function globSearch(
-  projectId: string,
-  input: { pattern: string; path?: string }
-): Promise<FileEntry[]> {
-  return invoke<FileEntry[]>('glob_search', { projectId, input });
-}
-
 export async function grepSearch(
   projectId: string,
   input: { pattern: string; path?: string; glob?: string; head_limit?: number }
@@ -172,7 +181,13 @@ export async function grepSearch(
 // ── Git ──
 
 export async function gitStatus(projectId: string): Promise<GitStatus> {
-  return invoke<GitStatus>('git_status', { projectId });
+  const raw = await invoke<RawGitStatus>('git_status', { projectId });
+  return {
+    branch: raw.branch,
+    ahead: raw.ahead,
+    behind: raw.behind,
+    files: raw.files.map(mapGitFile),
+  };
 }
 
 export async function gitDiff(
@@ -183,10 +198,7 @@ export async function gitDiff(
   return invoke<GitDiff>('git_diff', { projectId, staged, path });
 }
 
-export async function gitLog(
-  projectId: string,
-  count?: number
-): Promise<GitCommit[]> {
+export async function gitLog(projectId: string, count?: number): Promise<GitCommit[]> {
   return invoke<GitCommit[]>('git_log', { projectId, count });
 }
 
@@ -205,7 +217,8 @@ export async function gitBranches(projectId: string): Promise<string[]> {
 // ── Memories ──
 
 export async function listMemories(projectId: string): Promise<Memory[]> {
-  return invoke<Memory[]>('list_memories', { projectId });
+  const raw = await invoke<RawMemory[]>('list_memories', { projectId });
+  return raw.map(mapMemory);
 }
 
 export async function saveMemory(
@@ -215,13 +228,14 @@ export async function saveMemory(
   importance?: number,
   sourceSessionId?: string
 ): Promise<Memory> {
-  return invoke<Memory>('save_memory', {
+  const raw = await invoke<RawMemory>('save_memory', {
     projectId,
     type,
     content,
     importance,
     sourceSessionId,
   });
+  return mapMemory(raw);
 }
 
 export async function deleteMemory(id: string): Promise<void> {
@@ -231,7 +245,8 @@ export async function deleteMemory(id: string): Promise<void> {
 // ── Notes ──
 
 export async function listNotes(projectId: string): Promise<Note[]> {
-  return invoke<Note[]>('list_notes', { projectId });
+  const raw = await invoke<RawNote[]>('list_notes', { projectId });
+  return raw.map(mapNote);
 }
 
 export async function saveNote(
@@ -239,7 +254,8 @@ export async function saveNote(
   title: string,
   content: string
 ): Promise<Note> {
-  return invoke<Note>('save_note', { projectId, title, content });
+  const raw = await invoke<RawNote>('save_note', { projectId, title, content });
+  return mapNote(raw);
 }
 
 // ── Skills / Settings / Update ──
@@ -274,6 +290,17 @@ export interface AiChatRequest {
   system?: string;
 }
 
+export interface AiLoopRequest {
+  provider: string;
+  model: string;
+  messages: { role: string; content: string }[];
+  system_prompt?: string;
+  api_key?: string;
+  base_url?: string;
+  max_iterations?: number;
+  assistant_mode?: boolean;
+}
+
 export interface ChatTokenEvent {
   session_id: string;
   message_id: string;
@@ -285,7 +312,18 @@ export async function streamChat(
   request: AiChatRequest,
   sessionId: string
 ): Promise<ChatMessage> {
-  return invoke<ChatMessage>('stream_chat', { request, sessionId });
+  const raw = await invoke<RawChatMessage>('stream_chat', { request, sessionId });
+  return mapChatMessage(raw);
+}
+
+/** Full AI Loop with tool execution (edit / auto modes). */
+export async function aiLoopChat(
+  input: AiLoopRequest,
+  sessionId: string,
+  projectId: string
+): Promise<ChatMessage> {
+  const raw = await invoke<RawChatMessage>('ai_loop_chat', { input, sessionId, projectId });
+  return mapChatMessage(raw);
 }
 
 export async function listModels(
@@ -295,13 +333,7 @@ export async function listModels(
   return invoke<string[]>('list_models', { provider, baseUrl });
 }
 
-/**
- * Listen for streaming chat tokens from the Rust backend.
- * Returns an unsubscribe function.
- */
-export function onChatToken(
-  callback: (event: ChatTokenEvent) => void
-): () => void {
+export function onChatToken(callback: (event: ChatTokenEvent) => void): () => void {
   if (!isTauri()) return () => {};
 
   const { listen } = require('@tauri-apps/api/event');
