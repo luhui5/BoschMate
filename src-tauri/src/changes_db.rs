@@ -70,6 +70,20 @@ pub fn update_change_status(
     Ok(())
 }
 
+pub fn update_change_applied(
+    conn: &Connection,
+    id: &str,
+    status: &str,
+    applied_at: Option<&str>,
+    snapshot_id: Option<&str>,
+) -> Result<()> {
+    conn.execute(
+        "UPDATE changes SET status = ?1, applied_at = ?2, snapshot_id = ?3 WHERE id = ?4",
+        params![status, applied_at, snapshot_id, id],
+    )?;
+    Ok(())
+}
+
 pub fn get_change(conn: &Connection, id: &str) -> Result<Option<ChangeRecord>> {
     let mut stmt = conn.prepare(
         "SELECT id, session_id, message_id, file_path, diff_text, status, snapshot_id, edit_meta, created_at, applied_at

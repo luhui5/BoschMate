@@ -23,6 +23,16 @@ import { Button } from "@/components/ui/button"
 import { BoschLogo } from "@/components/bosch-logo"
 import { ThinkingDepthSelect } from "@/components/thinking-depth-select"
 import type { ThinkingDepth } from "@/lib/thinking-depth"
+
+function TypingDots() {
+  return (
+    <span className="inline-flex items-center gap-1 py-0.5">
+      <span className="size-1.5 animate-bounce rounded-full bg-muted-foreground [animation-delay:-0.3s]" />
+      <span className="size-1.5 animate-bounce rounded-full bg-muted-foreground [animation-delay:-0.15s]" />
+      <span className="size-1.5 animate-bounce rounded-full bg-muted-foreground" />
+    </span>
+  )
+}
 import { SessionSidebar } from "@/components/assistant/session-sidebar"
 import { FolderPicker } from "@/components/assistant/folder-picker"
 import {
@@ -45,7 +55,9 @@ import {
   resolveActiveModelId,
   type ModelConfig,
 } from "@/lib/models"
-import { streamChat, aiLoopChat, sendMessage as tauriSendMessage, deleteSession as tauriDeleteSession, isTauri, type AiChatRequest } from "@/lib/tauri-api"
+import { streamChat, aiLoopChat, sendMessage as tauriSendMessage, deleteSession as tauriDeleteSession, isTauri, onChatToken, type AiChatRequest } from "@/lib/tauri-api"
+import { parseLlmError } from "@/lib/llm-error"
+import { LlmErrorCard } from "@/components/llm-error-card"
 
 interface Suggestion {
   icon: React.ComponentType<{ className?: string }>
@@ -130,6 +142,7 @@ export function AssistantView({
 
   const [input, setInput] = useState("")
   const [thinking, setThinking] = useState(false)
+  const [llmError, setLlmError] = useState<ReturnType<typeof parseLlmError> | null>(null)
   const [modelOpen, setModelOpen] = useState(false)
   const [folderOpen, setFolderOpen] = useState(false)
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
@@ -290,6 +303,34 @@ export function AssistantView({
     }
 
     const assistantMsgId = `a-${Date.now()}`
+    setLlmError(null)
+
+    setSessions((prev) =>
+      prev.map((s) =>
+        s.id === activeId
+          ? {
+              ...s,
+              messages: [...s.messages, { id: assistantMsgId, role: "assistant" as const, content: "" }],
+            }
+          : s,
+      ),
+    )
+
+    const unlisten = onChatToken((e) => {
+      if (e.session_id !== activeId) return
+      setSessions((prev) =>
+        prev.map((s) =>
+          s.id === activeId
+            ? {
+                ...s,
+                messages: s.messages.map((m) =>
+                  m.id === assistantMsgId ? { ...m, content: e.content } : m,
+                ),
+              }
+            : s,
+        ),
+      )
+    })
 
     // Load API key if available
     const apiKey = (await loadApiKey(modelCfg.id)) ?? undefined
@@ -350,34 +391,32 @@ export function AssistantView({
           s.id === activeId
             ? {
                 ...s,
-                messages: [
-                  ...s.messages,
-                  { id: response.id, role: "assistant" as const, content: response.content },
-                ],
+                messages: s.messages.map((m) =>
+                  m.id === assistantMsgId
+                    ? { id: response.id, role: "assistant" as const, content: response.content }
+                    : m,
+                ),
                 updatedAt: new Date().toISOString(),
               }
             : s,
         ),
       )
     } catch (err) {
-      // Tauri throws plain strings from Rust Err(...); Error objects from JS runtime
-      const reason = typeof err === "string" ? err : err instanceof Error ? err.message : "未知错误"
-      const errorMsg = `抱歉，请求失败：${reason}\n\n请检查模型配置与端点是否可访问。`
+      const parsed = parseLlmError(err)
+      setLlmError(parsed)
       setSessions((prev) =>
         prev.map((s) =>
           s.id === activeId
             ? {
                 ...s,
-                messages: [
-                  ...s.messages,
-                  { id: assistantMsgId, role: "assistant" as const, content: errorMsg },
-                ],
+                messages: s.messages.filter((m) => m.id !== assistantMsgId),
                 updatedAt: new Date().toISOString(),
               }
             : s,
         ),
       )
     } finally {
+      unlisten()
       setThinking(false)
     }
   }
@@ -460,6 +499,12 @@ export function AssistantView({
           </Button>
         </header>
 
+        {llmError && (
+          <div className="border-b border-border px-5 py-2">
+            <LlmErrorCard error={llmError} onRetry={() => { setLlmError(null); if (active?.messages.length) { const last = [...active.messages].reverse().find(m => m.role === 'user'); if (last) void send(last.content) } }} />
+          </div>
+        )}
+
         {/* Message area */}
         <div ref={scrollRef} className="flex-1 overflow-y-auto">
           {!hasChat ? (
@@ -518,19 +563,19 @@ export function AssistantView({
                         : "bg-primary text-primary-foreground",
                     )}
                   >
-                    {m.content}
+                    {m.content ||
+                      (m.role === "assistant" && thinking ? <TypingDots /> : null)}
                   </div>
                 </div>
               ))}
-              {thinking && (
+              {thinking &&
+                !messages.some((m) => m.role === "assistant" && !m.content.trim()) && (
                 <div className="flex gap-3">
                   <span className="flex size-8 shrink-0 items-center justify-center rounded-md bg-foreground text-background">
                     <BoschLogo className="size-4" />
                   </span>
                   <div className="flex items-center gap-1 rounded-2xl bg-card px-4 py-3">
-                    <span className="size-1.5 animate-bounce rounded-full bg-muted-foreground [animation-delay:-0.3s]" />
-                    <span className="size-1.5 animate-bounce rounded-full bg-muted-foreground [animation-delay:-0.15s]" />
-                    <span className="size-1.5 animate-bounce rounded-full bg-muted-foreground" />
+                    <TypingDots />
                   </div>
                 </div>
               )}

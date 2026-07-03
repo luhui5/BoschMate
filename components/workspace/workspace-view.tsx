@@ -1,7 +1,6 @@
 "use client"
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
-import { useRouter } from "next/navigation"
 import Link from "next/link"
 import {
   PanelLeft,
@@ -23,6 +22,9 @@ import { LeftSidebar } from "@/components/workspace/left-sidebar"
 import { RightSidebar } from "@/components/workspace/right-sidebar"
 import { ChatMessageView } from "@/components/workspace/chat-message"
 import { ChatInput } from "@/components/workspace/chat-input"
+import { FilePreviewPanel } from "@/components/file-preview-panel"
+import { BulkWriteDialog } from "@/components/bulk-write-dialog"
+import { LlmErrorCard } from "@/components/llm-error-card"
 import {
   projects as mockProjects,
   sessions as mockSessions,
@@ -33,7 +35,6 @@ import type { AgentMode, ChatMessage, DiffHunk, FileNode, GitFile, Project, Sess
 import { cn } from "@/lib/utils"
 import {
   isTauri,
-  listProjects,
   openProject,
   listSessions,
   listMessages,
@@ -47,12 +48,17 @@ import {
   listNotes,
   applyChange,
   rejectChange,
+  revertChange,
   saveRecoverySnapshot,
   watchProjectDir,
+  revealInExplorer,
+  onChatToken,
   type AiChatRequest,
+  type AiLoopRequest,
 } from "@/lib/tauri-api"
-import { loadModels, findModel, loadApiKey, resolveActiveModelId, recordModelUsage } from "@/lib/models"
+import { loadModels, findModel, loadApiKey, resolveActiveModelId, recordModelUsage, saveLastUsedModelId, type ModelConfig } from "@/lib/models"
 import { parseCommand, executeCommand } from "@/lib/slash-commands"
+import { parseLlmError, type ParsedLlmError } from "@/lib/llm-error"
 
 let idCounter = 1
 const nextId = () => `gen-${idCounter++}`
@@ -73,21 +79,29 @@ function modeSystemPrompt(mode: AgentMode): string {
 }
 
 export function WorkspaceView({ projectId }: { projectId: string }) {
-  const router = useRouter()
-  const { resolvedTheme, toggleTheme, runMode, setRunMode } = useApp()
+  const { resolvedTheme, toggleTheme, runMode } = useApp()
 
   const [project, setProject] = useState<Project | null>(null)
-  const [allProjectsList, setAllProjectsList] = useState<Project[]>([])
   const [projectLoading, setProjectLoading] = useState(true)
   const [sessions, setSessions] = useState<Session[]>([])
   const [activeSessionId, setActiveSessionId] = useState<string>("")
-  const [mode, setMode] = useState<AgentMode>("edit")
+  const [mode, setMode] = useState<AgentMode>("ask")
+  const [availableModels, setAvailableModels] = useState<ModelConfig[]>([])
+  const [selectedModelId, setSelectedModelId] = useState("")
   const [leftOpen, setLeftOpen] = useState(true)
   const [rightOpen, setRightOpen] = useState(true)
   const [activeFile, setActiveFile] = useState<string | null>(null)
   const [thinking, setThinking] = useState(false)
   const [toast, setToast] = useState<string | null>(null)
+  const [llmError, setLlmError] = useState<ParsedLlmError | null>(null)
+  const [bulkWriteOpen, setBulkWriteOpen] = useState(false)
+  const [pendingBulkRetry, setPendingBulkRetry] = useState<{
+    sessionId: string
+    history: ChatMessage[]
+    userText: string
+  } | null>(null)
   const [fileTree, setFileTree] = useState<FileNode[]>([])
+  const [sessionPrefsTick, setSessionPrefsTick] = useState(0)
   const [fileTreeLoading, setFileTreeLoading] = useState(false)
   const [gitFiles, setGitFiles] = useState<GitFile[]>([])
   const [gitBranch, setGitBranch] = useState("main")
@@ -95,6 +109,24 @@ export function WorkspaceView({ projectId }: { projectId: string }) {
   const [projectNotes, setProjectNotes] = useState(mockNotes)
 
   const scrollRef = useRef<HTMLDivElement>(null)
+
+  const refreshModels = useCallback(() => {
+    loadModels()
+      .then(async (models) => {
+        setAvailableModels(models)
+        const preferred = await resolveActiveModelId(models)
+        setSelectedModelId((prev) =>
+          prev && models.some((m) => m.id === prev) ? prev : preferred,
+        )
+      })
+      .catch(() => {})
+  }, [])
+
+  useEffect(() => {
+    refreshModels()
+    window.addEventListener("focus", refreshModels)
+    return () => window.removeEventListener("focus", refreshModels)
+  }, [refreshModels])
 
   const activeSession = sessions.find((s) => s.id === activeSessionId) ?? null
 
@@ -131,20 +163,16 @@ export function WorkspaceView({ projectId }: { projectId: string }) {
     }
   }, [project])
 
-  // Load project + project list
+  // Load project
   useEffect(() => {
     let cancelled = false
     const load = async () => {
       setProjectLoading(true)
       if (isTauri()) {
         try {
-          const [opened, all] = await Promise.all([
-            openProject(projectId),
-            listProjects(),
-          ])
+          const opened = await openProject(projectId)
           if (cancelled) return
           setProject(opened)
-          setAllProjectsList(all)
           setGitBranch(opened.gitBranch)
           const [mems, notes] = await Promise.all([
             listMemories(projectId).catch(() => []),
@@ -158,7 +186,6 @@ export function WorkspaceView({ projectId }: { projectId: string }) {
           if (!cancelled) {
             const fallback = mockProjects.find((p) => p.id === projectId) ?? mockProjects[0]
             setProject(fallback ?? null)
-            setAllProjectsList(mockProjects as Project[])
           }
         } finally {
           if (!cancelled) setProjectLoading(false)
@@ -168,7 +195,6 @@ export function WorkspaceView({ projectId }: { projectId: string }) {
       const fallback = mockProjects.find((p) => p.id === projectId) ?? mockProjects[0]
       if (!cancelled) {
         setProject(fallback ?? null)
-        setAllProjectsList(mockProjects as Project[])
         setProjectLoading(false)
       }
     }
@@ -293,7 +319,20 @@ export function WorkspaceView({ projectId }: { projectId: string }) {
     setActiveSessionId(id)
   }
 
-  const requestAiReply = async (sessionId: string, history: ChatMessage[], userText: string) => {
+  const loadTreeChildren = useCallback(
+    async (dirPath: string) => {
+      if (!project) return []
+      return listDirectoryTree(project.id, project.localPath, dirPath)
+    },
+    [project],
+  )
+
+  const requestAiReply = async (
+    sessionId: string,
+    history: ChatMessage[],
+    userText: string,
+    opts?: { bulkWriteConfirmed?: boolean },
+  ) => {
     if (!project) return
 
     if (!isTauri()) {
@@ -301,9 +340,11 @@ export function WorkspaceView({ projectId }: { projectId: string }) {
       return
     }
 
-    const models = await loadModels()
-    const preferredId = await resolveActiveModelId(models)
-    const modelCfg = findModel(models, preferredId) ?? models[0]
+    const models = availableModels.length ? availableModels : await loadModels()
+    const modelCfg =
+      findModel(models, selectedModelId) ??
+      findModel(models, await resolveActiveModelId(models)) ??
+      models[0]
     if (!modelCfg) {
       const errMsg: ChatMessage = {
         id: nextId(),
@@ -323,25 +364,55 @@ export function WorkspaceView({ projectId }: { projectId: string }) {
     const apiKey = (await loadApiKey(modelCfg.id)) ?? undefined
     const convo = history.map((m) => ({ role: m.role, content: m.content }))
     const system = modeSystemPrompt(mode)
+    setLlmError(null)
+
+    const streamId = nextId()
+    const useLoop = mode === "edit" || mode === "auto"
+    if (useLoop) {
+      updateSession(sessionId, (s) => ({
+        ...s,
+        messages: [
+          ...s.messages,
+          {
+            id: streamId,
+            role: "assistant",
+            content: "",
+            streaming: true,
+            createdAt: new Date().toISOString(),
+            mode,
+          },
+        ],
+      }))
+    }
+
+    const unlisten = useLoop
+      ? onChatToken((e) => {
+          if (e.session_id !== sessionId) return
+          updateSession(sessionId, (s) => ({
+            ...s,
+            messages: s.messages.map((m) =>
+              m.id === streamId ? { ...m, content: e.content, streaming: true } : m,
+            ),
+          }))
+        })
+      : () => {}
 
     try {
       let reply: ChatMessage
-      if (mode === "edit" || mode === "auto") {
-        reply = await aiLoopChat(
-          {
-            provider: modelCfg.provider,
-            model: modelCfg.name,
-            messages: convo,
-            system_prompt: system,
-            api_key: apiKey,
-            base_url: modelCfg.endpoint ?? undefined,
-            max_iterations: mode === "auto" ? 15 : 8,
-            edit_dry_run: mode === "edit",
-            agent_mode: mode,
-          },
-          sessionId,
-          project.id,
-        )
+      if (useLoop) {
+        const loopInput: AiLoopRequest = {
+          provider: modelCfg.provider,
+          model: modelCfg.name,
+          messages: convo,
+          system_prompt: system,
+          api_key: apiKey,
+          base_url: modelCfg.endpoint ?? undefined,
+          max_iterations: mode === "auto" ? 15 : 8,
+          edit_dry_run: mode === "edit",
+          agent_mode: mode,
+          bulk_write_confirmed: opts?.bulkWriteConfirmed,
+        }
+        reply = await aiLoopChat(loopInput, sessionId, project.id)
       } else {
         const request: AiChatRequest = {
           provider: modelCfg.provider,
@@ -358,14 +429,32 @@ export function WorkspaceView({ projectId }: { projectId: string }) {
       reply.mode = mode
       updateSession(sessionId, (s) => ({
         ...s,
-        messages: [...s.messages, reply],
+        messages: useLoop
+          ? s.messages.map((m) => (m.id === streamId ? { ...reply, streaming: false } : m))
+          : [...s.messages, reply],
         updatedAt: new Date().toISOString(),
       }))
       if (modelCfg) await recordModelUsage(modelCfg.id)
       await refreshGit()
       await refreshFileTree()
     } catch (err) {
-      const reason = typeof err === "string" ? err : err instanceof Error ? err.message : "未知错误"
+      const parsed = parseLlmError(err)
+      if (parsed.kind === "bulk_write") {
+        setPendingBulkRetry({ sessionId, history, userText })
+        setBulkWriteOpen(true)
+        updateSession(sessionId, (s) => ({
+          ...s,
+          messages: s.messages.filter((m) => m.id !== streamId),
+        }))
+        return
+      }
+      setLlmError(parsed)
+      updateSession(sessionId, (s) => ({
+        ...s,
+        messages: useLoop
+          ? s.messages.filter((m) => m.id !== streamId)
+          : s.messages,
+      }))
       updateSession(sessionId, (s) => ({
         ...s,
         messages: [
@@ -373,13 +462,15 @@ export function WorkspaceView({ projectId }: { projectId: string }) {
           {
             id: nextId(),
             role: "assistant",
-            content: `请求失败：${reason}\n\n请检查模型配置与 Ollama/API 是否可访问。`,
+            content: parsed.message,
             createdAt: new Date().toISOString(),
             mode,
           },
         ],
         updatedAt: new Date().toISOString(),
       }))
+    } finally {
+      unlisten()
     }
   }
 
@@ -410,10 +501,17 @@ export function WorkspaceView({ projectId }: { projectId: string }) {
     }, 900)
   }
 
-  const send = async (text: string) => {
+  const send = async (text: string, imageDataUrl?: string) => {
     if (!project) return
 
-    const slash = parseCommand(text.trim())
+    let payload = text.trim()
+    if (imageDataUrl) {
+      const kb = Math.round((imageDataUrl.length * 3) / 4 / 1024)
+      payload = `${payload}\n\n[附带截图 ~${kb}KB — 请结合文字分析界面/代码问题]`
+    }
+    if (!payload) return
+
+    const slash = parseCommand(payload.trim())
     if (slash) {
       setThinking(true)
       try {
@@ -439,7 +537,7 @@ export function WorkspaceView({ projectId }: { projectId: string }) {
             })()
 
         const userMsg: ChatMessage = {
-          id: nextId(), role: "user", content: text, createdAt: new Date().toISOString(), mode,
+          id: nextId(), role: "user", content: payload, createdAt: new Date().toISOString(), mode,
         }
         const assistantMsg: ChatMessage = {
           id: nextId(), role: "assistant", content: result, createdAt: new Date().toISOString(), mode,
@@ -460,7 +558,7 @@ export function WorkspaceView({ projectId }: { projectId: string }) {
       if (isTauri()) {
         const s = await createSession({
           project_id: project.id,
-          title: text.slice(0, 20),
+          title: payload.slice(0, 20),
           mode,
         })
         const session: Session = { ...s, messages: [] }
@@ -472,7 +570,7 @@ export function WorkspaceView({ projectId }: { projectId: string }) {
       const s: Session = {
         id,
         projectId: project.id,
-        title: text.slice(0, 20),
+        title: payload.slice(0, 20),
         mode,
         status: "active",
         updatedAt: new Date().toISOString(),
@@ -492,14 +590,14 @@ export function WorkspaceView({ projectId }: { projectId: string }) {
       if (isTauri()) {
         userMsg = await tauriSendMessage({
           session_id: sessionId,
-          content: text,
+          content: payload,
           mode,
         })
       } else {
         userMsg = {
           id: nextId(),
           role: "user",
-          content: text,
+          content: payload,
           createdAt: new Date().toISOString(),
           mode,
         }
@@ -508,12 +606,12 @@ export function WorkspaceView({ projectId }: { projectId: string }) {
       const nextMessages = [...prior, userMsg]
       updateSession(sessionId, (s) => ({
         ...s,
-        title: s.messages.length === 0 ? text.slice(0, 20) : s.title,
+        title: s.messages.length === 0 ? payload.slice(0, 20) : s.title,
         messages: nextMessages,
         updatedAt: new Date().toISOString(),
       }))
 
-      await requestAiReply(sessionId, nextMessages, text)
+      await requestAiReply(sessionId, nextMessages, payload)
     } finally {
       setThinking(false)
     }
@@ -544,6 +642,10 @@ export function WorkspaceView({ projectId }: { projectId: string }) {
         await refreshGit()
       } else if (action === "reject" && diff.changeId && isTauri()) {
         await rejectChange(diff.changeId)
+      } else if (action === "revert" && diff.changeId && isTauri()) {
+        await revertChange(project.id, diff.changeId)
+        await refreshFileTree()
+        await refreshGit()
       }
     } catch (err) {
       const reason = err instanceof Error ? err.message : String(err)
@@ -569,21 +671,33 @@ export function WorkspaceView({ projectId }: { projectId: string }) {
 
   const onQuickAction = (action: string) => {
     if (action === "upload") {
-      setToast("已打开文件选择器")
+      setToast("请使用 + 或粘贴图片到输入框")
       return
     }
-    send(action)
+    void send(action)
   }
 
   const openFile = (path: string) => {
     setActiveFile(path)
     setRightOpen(true)
-    setToast(`已打开 ${path}`)
+  }
+
+  const mergeSession = (sourceId: string, targetId: string) => {
+    const source = sessions.find((s) => s.id === sourceId)
+    if (!source) return
+    updateSession(targetId, (s) => ({
+      ...s,
+      messages: [...s.messages, ...source.messages].sort(
+        (a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime(),
+      ),
+      updatedAt: new Date().toISOString(),
+    }))
+    setToast(`已合并「${source.title}」到当前会话`)
   }
 
   if (projectLoading) {
     return (
-      <div className="flex h-dvh items-center justify-center gap-2 text-sm text-muted-foreground">
+      <div className="flex h-[calc(100dvh-34px)] items-center justify-center gap-2 text-sm text-muted-foreground">
         <Loader2 className="size-5 animate-spin" />
         加载项目…
       </div>
@@ -592,7 +706,7 @@ export function WorkspaceView({ projectId }: { projectId: string }) {
 
   if (!project) {
     return (
-      <div className="flex h-dvh flex-col items-center justify-center gap-4">
+      <div className="flex h-[calc(100dvh-34px)] flex-col items-center justify-center gap-4">
         <p className="text-sm text-muted-foreground">项目不存在或无法加载</p>
         <Button nativeButton={false} render={<Link href="/">返回主页</Link>}>
           返回主页
@@ -602,7 +716,7 @@ export function WorkspaceView({ projectId }: { projectId: string }) {
   }
 
   return (
-    <div className="flex h-dvh flex-col bg-background">
+    <div className="flex h-[calc(100dvh-34px)] flex-col bg-background">
       <header className="flex h-12 shrink-0 items-center gap-2 border-b border-border px-3">
         <Button
           variant="ghost"
@@ -628,26 +742,24 @@ export function WorkspaceView({ projectId }: { projectId: string }) {
         </div>
 
         <div className="ml-auto flex items-center gap-1.5">
-          <div className="flex items-center rounded-md border border-border p-0.5">
+          <div className="flex items-center rounded-md border border-border p-0.5" title="由健康探测自动更新">
             {(["full", "degraded", "offline"] as const).map((m) => (
-              <button
+              <span
                 key={m}
-                type="button"
-                onClick={() => setRunMode(m)}
                 className={cn(
-                  "flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-medium transition-colors",
+                  "flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-medium",
                   runMode === m
                     ? m === "full"
                       ? "bg-success/15 text-success"
                       : m === "degraded"
                         ? "bg-warning/15 text-warning"
                         : "bg-destructive/15 text-destructive"
-                    : "text-muted-foreground hover:text-foreground",
+                    : "text-muted-foreground/40",
                 )}
               >
                 {m === "full" ? <Wifi className="size-3" /> : m === "degraded" ? <TriangleAlert className="size-3" /> : <WifiOff className="size-3" />}
                 {m === "full" ? "Full" : m === "degraded" ? "降级" : "离线"}
-              </button>
+              </span>
             ))}
           </div>
           {activeSession && (
@@ -679,8 +791,8 @@ export function WorkspaceView({ projectId }: { projectId: string }) {
       <div className="flex min-h-0 flex-1">
         {leftOpen && (
           <LeftSidebar
+            key={sessionPrefsTick}
             project={project}
-            projects={allProjectsList.length ? allProjectsList : mockProjects}
             sessions={sessions}
             memories={projectMemories}
             notes={projectNotes}
@@ -691,7 +803,8 @@ export function WorkspaceView({ projectId }: { projectId: string }) {
               if (s) setMode(s.mode)
             }}
             onNewSession={newSession}
-            onSwitchProject={(id) => router.push(`/project/${id}`)}
+            onMergeSession={mergeSession}
+            onSessionsChange={() => setSessionPrefsTick((t) => t + 1)}
           />
         )}
 
@@ -700,10 +813,27 @@ export function WorkspaceView({ projectId }: { projectId: string }) {
             <div className="flex items-center gap-2 border-b border-border bg-card px-3 py-1.5">
               <FileCode2 className="size-3.5 text-muted-foreground" />
               <span className="font-mono text-xs">{activeFile}</span>
-              <span className="text-[10px] text-muted-foreground">（预览）</span>
               <Button variant="ghost" size="icon-xs" className="ml-auto" onClick={() => setActiveFile(null)} aria-label="关闭预览">
                 <X />
               </Button>
+            </div>
+          )}
+          {activeFile && project && <FilePreviewPanel projectId={project.id} path={activeFile} />}
+
+          {llmError && (
+            <div className="border-b border-border px-4 py-2">
+              <LlmErrorCard
+                error={llmError}
+                onRetry={() => {
+                  setLlmError(null)
+                  if (activeSession) {
+                    const lastUser = [...activeSession.messages].reverse().find((m) => m.role === "user")
+                    if (lastUser) {
+                      void requestAiReply(activeSession.id, activeSession.messages.slice(0, -1), lastUser.content)
+                    }
+                  }
+                }}
+              />
             </div>
           )}
 
@@ -761,9 +891,17 @@ export function WorkspaceView({ projectId }: { projectId: string }) {
           <ChatInput
             mode={mode}
             onModeChange={setMode}
-            onSend={(t) => { void send(t) }}
+            onSend={(t, img) => { void send(t, img) }}
             onQuickAction={onQuickAction}
+            models={availableModels}
+            selectedModelId={selectedModelId}
+            onModelChange={(id) => {
+              setSelectedModelId(id)
+              void saveLastUsedModelId(id)
+            }}
+            onValidationError={setToast}
             disabled={runMode === "offline"}
+            degraded={runMode === "degraded"}
           />
         </main>
 
@@ -777,12 +915,37 @@ export function WorkspaceView({ projectId }: { projectId: string }) {
             fileTreeLoading={fileTreeLoading}
             changes={changes}
             activeFile={activeFile}
+            activeSessionId={activeSessionId}
             onOpenFile={openFile}
             onDiffAction={onDiffAction}
-            onGitRefresh={refreshGit}
+            onGitRefresh={() => { void refreshGit(); void refreshFileTree() }}
+            onLoadChildren={loadTreeChildren}
+            onFileTreeChange={setFileTree}
+            onCopyPath={(p) => setToast(`已复制路径：${p}`)}
+            onRevealInExplorer={(p) => {
+              if (isTauri()) void revealInExplorer(project.id, p).catch((e) => setToast(String(e)))
+            }}
           />
         )}
       </div>
+
+      <BulkWriteDialog
+        open={bulkWriteOpen}
+        onCancel={() => {
+          setBulkWriteOpen(false)
+          setPendingBulkRetry(null)
+        }}
+        onConfirm={() => {
+          setBulkWriteOpen(false)
+          const pending = pendingBulkRetry
+          setPendingBulkRetry(null)
+          if (pending) {
+            void requestAiReply(pending.sessionId, pending.history, pending.userText, {
+              bulkWriteConfirmed: true,
+            })
+          }
+        }}
+      />
 
       {toast && (
         <div className="fixed bottom-24 left-1/2 z-50 -translate-x-1/2 rounded-lg border border-border bg-popover px-4 py-2 text-sm shadow-xl">

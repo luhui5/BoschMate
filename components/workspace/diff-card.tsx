@@ -1,10 +1,29 @@
 "use client"
 
 import { useState } from "react"
-import { ChevronDown, Check, X, Undo2, FileCode2 } from "lucide-react"
+import { ChevronDown, Check, X, Undo2, FileCode2, Columns2 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { cn } from "@/lib/utils"
+import { MonacoDiffViewer } from "@/components/code-editor"
+import { DiffLinesView } from "@/components/workspace/diff-lines-view"
 import type { DiffHunk } from "@/lib/types"
+
+function deriveSideBySide(diff: DiffHunk): { original: string; modified: string } {
+  if (diff.editMeta?.old_string != null && diff.editMeta?.new_string != null) {
+    return { original: diff.editMeta.old_string, modified: diff.editMeta.new_string }
+  }
+  const original: string[] = []
+  const modified: string[] = []
+  for (const line of diff.lines) {
+    if (line.type === "add") modified.push(line.text)
+    else if (line.type === "del") original.push(line.text)
+    else if (line.type === "context") {
+      original.push(line.text)
+      modified.push(line.text)
+    }
+  }
+  return { original: original.join("\n"), modified: modified.join("\n") }
+}
 
 export function DiffCard({
   diff,
@@ -18,6 +37,8 @@ export function DiffCard({
   onRevert?: () => void
 }) {
   const [open, setOpen] = useState(true)
+  const [sideBySide, setSideBySide] = useState(false)
+  const side = deriveSideBySide(diff)
 
   const statusLabel: Record<DiffHunk["status"], string> = {
     pending: "待审阅",
@@ -51,52 +72,21 @@ export function DiffCard({
         >
           {statusLabel[diff.status]}
         </span>
+        <Button variant="ghost" size="xs" onClick={() => setSideBySide((v) => !v)} title="Side-by-side diff">
+          <Columns2 className="size-3" />
+        </Button>
       </div>
 
-      {open && (
-        <div className="max-h-72 overflow-auto scrollbar-thin">
-          <table className="w-full border-collapse font-mono text-xs">
-            <tbody>
-              {diff.lines.map((line, i) => (
-                <tr
-                  key={i}
-                  className={cn(
-                    line.type === "add" && "bg-diff-add/40",
-                    line.type === "del" && "bg-diff-del/40",
-                    line.type === "meta" && "bg-secondary/50",
-                  )}
-                >
-                  <td className="w-10 select-none border-r border-border px-2 text-right text-muted-foreground/60">
-                    {line.oldNo ?? ""}
-                  </td>
-                  <td className="w-10 select-none border-r border-border px-2 text-right text-muted-foreground/60">
-                    {line.newNo ?? ""}
-                  </td>
-                  <td
-                    className={cn(
-                      "w-4 select-none px-1 text-center",
-                      line.type === "add" && "text-diff-add-foreground",
-                      line.type === "del" && "text-diff-del-foreground",
-                    )}
-                  >
-                    {line.type === "add" ? "+" : line.type === "del" ? "-" : ""}
-                  </td>
-                  <td
-                    className={cn(
-                      "whitespace-pre px-2 py-0.5",
-                      line.type === "add" && "text-diff-add-foreground",
-                      line.type === "del" && "text-diff-del-foreground",
-                      line.type === "meta" && "text-muted-foreground",
-                    )}
-                  >
-                    {line.text || " "}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+      {open && sideBySide && (
+        <MonacoDiffViewer
+          original={side.original}
+          modified={side.modified}
+          language={diff.language}
+          height="280px"
+        />
       )}
+
+      {open && !sideBySide && <DiffLinesView lines={diff.lines} />}
 
       {open && (
         <div className="flex items-center justify-end gap-1.5 border-t border-border bg-card px-2.5 py-1.5">

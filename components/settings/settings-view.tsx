@@ -51,7 +51,7 @@ export function SettingsView() {
   ]
 
   return (
-    <div className="flex h-dvh flex-col bg-background text-foreground">
+    <div className="flex h-[calc(100dvh-34px)] flex-col bg-background text-foreground">
       <header className="flex h-12 shrink-0 items-center gap-3 border-b border-border px-4">
         <Link
           href="/"

@@ -180,7 +180,7 @@ export function fileEntryToNode(entry: RawFileEntry, projectRoot: string): FileN
     name: entry.name,
     path: rel,
     type: nodeType,
-    children: children?.length ? children : nodeType === 'dir' ? [] : undefined,
+    children: nodeType === 'dir' ? (children?.length ? children : undefined) : undefined,
   }
 }
 

@@ -38,6 +38,7 @@ export interface DiffHunk {
   lines: DiffLine[]
   status: "pending" | "applied" | "rejected" | "reverted"
   changeId?: string
+  snapshotId?: string
   editMeta?: {
     path?: string
     old_string?: string

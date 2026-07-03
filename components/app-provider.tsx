@@ -9,9 +9,11 @@ import {
   type UpdateChannel,
   type UpdatePhase,
 } from "@/lib/update"
+import { projectPath } from "@/lib/project-route"
 import { UpdateManager } from "@/components/update/update-manager"
 import { OnboardingWizard } from "@/components/onboarding"
-import { isTauri, getSetting, setSetting as tauriSetSetting } from "@/lib/tauri-api"
+import { RecoveryDialog, type RecoverySnapshotItem } from "@/components/recovery-dialog"
+import { isTauri, getSetting, setSetting as tauriSetSetting, loadRecoverySnapshots, clearRecoverySnapshot, healthCheck } from "@/lib/tauri-api"
 
 type ThemeMode = "dark" | "light" | "system"
 type FontSize = "sm" | "md" | "lg"
@@ -78,6 +80,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [runMode, setRunMode] = useState<RunMode>("full")
   const [isDesktop, setIsDesktop] = useState(false)
   const [showOnboarding, setShowOnboarding] = useState(false)
+  const [recoverySnapshots, setRecoverySnapshots] = useState<RecoverySnapshotItem[]>([])
 
   const [update, setUpdate] = useState<UpdateState>({
     phase: "idle",
@@ -130,6 +133,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
           const done = await getSetting("onboarding_completed")
           if (done !== "true") setShowOnboarding(true)
         } catch { /* ignore */ }
+        try {
+          const snaps = await loadRecoverySnapshots()
+          if (snaps.length) setRecoverySnapshots(snaps)
+        } catch { /* ignore */ }
       }
 
       setSystemTheme(getSystemTheme())
@@ -140,6 +147,22 @@ export function AppProvider({ children }: { children: ReactNode }) {
     }
     load()
   }, [])
+
+  // Health probe every 30s (Full / Degraded / Offline)
+  useEffect(() => {
+    if (!isDesktop) return
+    const poll = async () => {
+      try {
+        const health = await healthCheck("http://localhost:11434")
+        setRunMode(health.mode as RunMode)
+      } catch {
+        setRunMode("offline")
+      }
+    }
+    void poll()
+    const id = setInterval(() => void poll(), 30_000)
+    return () => clearInterval(id)
+  }, [isDesktop])
 
   // 应用主题 + 持久化
   useEffect(() => {
@@ -263,6 +286,18 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   const openOnboarding = () => setShowOnboarding(true)
 
+  const discardRecovery = async (sessionId: string) => {
+    if (isDesktop) await clearRecoverySnapshot(sessionId).catch(() => {})
+    setRecoverySnapshots((prev) => prev.filter((s) => s.sessionId !== sessionId))
+  }
+
+  const discardAllRecovery = async () => {
+    for (const s of recoverySnapshots) {
+      if (isDesktop) await clearRecoverySnapshot(s.sessionId).catch(() => {})
+    }
+    setRecoverySnapshots([])
+  }
+
   return (
     <AppContext.Provider
       value={{
@@ -295,6 +330,19 @@ export function AppProvider({ children }: { children: ReactNode }) {
     >
       {children}
       <UpdateManager />
+      {recoverySnapshots.length > 0 && (
+        <RecoveryDialog
+          snapshots={recoverySnapshots}
+          onRestore={(snap) => {
+            void discardRecovery(snap.sessionId)
+            if (snap.projectId) {
+              window.location.href = projectPath(snap.projectId)
+            }
+          }}
+          onDiscard={(id) => void discardRecovery(id)}
+          onDiscardAll={() => void discardAllRecovery()}
+        />
+      )}
       {showOnboarding && (
         <OnboardingWizard onComplete={() => void completeOnboarding()} onSkip={() => void completeOnboarding()} />
       )}

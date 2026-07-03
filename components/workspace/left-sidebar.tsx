@@ -10,14 +10,17 @@ import {
   Pin,
   Lock,
   Search,
-  ChevronsLeftRight,
-  Home,
+  MoreHorizontal,
+  GitMerge,
+  FileDown,
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Badge } from "@/components/ui/badge"
 import { cn } from "@/lib/utils"
 import { timeAgo } from "@/lib/format"
+import { isSessionPinned, toggleSessionPinned, sortSessionsPinnedFirst } from "@/lib/session-prefs"
+import { downloadTextFile } from "@/lib/workspace-utils"
 import type { Session, Memory, Note, Project } from "@/lib/types"
 
 type Tab = "sessions" | "memory" | "notes"
@@ -31,28 +34,30 @@ const memoryTypeLabel: Record<Memory["type"], string> = {
 
 export function LeftSidebar({
   project,
-  projects,
   sessions,
   memories,
   notes,
   activeSessionId,
   onSelectSession,
   onNewSession,
-  onSwitchProject,
+  onMergeSession,
+  onSessionsChange,
 }: {
   project: Project
-  projects: Project[]
   sessions: Session[]
   memories: Memory[]
   notes: Note[]
   activeSessionId: string
   onSelectSession: (id: string) => void
   onNewSession: () => void
-  onSwitchProject: (id: string) => void
+  onMergeSession?: (sourceId: string, targetId: string) => void
+  onSessionsChange?: () => void
 }) {
   const [tab, setTab] = useState<Tab>("sessions")
-  const [showProjects, setShowProjects] = useState(false)
   const [search, setSearch] = useState("")
+  const [menuSessionId, setMenuSessionId] = useState<string | null>(null)
+
+  const sortedSessions = sortSessionsPinnedFirst(sessions)
 
   const tabs: { id: Tab; label: string; icon: typeof MessagesSquare; count: number }[] = [
     { id: "sessions", label: "会话", icon: MessagesSquare, count: sessions.length },
@@ -62,53 +67,17 @@ export function LeftSidebar({
 
   return (
     <aside className="flex h-full w-64 shrink-0 flex-col border-r border-border bg-sidebar">
-      {/* Project switcher */}
-      <div className="relative border-b border-border p-2">
-        <button
-          onClick={() => setShowProjects((s) => !s)}
-          className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left hover:bg-sidebar-accent"
-          aria-haspopup="menu"
-        >
-          <span className="flex size-7 shrink-0 items-center justify-center rounded-md bg-primary text-primary-foreground font-mono text-xs font-bold">
+      {/* Current project */}
+      <div className="border-b border-border p-2">
+        <div className="flex w-full items-center gap-2 rounded-md px-2 py-1.5">
+          <span className="flex size-7 shrink-0 items-center justify-center rounded-md bg-primary font-mono text-xs font-bold text-primary-foreground">
             {project.name.slice(0, 2).toUpperCase()}
           </span>
           <span className="flex min-w-0 flex-1 flex-col">
             <span className="truncate text-sm font-semibold">{project.name}</span>
             <span className="truncate text-xs text-muted-foreground">{project.gitBranch}</span>
           </span>
-          <ChevronsLeftRight className="size-4 rotate-90 text-muted-foreground" />
-        </button>
-
-        {showProjects && (
-          <>
-            <div className="fixed inset-0 z-10" onClick={() => setShowProjects(false)} aria-hidden />
-            <div className="absolute left-2 right-2 top-full z-20 mt-1 overflow-hidden rounded-lg border border-border bg-popover shadow-xl">
-              {projects.map((p) => (
-                <button
-                  key={p.id}
-                  onClick={() => {
-                    onSwitchProject(p.id)
-                    setShowProjects(false)
-                  }}
-                  className={cn(
-                    "flex w-full items-center gap-2 px-2.5 py-2 text-left text-sm hover:bg-accent",
-                    p.id === project.id && "bg-accent",
-                  )}
-                >
-                  <span className="truncate">{p.name}</span>
-                  {p.kind === "ssh" && <Badge variant="outline" className="ml-auto">SSH</Badge>}
-                </button>
-              ))}
-              <Link
-                href="/"
-                className="flex w-full items-center gap-2 border-t border-border px-2.5 py-2 text-sm text-muted-foreground hover:bg-accent"
-              >
-                <Home className="size-3.5" />
-                返回主页
-              </Link>
-            </div>
-          </>
-        )}
+        </div>
       </div>
 
       {/* Tabs */}
@@ -145,27 +114,97 @@ export function LeftSidebar({
               {sessions.length === 0 ? (
                 <p className="px-2 py-8 text-center text-xs text-muted-foreground">暂无会话，点击上方新建。</p>
               ) : (
-                sessions.map((s) => (
-                  <button
-                    key={s.id}
-                    onClick={() => onSelectSession(s.id)}
-                    className={cn(
-                      "flex w-full flex-col gap-1 rounded-md px-2 py-2 text-left transition-colors",
-                      s.id === activeSessionId ? "bg-sidebar-accent" : "hover:bg-sidebar-accent/50",
+                sortedSessions.map((s) => (
+                  <div key={s.id} className="relative">
+                    <div
+                      role="button"
+                      tabIndex={0}
+                      onClick={() => onSelectSession(s.id)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter" || e.key === " ") {
+                          e.preventDefault()
+                          onSelectSession(s.id)
+                        }
+                      }}
+                      className={cn(
+                        "flex w-full flex-col gap-1 rounded-md px-2 py-2 pr-8 text-left transition-colors",
+                        s.id === activeSessionId ? "bg-sidebar-accent" : "hover:bg-sidebar-accent/50",
+                      )}
+                    >
+                      <span className="flex items-center gap-1.5">
+                        {(s.pinned || isSessionPinned(s.id)) && (
+                          <Pin className="size-3 shrink-0 fill-current text-primary" />
+                        )}
+                        <span className="truncate text-sm font-medium">{s.title}</span>
+                      </span>
+                      <span className="flex items-center gap-1.5 text-xs text-muted-foreground">
+                        <Badge variant="outline" className="text-[10px]">
+                          {s.mode}
+                        </Badge>
+                        {s.status === "archived" && <span>· 已归档</span>}
+                        <span className="ml-auto">{timeAgo(s.updatedAt)}</span>
+                      </span>
+                    </div>
+                    <button
+                      type="button"
+                      className="absolute right-1 top-1.5 z-10 shrink-0 rounded p-0.5 hover:bg-background"
+                      onClick={(e) => {
+                        e.stopPropagation()
+                        setMenuSessionId(menuSessionId === s.id ? null : s.id)
+                      }}
+                      aria-label="会话操作"
+                      aria-expanded={menuSessionId === s.id}
+                    >
+                      <MoreHorizontal className="size-3.5 text-muted-foreground" />
+                    </button>
+                    {menuSessionId === s.id && (
+                      <>
+                        <div className="fixed inset-0 z-10" onClick={() => setMenuSessionId(null)} aria-hidden />
+                        <div className="absolute right-2 top-8 z-20 min-w-[140px] rounded-md border border-border bg-popover py-1 shadow-lg">
+                          <button
+                            type="button"
+                            className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs hover:bg-accent"
+                            onClick={() => {
+                              toggleSessionPinned(s.id)
+                              onSessionsChange?.()
+                              setMenuSessionId(null)
+                            }}
+                          >
+                            <Pin className="size-3" />
+                            {isSessionPinned(s.id) ? "取消固定" : "固定会话"}
+                          </button>
+                          {onMergeSession && s.id !== activeSessionId && (
+                            <button
+                              type="button"
+                              className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs hover:bg-accent"
+                              onClick={() => {
+                                onMergeSession(s.id, activeSessionId)
+                                setMenuSessionId(null)
+                              }}
+                            >
+                              <GitMerge className="size-3" />
+                              合并到当前
+                            </button>
+                          )}
+                          <button
+                            type="button"
+                            className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs hover:bg-accent"
+                            onClick={() => {
+                              const planMsgs = s.messages.filter((m) => m.mode === "plan" && m.role === "assistant")
+                              const body = planMsgs.length
+                                ? planMsgs.map((m) => m.content).join("\n\n---\n\n")
+                                : s.messages.map((m) => `## ${m.role}\n\n${m.content}`).join("\n\n")
+                              downloadTextFile(`${s.title || "plan"}.md`, `# ${s.title}\n\n${body}`)
+                              setMenuSessionId(null)
+                            }}
+                          >
+                            <FileDown className="size-3" />
+                            导出 Plan
+                          </button>
+                        </div>
+                      </>
                     )}
-                  >
-                    <span className="flex items-center gap-1.5">
-                      {s.pinned && <Pin className="size-3 shrink-0 fill-current text-primary" />}
-                      <span className="truncate text-sm font-medium">{s.title}</span>
-                    </span>
-                    <span className="flex items-center gap-1.5 text-xs text-muted-foreground">
-                      <Badge variant="outline" className="text-[10px]">
-                        {s.mode}
-                      </Badge>
-                      {s.status === "archived" && <span>· 已归档</span>}
-                      <span className="ml-auto">{timeAgo(s.updatedAt)}</span>
-                    </span>
-                  </button>
+                  </div>
                 ))
               )}
             </div>

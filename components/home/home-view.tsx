@@ -1,6 +1,7 @@
 "use client"
 
 import { useEffect, useMemo, useState } from "react"
+import { useRouter } from "next/navigation"
 import {
   Search,
   Plus,
@@ -10,6 +11,7 @@ import {
   Pin,
   ChevronLeft,
   ChevronRight,
+  Loader2,
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -17,16 +19,22 @@ import { ProjectCard } from "@/components/home/project-card"
 import { NewProjectDialog } from "@/components/home/new-project-dialog"
 import { EmptyState, ErrorState, ProjectCardSkeleton, Skeleton } from "@/components/states"
 import type { Project } from "@/lib/types"
-import { isTauri, listProjects as tauriListProjects } from "@/lib/tauri-api"
+import { isTauri, listProjects as tauriListProjects, removeProject } from "@/lib/tauri-api"
+import { applyProjectPins, toggleProjectPinned, clearProjectPin } from "@/lib/project-prefs"
+import { pickAndOpenLocalProject } from "@/lib/open-local-project"
+import { projectPath } from "@/lib/project-route"
 
 type LoadStatus = "loading" | "error" | "ready"
 
 const CARDS_PER_PAGE = 12 // fills up to 4 columns x 3 rows on wide desktop windows
 
 export function HomeView() {
+  const router = useRouter()
   const [projects, setProjects] = useState<Project[]>([])
   const [query, setQuery] = useState("")
-  const [dialog, setDialog] = useState<null | "new" | "ssh">(null)
+  const [sshDialogOpen, setSshDialogOpen] = useState(false)
+  const [openingLocal, setOpeningLocal] = useState(false)
+  const [openError, setOpenError] = useState<string | null>(null)
   const [projectPage, setProjectPage] = useState(0)
   const [status, setStatus] = useState<LoadStatus>("loading")
 
@@ -40,7 +48,7 @@ export function HomeView() {
         try {
           const realProjects = await tauriListProjects()
           if (!cancelled) {
-            setProjects(realProjects)
+            setProjects(applyProjectPins(realProjects))
             setStatus("ready")
           }
           return
@@ -53,7 +61,7 @@ export function HomeView() {
         const { projects: seedProjects } = await import("@/lib/mock-data")
         tid = setTimeout(() => {
           if (!cancelled) {
-            setProjects(seedProjects as Project[])
+            setProjects(applyProjectPins(seedProjects as Project[]))
             setStatus("ready")
           }
         }, 700)
@@ -85,7 +93,53 @@ export function HomeView() {
     (a, b) => new Date(b.openedAt).getTime() - new Date(a.openedAt).getTime(),
   )
 
-  const addProject = (p: Project) => setProjects((prev) => [p, ...prev])
+  const addProject = (p: Project) => setProjects((prev) => applyProjectPins([p, ...prev]))
+
+  const upsertProject = (p: Project) => {
+    setProjects((prev) => {
+      const rest = prev.filter((item) => item.id !== p.id)
+      return applyProjectPins([p, ...rest])
+    })
+  }
+
+  const handleOpenLocalProject = async () => {
+    setOpenError(null)
+    setOpeningLocal(true)
+    try {
+      const project = await pickAndOpenLocalProject()
+      if (!project) return
+      upsertProject(project)
+      router.push(projectPath(project.id))
+    } catch (e) {
+      setOpenError(e instanceof Error ? e.message : "打开项目失败")
+    } finally {
+      setOpeningLocal(false)
+    }
+  }
+
+  const handleTogglePin = (id: string) => {
+    toggleProjectPinned(id)
+    setProjects((prev) =>
+      prev.map((p) => (p.id === id ? { ...p, pinned: !p.pinned } : p)),
+    )
+  }
+
+  const handleDeleteProject = async (id: string) => {
+    if (isTauri()) {
+      try {
+        await removeProject(id)
+      } catch {
+        return
+      }
+    }
+    clearProjectPin(id)
+    setProjects((prev) => prev.filter((p) => p.id !== id))
+  }
+
+  const projectCardProps = {
+    onTogglePin: handleTogglePin,
+    onDelete: (id: string) => void handleDeleteProject(id),
+  }
 
   const totalPages = Math.max(1, Math.ceil(unpinned.length / CARDS_PER_PAGE))
   const pagedProjects = unpinned.slice(
@@ -116,15 +170,21 @@ export function HomeView() {
             aria-label="Search projects"
           />
         </div>
-        <Button variant="secondary" size="sm" onClick={() => setDialog("ssh")}>
+        <Button variant="secondary" size="sm" onClick={() => setSshDialogOpen(true)}>
           <Server />
           Connect SSH
         </Button>
-        <Button size="sm" onClick={() => setDialog("new")}>
-          <Plus />
+        <Button size="sm" onClick={() => void handleOpenLocalProject()} disabled={openingLocal}>
+          {openingLocal ? <Loader2 className="size-4 animate-spin" /> : <Plus />}
           New Project
         </Button>
       </header>
+
+      {openError && (
+        <p className="mt-2 text-xs text-destructive" role="alert">
+          {openError}
+        </p>
+      )}
 
       <main className="pt-3">
         {/* Loading */}
@@ -150,8 +210,8 @@ export function HomeView() {
               title={`No projects matching "${query}"`}
               description="Try another keyword, or open your first project."
               action={
-                <Button size="sm" onClick={() => setDialog("new")}>
-                  <Plus />
+                <Button size="sm" onClick={() => void handleOpenLocalProject()} disabled={openingLocal}>
+                  {openingLocal ? <Loader2 className="size-4 animate-spin" /> : <Plus />}
                   New Project
                 </Button>
               }
@@ -162,8 +222,8 @@ export function HomeView() {
               title="No projects yet"
               description="Open a local folder or connect via SSH to start your first AI coding session."
               action={
-                <Button size="sm" onClick={() => setDialog("new")}>
-                  <Plus />
+                <Button size="sm" onClick={() => void handleOpenLocalProject()} disabled={openingLocal}>
+                  {openingLocal ? <Loader2 className="size-4 animate-spin" /> : <FolderOpen />}
                   Open First Project
                 </Button>
               }
@@ -182,7 +242,7 @@ export function HomeView() {
                 </div>
                 <div className="grid gap-2.5 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5">
                   {pinned.map((p) => (
-                    <ProjectCard key={p.id} project={p} />
+                    <ProjectCard key={p.id} project={p} {...projectCardProps} />
                   ))}
                 </div>
               </section>
@@ -201,7 +261,7 @@ export function HomeView() {
 
               <div className="grid gap-2.5 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5">
                 {pagedProjects.map((p) => (
-                  <ProjectCard key={p.id} project={p} />
+                  <ProjectCard key={p.id} project={p} {...projectCardProps} />
                 ))}
               </div>
 
@@ -243,9 +303,8 @@ export function HomeView() {
       </main>
 
       <NewProjectDialog
-        open={dialog !== null}
-        mode={dialog ?? "new"}
-        onClose={() => setDialog(null)}
+        open={sshDialogOpen}
+        onClose={() => setSshDialogOpen(false)}
         onCreate={addProject}
       />
     </div>

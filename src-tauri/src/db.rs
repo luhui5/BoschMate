@@ -51,7 +51,7 @@ impl Database {
                 title TEXT,
                 mode TEXT NOT NULL DEFAULT 'ask',
                 status TEXT NOT NULL DEFAULT 'active',
-                parent_id TEXT REFERENCES sessions(id),
+                parent_id TEXT REFERENCES sessions(id) ON DELETE SET NULL,
                 token_count INTEGER DEFAULT 0,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL
@@ -92,7 +92,7 @@ impl Database {
                 content TEXT NOT NULL,
                 summary TEXT,
                 embedding BLOB,
-                source_session_id TEXT REFERENCES sessions(id),
+                source_session_id TEXT REFERENCES sessions(id) ON DELETE SET NULL,
                 importance REAL NOT NULL DEFAULT 0.5,
                 access_count INTEGER DEFAULT 0,
                 last_accessed_at TEXT,
@@ -136,8 +136,8 @@ impl Database {
 
             CREATE TABLE IF NOT EXISTS audit_log (
                 id TEXT PRIMARY KEY,
-                session_id TEXT NOT NULL REFERENCES sessions(id),
-                message_id TEXT REFERENCES messages(id),
+                session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+                message_id TEXT REFERENCES messages(id) ON DELETE SET NULL,
                 command TEXT NOT NULL,
                 cwd TEXT NOT NULL,
                 exit_code INTEGER,
@@ -166,6 +166,52 @@ impl Database {
             "INSERT OR IGNORE INTO projects (id, name, local_path, created_at, opened_at) VALUES ('__assistant__', 'Bosch Assistant', ?1, ?2, ?2)",
             params![path, now],
         )?;
+        Ok(())
+    }
+
+    /// Clear FK references that block session deletion (legacy schema without ON DELETE CASCADE).
+    pub fn prepare_session_delete(conn: &Connection, session_id: &str) -> Result<()> {
+        conn.execute(
+            "UPDATE memories SET source_session_id = NULL WHERE source_session_id = ?1",
+            params![session_id],
+        )?;
+        conn.execute(
+            "UPDATE sessions SET parent_id = NULL WHERE parent_id = ?1",
+            params![session_id],
+        )?;
+        conn.execute(
+            "DELETE FROM audit_log WHERE session_id = ?1",
+            params![session_id],
+        )?;
+        Ok(())
+    }
+
+    pub fn delete_session_cascade(conn: &Connection, session_id: &str) -> Result<()> {
+        Self::prepare_session_delete(conn, session_id)?;
+        conn.execute("DELETE FROM sessions WHERE id = ?1", params![session_id])?;
+        Ok(())
+    }
+
+    pub fn delete_project_cascade(conn: &Connection, project_id: &str) -> Result<()> {
+        let tx = conn.unchecked_transaction()?;
+        tx.execute(
+            "UPDATE memories SET source_session_id = NULL WHERE project_id = ?1",
+            params![project_id],
+        )?;
+        tx.execute(
+            "UPDATE sessions SET parent_id = NULL WHERE project_id = ?1",
+            params![project_id],
+        )?;
+        tx.execute(
+            "DELETE FROM audit_log WHERE session_id IN (SELECT id FROM sessions WHERE project_id = ?1)",
+            params![project_id],
+        )?;
+        tx.execute(
+            "DELETE FROM settings WHERE scope = 'project' AND project_id = ?1",
+            params![project_id],
+        )?;
+        tx.execute("DELETE FROM projects WHERE id = ?1", params![project_id])?;
+        tx.commit()?;
         Ok(())
     }
 

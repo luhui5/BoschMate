@@ -16,7 +16,8 @@ const GROUPS: { group: string; items: { label: string; keys: string[] }[] }[] = 
     group: "会话",
     items: [
       { label: "新建会话", keys: ["⌘", "N"] },
-      { label: "发送消息", keys: ["⌘", "↵"] },
+      { label: "发送消息", keys: ["↵"] },
+      { label: "换行", keys: ["⇧", "↵"] },
       { label: "中断生成", keys: ["⌘", "."] },
       { label: "切换 Agent 模式", keys: ["⌘", "M"] },
     ],

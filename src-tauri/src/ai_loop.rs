@@ -19,10 +19,34 @@ pub struct PendingEditMeta {
     pub result: EditResult,
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct LoopConfig {
     /// When true, edit_file runs dry_run and collects pending edits instead of writing.
     pub dry_run_edits: bool,
+    /// Auto mode — enforce bulk write confirmation threshold.
+    pub auto_mode: bool,
+    /// User confirmed bulk writes (>50 files).
+    pub bulk_write_confirmed: bool,
+    /// Count of file writes in this loop iteration chain.
+    pub write_count: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+}
+
+const BULK_WRITE_LIMIT: usize = 50;
+
+fn check_bulk_write_limit(config: &LoopConfig) -> Result<(), String> {
+    if config.auto_mode && !config.bulk_write_confirmed {
+        let count = config
+            .write_count
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+            + 1;
+        if count > BULK_WRITE_LIMIT {
+            return Err(format!(
+                "BULK_WRITE_LIMIT: Auto mode would modify more than {} files. User confirmation required.",
+                BULK_WRITE_LIMIT
+            ));
+        }
+    }
+    Ok(())
 }
 
 pub type EditCollector = Arc<Mutex<Vec<PendingEditMeta>>>;
@@ -204,6 +228,9 @@ pub async fn execute_tool(
         "write_file" => {
             let path = args["path"].as_str().ok_or("path required")?;
             let content = args["content"].as_str().ok_or("content required")?;
+            if !config.dry_run_edits {
+                check_bulk_write_limit(config)?;
+            }
             let hash = fs_ops::write_file(project_root.as_path(), path, content)?;
             Ok(format!("File written successfully. SHA256: {}", hash))
         }
@@ -213,17 +240,20 @@ pub async fn execute_tool(
             let new_str = args["new_string"].as_str().ok_or("new_string required")?;
             let replace_all = args["replace_all"].as_bool().unwrap_or(false);
             let dry = config.dry_run_edits;
+            if !dry {
+                check_bulk_write_limit(config)?;
+            }
             let result = code_editor::edit_file(
                 project_root.as_path(), path, old_str, new_str, replace_all, dry,
             )?;
+            collector.lock().unwrap().push(PendingEditMeta {
+                path: path.to_string(),
+                old_string: old_str.to_string(),
+                new_string: new_str.to_string(),
+                replace_all,
+                result: result.clone(),
+            });
             if dry {
-                collector.lock().unwrap().push(PendingEditMeta {
-                    path: path.to_string(),
-                    old_string: old_str.to_string(),
-                    new_string: new_str.to_string(),
-                    replace_all,
-                    result: result.clone(),
-                });
                 Ok(format!(
                     "Edit preview for {} ({} replacement(s)) — awaiting user confirmation\n\n```diff\n{}\n```",
                     result.path, result.replaced, result.diff

@@ -51,6 +51,11 @@ export default function RootLayout({
       className={`dark ${geistSans.variable} ${geistMono.variable} bg-background`}
     >
       <body className="font-sans antialiased" style={{ paddingTop: 34 }}>
+        <script
+          dangerouslySetInnerHTML={{
+            __html: `(function(){try{var p=location.pathname,m=p.match(/^\\/project\\/([^/]+)\\/?$/);if(m&&m[1]&&m[1]!=='index.html'&&m[1]!=='placeholder'){location.replace('/?project='+encodeURIComponent(m[1]));return}if(p.startsWith('/project')){var id=new URLSearchParams(location.search).get('id');if(id)location.replace('/?project='+encodeURIComponent(id))}}catch(e){}})();`,
+          }}
+        />
         <AppProvider>
           <TitleBar />
           {children}

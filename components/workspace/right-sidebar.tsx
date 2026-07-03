@@ -6,6 +6,7 @@ import { cn } from "@/lib/utils"
 import { FileTree } from "@/components/workspace/file-tree"
 import { GitPanel } from "@/components/workspace/git-panel"
 import { DiffCard } from "@/components/workspace/diff-card"
+import { SessionChangesPanel } from "@/components/workspace/session-changes-panel"
 import type { DiffHunk, FileNode, GitFile } from "@/lib/types"
 
 type View = "files" | "changes" | "git"
@@ -22,6 +23,11 @@ export function RightSidebar({
   onOpenFile,
   onDiffAction,
   onGitRefresh,
+  onLoadChildren,
+  onFileTreeChange,
+  onCopyPath,
+  onRevealInExplorer,
+  activeSessionId,
 }: {
   projectId: string
   gitBranch: string
@@ -31,9 +37,14 @@ export function RightSidebar({
   fileTreeLoading?: boolean
   changes: { messageId: string; index: number; diff: DiffHunk }[]
   activeFile: string | null
+  activeSessionId?: string
   onOpenFile: (path: string) => void
   onDiffAction: (messageId: string, diffIndex: number, action: "accept" | "reject" | "revert") => void
   onGitRefresh?: () => void
+  onLoadChildren?: (dirPath: string) => Promise<FileNode[]>
+  onFileTreeChange?: (nodes: FileNode[]) => void
+  onCopyPath?: (path: string) => void
+  onRevealInExplorer?: (path: string) => void
 }) {
   const [view, setView] = useState<View>("files")
 
@@ -78,7 +89,15 @@ export function RightSidebar({
           ) : fileTree.length === 0 ? (
             <p className="px-3 py-16 text-center text-xs text-muted-foreground">无法加载文件树或目录为空。</p>
           ) : (
-            <FileTree nodes={fileTree} activePath={activeFile} onOpen={onOpenFile} />
+            <FileTree
+              nodes={fileTree}
+              activePath={activeFile}
+              onOpen={onOpenFile}
+              onLoadChildren={onLoadChildren}
+              onNodesChange={onFileTreeChange}
+              onCopyPath={onCopyPath}
+              onRevealInExplorer={onRevealInExplorer}
+            />
           )
         )}
 
@@ -103,6 +122,12 @@ export function RightSidebar({
                 ))}
               </div>
             )}
+            {activeSessionId && (
+              <div className="border-t border-border pt-2">
+                <p className="mb-1 px-1 text-xs font-semibold text-muted-foreground">会话快照 (DB)</p>
+                <SessionChangesPanel sessionId={activeSessionId} />
+              </div>
+            )}
           </div>
         )}
 
@@ -114,6 +139,7 @@ export function RightSidebar({
             files={gitFiles}
             onOpenFile={onOpenFile}
             onCommitted={onGitRefresh}
+            onBranchChange={onGitRefresh}
           />
         )}
       </div>

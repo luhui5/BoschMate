@@ -217,6 +217,47 @@ export async function gitBranches(projectId: string): Promise<string[]> {
   return invoke<string[]>('git_branches', { projectId });
 }
 
+export async function gitCheckoutBranch(projectId: string, branch: string): Promise<void> {
+  return invoke('git_checkout_branch', { projectId, branch });
+}
+
+export async function gitCreateBranch(projectId: string, branch: string): Promise<void> {
+  return invoke('git_create_branch', { projectId, branch });
+}
+
+export async function gitStageFiles(projectId: string, paths: string[]): Promise<void> {
+  return invoke('git_stage_files', { projectId, paths });
+}
+
+export async function gitUnstageFiles(projectId: string, paths: string[]): Promise<void> {
+  return invoke('git_unstage_files', { projectId, paths });
+}
+
+export async function gitStashPush(
+  projectId: string,
+  options?: { includeUntracked?: boolean; message?: string },
+): Promise<string> {
+  return invoke<string>('git_stash_push', {
+    projectId,
+    includeUntracked: options?.includeUntracked,
+    message: options?.message,
+  });
+}
+
+export async function gitStashPop(projectId: string): Promise<void> {
+  return invoke('git_stash_pop', { projectId });
+}
+
+export async function gitStashList(
+  projectId: string,
+): Promise<Array<{ index: number; message: string }>> {
+  return invoke('git_stash_list', { projectId });
+}
+
+export async function revealInExplorer(projectId: string, path: string): Promise<void> {
+  return invoke('reveal_in_explorer', { projectId, path });
+}
+
 // ── Memories ──
 
 export async function listMemories(projectId: string): Promise<Memory[]> {
@@ -303,6 +344,7 @@ export interface AiLoopRequest {
   max_iterations?: number;
   assistant_mode?: boolean;
   edit_dry_run?: boolean;
+  bulk_write_confirmed?: boolean;
   agent_mode?: string;
 }
 
@@ -379,8 +421,32 @@ export async function rollbackEdit(
   projectId: string,
   backupHash: string,
   path: string,
-): Promise<void> {
-  return invoke('rollback_edit', { projectId, backupHash, path });
+): Promise<string> {
+  return invoke<string>('rollback_edit', { projectId, backupHash, path });
+}
+
+export async function revertChange(
+  projectId: string,
+  changeId: string,
+): Promise<{ verified_hash: string }> {
+  return invoke('revert_change', { projectId, changeId });
+}
+
+export async function gitCloneRepo(
+  parentDir: string,
+  url: string,
+  name?: string,
+): Promise<string> {
+  return invoke<string>('git_clone_repo', { parentDir, url, name });
+}
+
+export interface SystemHealth {
+  mode: 'full' | 'degraded' | 'offline';
+  subsystems: Array<{ name: string; healthy: boolean; message?: string }>;
+}
+
+export async function healthCheck(ollamaUrl?: string): Promise<SystemHealth> {
+  return invoke<SystemHealth>('health_check', { ollamaUrl });
 }
 
 export async function listChanges(sessionId: string): Promise<ChangeRecord[]> {

@@ -148,12 +148,134 @@ pub fn list_branches(repo_path: &Path) -> Result<Vec<String>, String> {
 
 /// Create and switch to a new branch
 pub fn create_branch(repo_path: &Path, name: &str) -> Result<(), String> {
+    create_and_checkout_branch(repo_path, name)
+}
+
+/// Switch to an existing branch
+pub fn checkout_branch(repo_path: &Path, name: &str) -> Result<(), String> {
+    let repo = Repository::open(repo_path).map_err(|e| format!("Not a git repository: {}", e))?;
+    let reference = format!("refs/heads/{}", name);
+    let obj = repo
+        .revparse_single(&reference)
+        .map_err(|e| format!("Branch '{}' not found: {}", name, e))?;
+    let tree = obj
+        .peel_to_tree()
+        .map_err(|e| format!("Peel tree error: {}", e))?;
+    repo.checkout_tree(tree.as_object(), None)
+        .map_err(|e| format!("Checkout tree error: {}", e))?;
+    repo.set_head(&reference)
+        .map_err(|e| format!("Set HEAD error: {}", e))?;
+    Ok(())
+}
+
+/// Create a branch at HEAD and check it out
+pub fn create_and_checkout_branch(repo_path: &Path, name: &str) -> Result<(), String> {
     let repo = Repository::open(repo_path).map_err(|e| format!("Not a git repository: {}", e))?;
     let head = repo.head().map_err(|e| format!("Head error: {}", e))?;
     let commit = head.peel_to_commit().map_err(|e| format!("Peel error: {}", e))?;
-    repo.branch(name, &commit, false)
+    let branch = repo
+        .branch(name, &commit, false)
         .map_err(|e| format!("Create branch error: {}", e))?;
+    let refname = branch
+        .get()
+        .name()
+        .ok_or_else(|| "Invalid branch name".to_string())?;
+    repo.checkout_tree(commit.as_object(), None)
+        .map_err(|e| format!("Checkout error: {}", e))?;
+    repo.set_head(refname)
+        .map_err(|e| format!("Set HEAD error: {}", e))?;
     Ok(())
+}
+
+/// Stage files (git add)
+pub fn stage_files(repo_path: &Path, paths: &[String]) -> Result<(), String> {
+    let repo = Repository::open(repo_path).map_err(|e| format!("Not a git repository: {}", e))?;
+    let mut index = repo.index().map_err(|e| format!("Index error: {}", e))?;
+    for path in paths {
+        index
+            .add_path(Path::new(path))
+            .map_err(|e| format!("Stage '{}' error: {}", path, e))?;
+    }
+    index.write().map_err(|e| format!("Index write error: {}", e))?;
+    Ok(())
+}
+
+/// Unstage files (git reset HEAD -- paths)
+pub fn unstage_files(repo_path: &Path, paths: &[String]) -> Result<(), String> {
+    if paths.is_empty() {
+        return Ok(());
+    }
+    let mut cmd = std::process::Command::new("git");
+    cmd.current_dir(repo_path).arg("reset").arg("HEAD").arg("--");
+    for path in paths {
+        cmd.arg(path);
+    }
+    let output = cmd
+        .output()
+        .map_err(|e| format!("Failed to run git reset: {}", e))?;
+    if !output.status.success() {
+        return Err(String::from_utf8_lossy(&output.stderr).into_owned());
+    }
+    Ok(())
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct StashEntry {
+    pub index: usize,
+    pub message: String,
+}
+
+/// Stash working tree changes. Returns stash ref message.
+pub fn stash_push(
+    repo_path: &Path,
+    include_untracked: bool,
+    message: Option<&str>,
+) -> Result<String, String> {
+    let mut repo = Repository::open(repo_path).map_err(|e| format!("Not a git repository: {}", e))?;
+    let sig = repo
+        .signature()
+        .map_err(|e| format!("Git signature error: {}", e))?;
+    let msg = message.unwrap_or("BoschCode auto-stash");
+    let mut opts = git2::StashFlags::empty();
+    if include_untracked {
+        opts.insert(git2::StashFlags::INCLUDE_UNTRACKED);
+    }
+    let oid = repo
+        .stash_save(&sig, msg, Some(opts))
+        .map_err(|e| format!("Stash error: {}", e))?;
+    Ok(format!("Stashed as {} ({})", msg, oid))
+}
+
+pub fn stash_pop(repo_path: &Path) -> Result<(), String> {
+    let mut repo = Repository::open(repo_path).map_err(|e| format!("Not a git repository: {}", e))?;
+    repo.stash_pop(0, None)
+        .map_err(|e| format!("Stash pop error: {}", e))?;
+    Ok(())
+}
+
+pub fn stash_list(repo_path: &Path) -> Result<Vec<StashEntry>, String> {
+    let mut repo = Repository::open(repo_path).map_err(|e| format!("Not a git repository: {}", e))?;
+    let mut out = Vec::new();
+    repo.stash_foreach(|index, message, _| {
+        out.push(StashEntry {
+            index,
+            message: message.to_string(),
+        });
+        true
+    })
+    .map_err(|e| format!("Stash list error: {}", e))?;
+    Ok(out)
+}
+
+/// Stash if there are untracked files that would be overwritten (protection).
+pub fn stash_untracked_if_needed(repo_path: &Path) -> Result<Option<String>, String> {
+    let status = get_status(repo_path)?;
+    let has_untracked = status.files.iter().any(|f| f.status == "untracked");
+    if !has_untracked {
+        return Ok(None);
+    }
+    let msg = stash_push(repo_path, true, Some("BoschCode: protect untracked files"))?;
+    Ok(Some(msg))
 }
 
 // ── Internal helpers ──
@@ -216,7 +338,9 @@ fn get_status_files(repo: &Repository) -> Result<Vec<GitFile>, String> {
             .map(|p| p.to_string())
             .unwrap_or_default();
 
-        let file_status = if status.is_index_new() || status.is_wt_new() {
+        let file_status = if status.is_wt_new() && !status.is_index_new() {
+            "untracked"
+        } else if status.is_index_new() || status.is_wt_new() {
             "added"
         } else if status.is_index_deleted() || status.is_wt_deleted() {
             "deleted"
@@ -224,16 +348,19 @@ fn get_status_files(repo: &Repository) -> Result<Vec<GitFile>, String> {
             "renamed"
         } else if status.is_index_modified() || status.is_wt_modified() {
             "modified"
-        } else if status.is_wt_new() {
-            "untracked"
         } else {
-            continue; // skip clean files
+            continue;
         };
+
+        let staged = status.is_index_modified()
+            || status.is_index_new()
+            || status.is_index_deleted()
+            || status.is_index_renamed();
 
         files.push(GitFile {
             path,
             status: file_status.to_string(),
-            staged: status.is_index_modified() || status.is_index_new() || status.is_index_deleted(),
+            staged,
             additions: 0,
             deletions: 0,
         });

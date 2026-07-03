@@ -6,6 +6,7 @@ import { Badge } from "@/components/ui/badge"
 import { DiffCard } from "@/components/workspace/diff-card"
 import { cn } from "@/lib/utils"
 import type { ChatMessage as TMessage, DiffHunk } from "@/lib/types"
+import { extractFileRefs } from "@/lib/workspace-utils"
 
 const modeLabel: Record<string, string> = {
   ask: "提问",
@@ -14,8 +15,8 @@ const modeLabel: Record<string, string> = {
   auto: "自动",
 }
 
-/** Render markdown-ish content: headings, bullets, bold, code spans. */
-function renderContent(text: string) {
+/** Render markdown-ish content: headings, bullets, bold, code spans, @file refs. */
+function renderContent(text: string, onOpenFile?: (path: string) => void) {
   return text.split("\n").map((line, i) => {
     if (line.startsWith("## ")) {
       return (
@@ -27,22 +28,35 @@ function renderContent(text: string) {
     if (/^\d+\.\s/.test(line) || line.startsWith("- ")) {
       return (
         <p key={i} className="pl-3 text-sm leading-relaxed text-foreground/90">
-          {inline(line)}
+          {inline(line, onOpenFile)}
         </p>
       )
     }
     if (line.trim() === "") return <div key={i} className="h-2" />
     return (
       <p key={i} className="text-sm leading-relaxed text-foreground/90">
-        {inline(line)}
+        {inline(line, onOpenFile)}
       </p>
     )
   })
 }
 
-function inline(text: string) {
-  const parts = text.split(/(`[^`]+`|\*\*[^*]+\*\*)/g)
+function inline(text: string, onOpenFile?: (path: string) => void) {
+  const parts = text.split(/(`[^`]+`|\*\*[^*]+\*\*|@[^\s`,]+)/g)
   return parts.map((p, i) => {
+    if (p.startsWith("@") && onOpenFile) {
+      const path = p.slice(1)
+      return (
+        <button
+          key={i}
+          type="button"
+          onClick={() => onOpenFile(path)}
+          className="font-mono text-primary underline-offset-2 hover:underline"
+        >
+          {p}
+        </button>
+      )
+    }
     if (p.startsWith("`") && p.endsWith("`")) {
       return (
         <code key={i} className="rounded bg-secondary px-1 py-0.5 font-mono text-[0.8em] text-primary">
@@ -71,6 +85,8 @@ export function ChatMessageView({
   onOpenFile: (path: string) => void
 }) {
   const isUser = message.role === "user"
+  const detectedRefs = extractFileRefs(message.content)
+  const allFileRefs = [...new Set([...(message.fileRefs ?? []), ...detectedRefs])]
 
   return (
     <div className={cn("flex gap-3", isUser && "flex-row-reverse")}>
@@ -101,10 +117,10 @@ export function ChatMessageView({
           )}
         >
           {isUser ? (
-            <p className="whitespace-pre-wrap text-sm leading-relaxed">{message.content}</p>
+            <p className="whitespace-pre-wrap text-sm leading-relaxed">{inline(message.content, onOpenFile)}</p>
           ) : (
             <div className="flex flex-col">
-              {renderContent(message.content)}
+              {renderContent(message.content, onOpenFile)}
               {message.streaming && (
                 <span className="mt-1 inline-block h-3.5 w-1.5 animate-pulse bg-primary align-middle" />
               )}
@@ -146,9 +162,9 @@ export function ChatMessageView({
         )}
 
         {/* File refs */}
-        {message.fileRefs && message.fileRefs.length > 0 && (
+        {allFileRefs.length > 0 && (
           <div className="flex flex-wrap gap-1.5">
-            {message.fileRefs.map((f) => (
+            {allFileRefs.map((f) => (
               <button
                 key={f}
                 onClick={() => onOpenFile(f)}

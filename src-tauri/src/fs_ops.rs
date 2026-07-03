@@ -86,6 +86,7 @@ pub fn read_file(root: &Path, rel_path: &str, offset: Option<usize>, limit: Opti
 
 /// Write file content
 pub fn write_file(root: &Path, rel_path: &str, content: &str) -> Result<String, String> {
+    crate::path_guard::reject_protected_path(rel_path)?;
     let safe_path = sanitize_path(root, rel_path)?;
     // Create parent dirs if needed
     if let Some(parent) = safe_path.parent() {

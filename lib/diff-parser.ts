@@ -52,6 +52,7 @@ export interface RawDiffEntry {
     new_string?: string
     replace_all?: boolean
   }
+  snapshotId?: string
 }
 
 export function parseDiffsFromRaw(raw: unknown): DiffHunk[] | undefined {
@@ -67,6 +68,7 @@ export function parseDiffsFromRaw(raw: unknown): DiffHunk[] | undefined {
     if (entry.deletions != null) hunk.deletions = entry.deletions
     if (entry.id) hunk.changeId = entry.id
     if (entry.editMeta) hunk.editMeta = entry.editMeta
+    if (entry.snapshotId) hunk.snapshotId = entry.snapshotId
     return hunk
   })
 }

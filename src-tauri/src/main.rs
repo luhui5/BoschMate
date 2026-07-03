@@ -13,6 +13,7 @@ mod fs_ops;
 mod git_ops;
 mod linter_analyzer;
 mod models;
+mod path_guard;
 mod recovery;
 mod sandbox;
 mod test_runner;
@@ -94,10 +95,11 @@ fn create_project(state: State<AppState>, input: CreateProjectInput) -> Result<P
 
 #[tauri::command]
 fn remove_project(state: State<AppState>, id: String) -> Result<(), String> {
+    if id == "__assistant__" {
+        return Err("无法移除 Assistant 内置项目".into());
+    }
     let conn = state.db.conn.lock().unwrap();
-    conn.execute("DELETE FROM projects WHERE id = ?1", params![id])
-        .map_err(|e| e.to_string())?;
-    Ok(())
+    Database::delete_project_cascade(&conn, &id).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -211,9 +213,7 @@ fn create_session(state: State<AppState>, input: CreateSessionInput) -> Result<S
 #[tauri::command]
 fn delete_session(state: State<AppState>, id: String) -> Result<(), String> {
     let conn = state.db.conn.lock().unwrap();
-    conn.execute("DELETE FROM sessions WHERE id = ?1", params![id])
-        .map_err(|e| e.to_string())?;
-    Ok(())
+    Database::delete_session_cascade(&conn, &id).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -340,7 +340,7 @@ fn list_directory(state: State<AppState>, project_id: String, path: Option<Strin
         .map_err(|e| e.to_string())?;
 
     let root = PathBuf::from(&project_path);
-    let depth = if path.is_none() { 2 } else { 1 };
+    let depth = 1;
     let target = match &path {
         Some(p) => root.join(p.trim_start_matches('/').trim_start_matches('\\')),
         None => root.clone(),
@@ -453,7 +453,7 @@ fn rollback_edit(
     project_id: String,
     backup_hash: String,
     path: String,
-) -> Result<(), String> {
+) -> Result<String, String> {
     let project = get_project_path(&state, &project_id)?;
     code_editor::rollback_edit(PathBuf::from(&project).as_path(), &backup_hash, &path)
 }
@@ -554,6 +554,111 @@ fn git_commit(
 fn git_branches(state: State<AppState>, project_id: String) -> Result<Vec<String>, String> {
     let project = get_project_path(&state, &project_id)?;
     git_ops::list_branches(PathBuf::from(&project).as_path())
+}
+
+#[tauri::command]
+fn git_clone_repo(parent_dir: String, url: String, name: Option<String>) -> Result<String, String> {
+    let dir_name = name.unwrap_or_else(|| {
+        url.rsplit('/')
+            .next()
+            .unwrap_or("repo")
+            .trim_end_matches(".git")
+            .to_string()
+    });
+    let target = PathBuf::from(&parent_dir).join(&dir_name);
+    if target.exists() {
+        return Err(format!("Directory already exists: {}", target.display()));
+    }
+    let output = std::process::Command::new("git")
+        .args(["clone", &url, target.to_str().unwrap_or("")])
+        .output()
+        .map_err(|e| format!("Failed to run git clone: {}", e))?;
+    if !output.status.success() {
+        return Err(String::from_utf8_lossy(&output.stderr).into_owned());
+    }
+    Ok(target.to_string_lossy().into_owned())
+}
+
+#[tauri::command]
+fn git_checkout_branch(state: State<AppState>, project_id: String, branch: String) -> Result<(), String> {
+    let project = get_project_path(&state, &project_id)?;
+    git_ops::checkout_branch(PathBuf::from(&project).as_path(), &branch)
+}
+
+#[tauri::command]
+fn git_create_branch(state: State<AppState>, project_id: String, branch: String) -> Result<(), String> {
+    let project = get_project_path(&state, &project_id)?;
+    git_ops::create_and_checkout_branch(PathBuf::from(&project).as_path(), &branch)
+}
+
+#[tauri::command]
+fn git_stage_files(state: State<AppState>, project_id: String, paths: Vec<String>) -> Result<(), String> {
+    let project = get_project_path(&state, &project_id)?;
+    git_ops::stage_files(PathBuf::from(&project).as_path(), &paths)
+}
+
+#[tauri::command]
+fn git_unstage_files(state: State<AppState>, project_id: String, paths: Vec<String>) -> Result<(), String> {
+    let project = get_project_path(&state, &project_id)?;
+    git_ops::unstage_files(PathBuf::from(&project).as_path(), &paths)
+}
+
+#[tauri::command]
+fn git_stash_push(
+    state: State<AppState>,
+    project_id: String,
+    include_untracked: Option<bool>,
+    message: Option<String>,
+) -> Result<String, String> {
+    let project = get_project_path(&state, &project_id)?;
+    git_ops::stash_push(
+        PathBuf::from(&project).as_path(),
+        include_untracked.unwrap_or(true),
+        message.as_deref(),
+    )
+}
+
+#[tauri::command]
+fn git_stash_pop(state: State<AppState>, project_id: String) -> Result<(), String> {
+    let project = get_project_path(&state, &project_id)?;
+    git_ops::stash_pop(PathBuf::from(&project).as_path())
+}
+
+#[tauri::command]
+fn git_stash_list(state: State<AppState>, project_id: String) -> Result<Vec<git_ops::StashEntry>, String> {
+    let project = get_project_path(&state, &project_id)?;
+    git_ops::stash_list(PathBuf::from(&project).as_path())
+}
+
+#[tauri::command]
+fn reveal_in_explorer(state: State<AppState>, project_id: String, path: String) -> Result<(), String> {
+    let project = get_project_path(&state, &project_id)?;
+    let full = PathBuf::from(&project).join(&path);
+    let full = full.canonicalize().unwrap_or(full);
+    #[cfg(target_os = "windows")]
+    {
+        std::process::Command::new("explorer")
+            .arg(format!("/select,{}", full.display()))
+            .spawn()
+            .map_err(|e| format!("Failed to open explorer: {}", e))?;
+    }
+    #[cfg(target_os = "macos")]
+    {
+        std::process::Command::new("open")
+            .arg("-R")
+            .arg(&full)
+            .spawn()
+            .map_err(|e| format!("Failed to reveal: {}", e))?;
+    }
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        let parent = full.parent().unwrap_or(full.as_path());
+        std::process::Command::new("xdg-open")
+            .arg(parent)
+            .spawn()
+            .map_err(|e| format!("Failed to open folder: {}", e))?;
+    }
+    Ok(())
 }
 
 // ── Memory commands ──
@@ -1047,6 +1152,8 @@ struct AiLoopInput {
     assistant_mode: Option<bool>,
     /// When true, edit_file runs dry_run (edit mode — wait for user confirm).
     edit_dry_run: Option<bool>,
+    /// User confirmed bulk writes in auto mode (>50 files).
+    bulk_write_confirmed: Option<bool>,
     /// Agent mode label for persistence (ask/plan/edit/auto).
     agent_mode: Option<String>,
 }
@@ -1083,6 +1190,10 @@ async fn ai_loop_chat(
         ai_loop::get_tools()
     };
 
+    let agent_mode = input.agent_mode.as_deref().unwrap_or("ask");
+    let auto_mode = agent_mode == "auto";
+    let write_count = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+
     let response = ai_loop::run_loop(
         app,
         project_root.clone(),
@@ -1098,6 +1209,9 @@ async fn ai_loop_chat(
         input.max_iterations.unwrap_or(10),
         ai_loop::LoopConfig {
             dry_run_edits: input.edit_dry_run.unwrap_or(false),
+            auto_mode,
+            bulk_write_confirmed: input.bulk_write_confirmed.unwrap_or(false),
+            write_count,
         },
     )
     .await?;
@@ -1124,7 +1238,7 @@ async fn ai_loop_chat(
                 file_path: edit.path.clone(),
                 diff_text: edit.diff.clone(),
                 status: status.into(),
-                snapshot_id: None,
+                snapshot_id: edit.backup_hash.clone(),
                 edit_meta,
                 created_at: now.clone(),
                 applied_at: if status == "applied" { Some(now.clone()) } else { None },
@@ -1135,6 +1249,7 @@ async fn ai_loop_chat(
                 "filePath": edit.path,
                 "diffText": edit.diff,
                 "status": status,
+                "snapshotId": edit.backup_hash,
                 "additions": edit.diff.lines().filter(|l| l.starts_with('+')).count(),
                 "deletions": edit.diff.lines().filter(|l| l.starts_with('-')).count(),
                 "editMeta": meta_list.get(i).cloned(),
@@ -1226,9 +1341,53 @@ fn apply_change(
     )?;
     let now = chrono::Utc::now().to_rfc3339();
     let conn = state.db.conn.lock().unwrap();
-    changes_db::update_change_status(&conn, &input.change_id, "applied", Some(&now))
-        .map_err(|e| e.to_string())?;
+    changes_db::update_change_applied(
+        &conn,
+        &input.change_id,
+        "applied",
+        Some(&now),
+        result.backup_hash.as_deref(),
+    )
+    .map_err(|e| e.to_string())?;
     Ok(result)
+}
+
+#[derive(Debug, serde::Serialize)]
+struct RevertChangeResult {
+    verified_hash: String,
+}
+
+#[tauri::command]
+fn revert_change(
+    state: State<AppState>,
+    project_id: String,
+    change_id: String,
+) -> Result<RevertChangeResult, String> {
+    let project = get_project_path(&state, &project_id)?;
+    let root = PathBuf::from(&project);
+    let conn = state.db.conn.lock().unwrap();
+    let change = changes_db::get_change(&conn, &change_id)
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| format!("Change not found: {}", change_id))?;
+    if change.status != "applied" {
+        return Err(format!("Cannot revert change with status: {}", change.status));
+    }
+    let backup_hash = change
+        .snapshot_id
+        .ok_or_else(|| "No backup hash stored for this change".to_string())?;
+    let restored_hash =
+        code_editor::rollback_edit(root.as_path(), &backup_hash, &change.file_path)?;
+    if restored_hash != backup_hash {
+        return Err(format!(
+            "Hash verification failed: expected {}, got {}",
+            backup_hash, restored_hash
+        ));
+    }
+    changes_db::update_change_status(&conn, &change_id, "reverted", None)
+        .map_err(|e| e.to_string())?;
+    Ok(RevertChangeResult {
+        verified_hash: restored_hash,
+    })
 }
 
 #[tauri::command]
@@ -1491,6 +1650,7 @@ fn main() {
             list_changes,
             apply_change,
             reject_change,
+            revert_change,
             // Code graph
             list_symbols,
             read_symbol,
@@ -1509,6 +1669,15 @@ fn main() {
             git_log,
             git_commit,
             git_branches,
+            git_clone_repo,
+            git_checkout_branch,
+            git_create_branch,
+            git_stage_files,
+            git_unstage_files,
+            git_stash_push,
+            git_stash_pop,
+            git_stash_list,
+            reveal_in_explorer,
             // Memory (CRUD + Vector Search)
             list_memories,
             save_memory,

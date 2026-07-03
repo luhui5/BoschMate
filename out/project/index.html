@@ -1,0 +1,21 @@
+<!DOCTYPE html>
+<html lang="zh">
+  <head>
+    <meta charset="utf-8" />
+    <title>Redirecting…</title>
+    <script>
+      (function () {
+        var params = new URLSearchParams(location.search)
+        var id = params.get("id") || params.get("project")
+        var m = location.pathname.match(/\/project\/([^/?#]+)/)
+        if (!id && m) id = m[1]
+        if (id && id !== "index.html") {
+          location.replace("/?project=" + encodeURIComponent(id))
+        } else {
+          location.replace("/")
+        }
+      })()
+    </script>
+  </head>
+  <body></body>
+</html>

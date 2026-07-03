@@ -9,8 +9,8 @@ import { SEED_KNOWLEDGE, type KnowledgeFile } from "@/lib/knowledge"
 
 export type ShellView = "assistant" | "coding"
 
-export function AppShell() {
-  const [view, setView] = useState<ShellView>("assistant")
+export function AppShell({ initialView = "assistant" }: { initialView?: ShellView }) {
+  const [view, setView] = useState<ShellView>(initialView)
   const [knowledgeOpen, setKnowledgeOpen] = useState(false)
   const [knowledge, setKnowledge] = useState<KnowledgeFile[]>(SEED_KNOWLEDGE)
 

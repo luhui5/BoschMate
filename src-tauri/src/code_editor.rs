@@ -13,6 +13,7 @@ pub fn edit_file(
     replace_all: bool,
     dry_run: bool,
 ) -> Result<EditResult, String> {
+    crate::path_guard::reject_protected_path(rel_path)?;
     let safe_path = sanitize_path(root, rel_path)?;
     let original = fs::read_to_string(&safe_path)
         .map_err(|e| format!("Failed to read {}: {}", rel_path, e))?;
@@ -61,11 +62,19 @@ pub fn edit_file(
 
     let diff = generate_unified_diff(rel_path, &original, &modified);
 
+    let backup_hash = if !dry_run {
+        let hash = sha2::Sha256::digest(original.as_bytes());
+        Some(format!("{:x}", hash))
+    } else {
+        None
+    };
+
     Ok(EditResult {
         path: rel_path.to_string(),
         replaced: occurrences.len().min(if replace_all { occurrences.len() } else { 1 }),
         diff,
         dry_run,
+        backup_hash,
     })
 }
 
@@ -132,14 +141,15 @@ pub fn search_replace(
             replaced: matches.len(),
             diff,
             dry_run,
+            backup_hash: None,
         });
     }
 
     Ok(results)
 }
 
-/// Rollback a previous edit by restoring from backup.
-pub fn rollback_edit(root: &Path, backup_hash: &str, rel_path: &str) -> Result<(), String> {
+/// Rollback a previous edit by restoring from backup. Returns SHA256 of restored content.
+pub fn rollback_edit(root: &Path, backup_hash: &str, rel_path: &str) -> Result<String, String> {
     let backup_dir = root.join(".boschcode").join("backups");
     let backup_name = format!("{}_{}", backup_hash, rel_path.replace(['/', '\\'], "_"));
     let backup_path = backup_dir.join(&backup_name);
@@ -154,7 +164,8 @@ pub fn rollback_edit(root: &Path, backup_hash: &str, rel_path: &str) -> Result<(
     fs::write(&target, &content)
         .map_err(|e| format!("Failed to rollback {}: {}", rel_path, e))?;
 
-    Ok(())
+    let restored_hash = sha2::Sha256::digest(content.as_bytes());
+    Ok(format!("{:x}", restored_hash))
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -163,6 +174,8 @@ pub struct EditResult {
     pub replaced: usize,
     pub diff: String,
     pub dry_run: bool,
+    /// SHA256 of original content before edit (for rollback).
+    pub backup_hash: Option<String>,
 }
 
 // ── Helpers ──
@@ -285,5 +298,16 @@ mod tests {
         assert_eq!(result.replaced, 1);
         assert!(result.diff.contains("goodbye world"));
         assert!(result.dry_run);
+    }
+
+    #[test]
+    fn blocks_git_write() {
+        let dir = tempfile::tempdir().unwrap();
+        let git_dir = dir.path().join(".git");
+        fs::create_dir_all(&git_dir).unwrap();
+        fs::write(git_dir.join("config"), "[core]").unwrap();
+        let err = edit_file(dir.path(), ".git/config", "[core]", "[core]\n", false, false);
+        assert!(err.is_err());
+        assert!(err.unwrap_err().contains(".git"));
     }
 }
