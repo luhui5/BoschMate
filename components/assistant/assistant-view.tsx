@@ -198,8 +198,8 @@ export function AssistantView({
 
     // Look up the model config
     const modelCfg = findModel(availableModels, active.model)
-    if (!modelCfg || !isTauri()) {
-      // Fallback: keep the old template reply when models aren't loaded or not in Tauri
+    if (!isTauri()) {
+      // Web browser mode: show template reply since there's no backend
       setTimeout(() => {
         const fallback = `已收到你的请求：「${content.slice(0, 40)}${content.length > 40 ? "…" : ""}」。\n\n作为本地全能助手，我可以在不离开本机的前提下完成写作、文档总结、翻译、数据分析、计划制定与代码编写。请告诉我更多细节，或从知识库中选择相关文档，我会据此给出更精准的结果。${active.folder ? `\n\n（当前工作文件夹：${active.folder}，我会在该目录范围内读取与检索相关内容。）` : ""}`
         setSessions((prev) =>
@@ -218,6 +218,26 @@ export function AssistantView({
         )
         setThinking(false)
       }, 900)
+      return
+    }
+
+    if (!modelCfg) {
+      const noModelMsg = "未选择模型。请先在输入框左侧的模型下拉菜单中选择一个可用的模型，或前往 设置 → 模型配置 添加新模型。"
+      setSessions((prev) =>
+        prev.map((s) =>
+          s.id === activeId
+            ? {
+                ...s,
+                messages: [
+                  ...s.messages,
+                  { id: `a-${Date.now()}`, role: "assistant" as const, content: noModelMsg },
+                ],
+                updatedAt: new Date().toISOString(),
+              }
+            : s,
+        ),
+      )
+      setThinking(false)
       return
     }
 
@@ -259,7 +279,9 @@ export function AssistantView({
         ),
       )
     } catch (err) {
-      const errorMsg = `抱歉，请求失败：${err instanceof Error ? err.message : "未知错误"}\n\n请检查模型配置与端点是否可访问。`
+      // Tauri throws plain strings from Rust Err(...); Error objects from JS runtime
+      const reason = typeof err === "string" ? err : err instanceof Error ? err.message : "未知错误"
+      const errorMsg = `抱歉，请求失败：${reason}\n\n请检查模型配置与端点是否可访问。`
       setSessions((prev) =>
         prev.map((s) =>
           s.id === activeId
@@ -319,7 +341,16 @@ export function AssistantView({
             variant={active?.folder ? "secondary" : "ghost"}
             size="sm"
             className="max-w-[240px] gap-1.5"
-            onClick={() => setFolderOpen(true)}
+            onClick={async () => {
+              // Windows / Tauri: when no folder is bound, directly open native picker
+              if (!active?.folder && isTauri()) {
+                const { pickFolder } = await import("@/lib/tauri-api")
+                const selected = await pickFolder()
+                if (selected) patchActive({ folder: selected })
+                return
+              }
+              setFolderOpen(true)
+            }}
           >
             {active?.folder ? <FolderOpen className="size-4" /> : <Folder className="size-4" />}
             <span className="truncate font-mono text-xs">
@@ -466,21 +497,27 @@ export function AssistantView({
                       <>
                         <div className="fixed inset-0 z-10" onClick={() => setModelOpen(false)} aria-hidden />
                         <div className="absolute bottom-full left-0 z-20 mb-1 w-56 rounded-lg border border-border bg-popover p-1 shadow-lg">
-                          {availableModels.map((m) => (
-                            <button
-                              key={m.id}
-                              onClick={() => {
-                                patchActive({ model: m.id })
-                                setModelOpen(false)
-                              }}
-                              className={cn(
-                                "flex w-full items-center rounded-md px-2 py-1.5 text-left text-sm transition-colors hover:bg-accent",
-                                m.id === active?.model && "text-primary",
-                              )}
-                            >
-                              {m.name}
-                            </button>
-                          ))}
+                          {availableModels.length === 0 ? (
+                            <p className="px-2 py-1.5 text-xs text-muted-foreground">
+                              暂无模型，请前往设置添加
+                            </p>
+                          ) : (
+                            availableModels.map((m) => (
+                              <button
+                                key={m.id}
+                                onClick={() => {
+                                  patchActive({ model: m.id })
+                                  setModelOpen(false)
+                                }}
+                                className={cn(
+                                  "flex w-full items-center rounded-md px-2 py-1.5 text-left text-sm transition-colors hover:bg-accent",
+                                  m.id === active?.model && "text-primary",
+                                )}
+                              >
+                                {m.name}
+                              </button>
+                            ))
+                          )}
                         </div>
                       </>
                     )}

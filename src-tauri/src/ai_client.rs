@@ -263,7 +263,6 @@ async fn stream_openai(
     session_id: String,
     message_id: String,
 ) -> Result<ChatResponse, String> {
-    let api_key = req.api_key.ok_or("OpenAI API key required")?;
     let client = reqwest::Client::new();
     let base = req.base_url.unwrap_or_else(|| "https://api.openai.com/v1".into());
     let model = if req.model.is_empty() { "gpt-4o" } else { &req.model };
@@ -291,10 +290,16 @@ async fn stream_openai(
         body["tools"] = serde_json::json!(tools);
     }
 
-    let response = client
+    let mut request_builder = client
         .post(format!("{}/chat/completions", base))
-        .header("Authorization", format!("Bearer {}", api_key))
-        .header("Content-Type", "application/json")
+        .header("Content-Type", "application/json");
+
+    // Only attach API key if provided (custom endpoints may not require auth)
+    if let Some(ref api_key) = req.api_key {
+        request_builder = request_builder.header("Authorization", format!("Bearer {}", api_key));
+    }
+
+    let response = request_builder
         .json(&body)
         .send()
         .await

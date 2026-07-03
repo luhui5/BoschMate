@@ -20,18 +20,7 @@ export interface ReleaseInfo {
 
 export const CURRENT_VERSION = "0.3.1"
 
-export const MOCK_RELEASE: ReleaseInfo = {
-  latestVersion: "0.4.0",
-  sizeBytes: 18874368, // ~18MB
-  changelog: [
-    "新增 Ask before edits 完整流程",
-    "修复大仓库文件树卡顿问题",
-    "优化 FAISS 索引重建性能",
-    "新增多语言界面（English / 简体中文）",
-  ],
-  changelogUrl: "https://github.com/boschcode/boschcode/releases",
-  minPreviousVersion: "0.2.0",
-}
+export const MOCK_RELEASE: ReleaseInfo | null = null
 
 export function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`

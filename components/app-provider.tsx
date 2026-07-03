@@ -158,13 +158,15 @@ export function AppProvider({ children }: { children: ReactNode }) {
     }
   }, [fontSize, editorFont, lang, isDesktop])
 
-  // 启动时自动静默检查（5s 后），模拟发现更新弹出 toast
+  // 启动时自动静默检查（仅在 mock release 可用时）
   useEffect(() => {
+    const release = MOCK_RELEASE
+    if (!release) return
     const tid = setTimeout(() => {
       setUpdate((u) => {
         if (u.phase !== "idle") return u
-        if (u.skippedVersion === MOCK_RELEASE.latestVersion) return u
-        return { ...u, phase: "available", release: MOCK_RELEASE }
+        if (u.skippedVersion === release.latestVersion) return u
+        return { ...u, phase: "available", release }
       })
     }, 5000)
     return () => clearTimeout(tid)
@@ -188,9 +190,11 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const setChannel = (c: UpdateChannel) => setUpdate((u) => ({ ...u, channel: c }))
 
   const checkForUpdates = () => {
+    const release = MOCK_RELEASE
+    if (!release) return
     setUpdate((u) => ({ ...u, phase: "checking", error: null }))
     const tid = setTimeout(() => {
-      setUpdate((u) => ({ ...u, phase: "available", release: MOCK_RELEASE }))
+      setUpdate((u) => ({ ...u, phase: "available", release }))
     }, 1400)
     timers.current.push(tid)
   }
@@ -198,8 +202,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const startUpdate = () => setUpdate((u) => ({ ...u, phase: "confirm" }))
 
   const confirmDownload = () => {
+    const release = MOCK_RELEASE
+    if (!release) return
     setUpdate((u) => ({ ...u, phase: "downloading", progress: 0, downloadedBytes: 0 }))
-    const total = MOCK_RELEASE.sizeBytes
+    const total = release.sizeBytes
     if (downloadTimer.current) clearInterval(downloadTimer.current)
     downloadTimer.current = setInterval(() => {
       setUpdate((u) => {

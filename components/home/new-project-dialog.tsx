@@ -1,10 +1,12 @@
 "use client"
 
 import { useState } from "react"
+import { FolderOpen, Loader2 } from "lucide-react"
 import { Modal } from "@/components/ui/modal"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import type { Project } from "@/lib/types"
+import { isTauri, pickFolder } from "@/lib/tauri-api"
 
 export function NewProjectDialog({
   open,
@@ -21,6 +23,7 @@ export function NewProjectDialog({
   const [name, setName] = useState("")
   const [path, setPath] = useState("")
   const [host, setHost] = useState("")
+  const [browsing, setBrowsing] = useState(false)
 
   const reset = () => {
     setName("")
@@ -99,12 +102,46 @@ export function NewProjectDialog({
           <span className="text-xs font-medium text-muted-foreground">
             {isSsh ? "远端路径" : "本地路径"}
           </span>
-          <Input
-            value={path}
-            onChange={(e) => setPath(e.target.value)}
-            placeholder={isSsh ? "/srv/my-project" : "~/dev/my-project"}
-            className="font-mono"
-          />
+          {isSsh ? (
+            <Input
+              value={path}
+              onChange={(e) => setPath(e.target.value)}
+              placeholder="/srv/my-project"
+              className="font-mono"
+            />
+          ) : (
+            <div className="relative">
+              <Input
+                value={path}
+                onChange={(e) => setPath(e.target.value)}
+                placeholder="~/dev/my-project"
+                className="w-full pr-8 font-mono"
+              />
+              {isTauri() && (
+                <button
+                  type="button"
+                  className="absolute inset-y-0 right-0 flex w-8 items-center justify-center rounded-r-md text-muted-foreground transition-colors hover:text-foreground"
+                  disabled={browsing}
+                  onClick={async () => {
+                    setBrowsing(true)
+                    try {
+                      const selected = await pickFolder()
+                      if (selected) setPath(selected)
+                    } finally {
+                      setBrowsing(false)
+                    }
+                  }}
+                  aria-label="浏览文件夹"
+                >
+                  {browsing ? (
+                    <Loader2 className="size-4 animate-spin" />
+                  ) : (
+                    <FolderOpen className="size-4" />
+                  )}
+                </button>
+              )}
+            </div>
+          )}
         </label>
       </div>
     </Modal>

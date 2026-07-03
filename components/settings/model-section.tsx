@@ -43,7 +43,7 @@ const PROVIDER_LABEL: Record<ModelProvider, string> = {
 
 export function ModelSection() {
   const [models, setModels] = useState<ModelConfig[]>(DEFAULT_MODELS)
-  const [selected, setSelected] = useState<string>(DEFAULT_MODELS[0].id)
+  const [selected, setSelected] = useState<string>(DEFAULT_MODELS[0]?.id ?? "")
   const [dialogOpen, setDialogOpen] = useState(false)
   const [draft, setDraft] = useState<ModelConfig>(EMPTY_DRAFT)
   const [editingId, setEditingId] = useState<string | null>(null)
@@ -118,8 +118,11 @@ export function ModelSection() {
 
   // Derive provider from protocol/endpoint
   const autoProvider = (protocol: ModelProtocol, endpoint: string | null): ModelProvider => {
-    if (endpoint && endpoint.includes(":11434")) return "ollama"
-    return protocol === "anthropic" ? "anthropic" : "openai"
+    if (protocol === "anthropic") return "anthropic"
+    // Local / self-hosted endpoints default to Ollama (OpenAI-compatible, no API key required)
+    if (endpoint && (endpoint.includes("127.0.0.1") || endpoint.includes("localhost") || endpoint.includes(":11434"))) return "ollama"
+    // Cloud OpenAI-compatible endpoints
+    return "openai"
   }
 
   useEffect(() => {

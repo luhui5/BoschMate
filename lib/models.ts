@@ -31,48 +31,7 @@ export interface ModelConfig {
 
 // ── Defaults ──
 
-export const DEFAULT_MODELS: ModelConfig[] = [
-  {
-    id: "local-qwen",
-    name: "Qwen2.5-Coder 32B",
-    protocol: "openai",
-    provider: "ollama",
-    detail: "Ollama · 4-bit 量化",
-    endpoint: "http://localhost:11434",
-    contextWindow: 32768,
-    temperature: 0.2,
-  },
-  {
-    id: "local-deepseek",
-    name: "DeepSeek-Coder V2 16B",
-    protocol: "openai",
-    provider: "ollama",
-    detail: "llama.cpp",
-    endpoint: "http://localhost:8080",
-    contextWindow: 32768,
-    temperature: 0.3,
-  },
-  {
-    id: "cloud-claude",
-    name: "Claude Opus 4.6",
-    protocol: "anthropic",
-    provider: "anthropic",
-    detail: "需 API Key",
-    endpoint: "https://api.anthropic.com",
-    contextWindow: 131072,
-    temperature: 0.5,
-  },
-  {
-    id: "cloud-gpt",
-    name: "GPT-5",
-    protocol: "openai",
-    provider: "openai",
-    detail: "需 API Key",
-    endpoint: "https://api.openai.com",
-    contextWindow: 131072,
-    temperature: 0.7,
-  },
-]
+export const DEFAULT_MODELS: ModelConfig[] = []
 
 // ── Persistence ──
 // Priority: Tauri IPC (SQLite) → localStorage fallback
