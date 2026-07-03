@@ -52,6 +52,10 @@ pub struct ChatResponse {
     pub tool_calls: Option<Vec<ToolCallResult>>,
     pub finish_reason: String,
     pub usage: UsageInfo,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pending_edits: Option<Vec<crate::code_editor::EditResult>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pending_edit_meta: Option<Vec<serde_json::Value>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -111,12 +115,21 @@ pub async fn stream_chat(
     session_id: String,
     message_id: String,
 ) -> Result<ChatResponse, String> {
-    match req.provider.as_str() {
-        "anthropic" => stream_anthropic(app, req, session_id, message_id).await,
-        "openai" => stream_openai(app, req, session_id, message_id).await,
-        "ollama" => stream_ollama(app, req, session_id, message_id).await,
-        _ => Err(format!("Unknown provider: {}", req.provider)),
-    }
+    crate::error_handler::retry_with_backoff(3, || {
+        let app = app.clone();
+        let req = req.clone();
+        let session_id = session_id.clone();
+        let message_id = message_id.clone();
+        async move {
+            match req.provider.as_str() {
+                "anthropic" => stream_anthropic(app, req, session_id, message_id).await,
+                "openai" => stream_openai(app, req, session_id, message_id).await,
+                "ollama" => stream_ollama(app, req, session_id, message_id).await,
+                _ => Err(format!("Unknown provider: {}", req.provider)),
+            }
+        }
+    })
+    .await
 }
 
 // ── Anthropic ──
@@ -276,6 +289,8 @@ async fn stream_anthropic(
             prompt_tokens,
             completion_tokens,
         },
+        pending_edits: None,
+        pending_edit_meta: None,
     })
 }
 
@@ -447,6 +462,8 @@ async fn stream_openai(
             prompt_tokens,
             completion_tokens,
         },
+        pending_edits: None,
+        pending_edit_meta: None,
     })
 }
 
@@ -547,6 +564,8 @@ async fn stream_ollama(
             prompt_tokens,
             completion_tokens,
         },
+        pending_edits: None,
+        pending_edit_meta: None,
     })
 }
 

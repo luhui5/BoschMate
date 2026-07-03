@@ -17,6 +17,9 @@ import type {
   Skill,
   UpdateInfo,
   FileNode,
+  ChangeRecord,
+  TestRunResult,
+  LintResult,
 } from './types';
 import {
   mapProject,
@@ -299,6 +302,8 @@ export interface AiLoopRequest {
   base_url?: string;
   max_iterations?: number;
   assistant_mode?: boolean;
+  edit_dry_run?: boolean;
+  agent_mode?: string;
 }
 
 export interface ChatTokenEvent {
@@ -348,4 +353,202 @@ export function onChatToken(callback: (event: ChatTokenEvent) => void): () => vo
   return () => {
     if (unlisten) unlisten();
   };
+}
+
+// ── Code editor / changes ──
+
+export async function editFile(
+  projectId: string,
+  path: string,
+  oldString: string,
+  newString: string,
+  replaceAll?: boolean,
+  dryRun?: boolean,
+): Promise<{ path: string; replaced: number; diff: string; dry_run: boolean }> {
+  return invoke('edit_file', {
+    projectId,
+    path,
+    oldString,
+    newString,
+    replaceAll,
+    dryRun,
+  });
+}
+
+export async function rollbackEdit(
+  projectId: string,
+  backupHash: string,
+  path: string,
+): Promise<void> {
+  return invoke('rollback_edit', { projectId, backupHash, path });
+}
+
+export async function listChanges(sessionId: string): Promise<ChangeRecord[]> {
+  const raw = await invoke<Array<{
+    id: string;
+    session_id: string;
+    message_id?: string;
+    file_path: string;
+    diff_text: string;
+    status: string;
+    snapshot_id?: string;
+    edit_meta?: string;
+    created_at: string;
+    applied_at?: string;
+  }>>('list_changes', { sessionId });
+  return raw.map((r) => ({
+    id: r.id,
+    sessionId: r.session_id,
+    messageId: r.message_id,
+    filePath: r.file_path,
+    diffText: r.diff_text,
+    status: r.status,
+    snapshotId: r.snapshot_id,
+    editMeta: r.edit_meta,
+    createdAt: r.created_at,
+    appliedAt: r.applied_at,
+  }));
+}
+
+export async function applyChange(
+  projectId: string,
+  input: {
+    change_id: string;
+    path: string;
+    old_string: string;
+    new_string: string;
+    replace_all?: boolean;
+  },
+): Promise<{ path: string; diff: string }> {
+  return invoke('apply_change', { projectId, input });
+}
+
+export async function rejectChange(changeId: string): Promise<void> {
+  return invoke('reject_change', { changeId });
+}
+
+// ── Credentials (OS Keychain) ──
+
+export async function saveCredential(key: string, value: string): Promise<void> {
+  return invoke('save_credential', { key, value });
+}
+
+export async function getCredential(key: string): Promise<string | null> {
+  const val = await invoke<string | null>('get_credential', { key });
+  return val ?? null;
+}
+
+export async function deleteCredential(key: string): Promise<void> {
+  return invoke('delete_credential', { key });
+}
+
+// ── Test & Lint ──
+
+export async function runTests(projectId: string, filter?: string): Promise<TestRunResult> {
+  const raw = await invoke<{
+    command: string;
+    exit_code: number;
+    stdout: string;
+    stderr: string;
+    passed: boolean;
+  }>('run_tests', { projectId, filter });
+  return {
+    command: raw.command,
+    exitCode: raw.exit_code,
+    stdout: raw.stdout,
+    stderr: raw.stderr,
+    passed: raw.passed,
+  };
+}
+
+export async function runLinter(projectId: string, target?: string): Promise<LintResult> {
+  const raw = await invoke<{
+    command: string;
+    exit_code: number;
+    issues: LintResult['issues'];
+    raw_output: string;
+  }>('run_linter', { projectId, target });
+  return {
+    command: raw.command,
+    exitCode: raw.exit_code,
+    issues: raw.issues,
+    rawOutput: raw.raw_output,
+  };
+}
+
+// ── Recovery ──
+
+export async function saveRecoverySnapshot(snapshot: {
+  session_id: string;
+  project_id?: string;
+  draft_content: string;
+  messages_json: string;
+  saved_at: string;
+}): Promise<void> {
+  return invoke('save_recovery_snapshot', { snapshot });
+}
+
+export async function loadRecoverySnapshots(): Promise<Array<{
+  sessionId: string;
+  projectId?: string;
+  draftContent: string;
+  messagesJson: string;
+  savedAt: string;
+}>> {
+  const raw = await invoke<Array<{
+    session_id: string;
+    project_id?: string;
+    draft_content: string;
+    messages_json: string;
+    saved_at: string;
+  }>>('load_recovery_snapshots');
+  return raw.map((s) => ({
+    sessionId: s.session_id,
+    projectId: s.project_id,
+    draftContent: s.draft_content,
+    messagesJson: s.messages_json,
+    savedAt: s.saved_at,
+  }));
+}
+
+export async function clearRecoverySnapshot(sessionId: string): Promise<void> {
+  return invoke('clear_recovery_snapshot', { sessionId });
+}
+
+export async function watchProjectDir(projectId: string): Promise<void> {
+  return invoke('watch_project_dir', { projectId });
+}
+
+export async function sandboxExec(
+  projectId: string,
+  command: string,
+  options?: { cwd?: string; allowNetwork?: boolean; dryRun?: boolean },
+): Promise<{ exitCode: number; stdout: string; stderr: string; blocked: boolean }> {
+  const raw = await invoke<{
+    exit_code: number;
+    stdout: string;
+    stderr: string;
+    blocked: boolean;
+  }>('sandbox_exec', {
+    projectId,
+    command,
+    cwd: options?.cwd,
+    allowNetwork: options?.allowNetwork,
+    dryRun: options?.dryRun,
+  });
+  return {
+    exitCode: raw.exit_code,
+    stdout: raw.stdout,
+    stderr: raw.stderr,
+    blocked: raw.blocked,
+  };
+}
+
+export async function compressMemories(_projectId?: string): Promise<number> {
+  return invoke<number>('compress_memories', {});
+}
+
+export async function searchMemories(projectId: string, query: string, limit?: number): Promise<Memory[]> {
+  const raw = await invoke<RawMemory[]>('search_memories', { projectId, query, limit });
+  return raw.map(mapMemory);
 }

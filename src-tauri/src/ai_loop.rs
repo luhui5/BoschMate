@@ -1,12 +1,31 @@
 use crate::ai_client::{self, AiMessage, AiToolDef, ChatRequest, ChatResponse};
-use crate::code_editor;
+use crate::code_editor::{self, EditResult};
 use crate::code_graph;
 use crate::fs_ops;
 use crate::git_ops;
 use crate::sandbox;
 use serde_json::Value;
 use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
 use tauri::{AppHandle, Emitter};
+
+/// Metadata needed to apply a pending edit after user confirmation.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct PendingEditMeta {
+    pub path: String,
+    pub old_string: String,
+    pub new_string: String,
+    pub replace_all: bool,
+    pub result: EditResult,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct LoopConfig {
+    /// When true, edit_file runs dry_run and collects pending edits instead of writing.
+    pub dry_run_edits: bool,
+}
+
+pub type EditCollector = Arc<Mutex<Vec<PendingEditMeta>>>;
 
 /// Available tools registered with the AI
 pub fn get_tools() -> Vec<AiToolDef> {
@@ -172,6 +191,8 @@ pub async fn execute_tool(
     project_root: &PathBuf,
     tool_name: &str,
     args: &Value,
+    config: &LoopConfig,
+    collector: &EditCollector,
 ) -> Result<String, String> {
     match tool_name {
         "read_file" => {
@@ -191,13 +212,28 @@ pub async fn execute_tool(
             let old_str = args["old_string"].as_str().ok_or("old_string required")?;
             let new_str = args["new_string"].as_str().ok_or("new_string required")?;
             let replace_all = args["replace_all"].as_bool().unwrap_or(false);
+            let dry = config.dry_run_edits;
             let result = code_editor::edit_file(
-                project_root.as_path(), path, old_str, new_str, replace_all, false,
+                project_root.as_path(), path, old_str, new_str, replace_all, dry,
             )?;
-            Ok(format!(
-                "Edit applied to {} ({} replacement(s))\n\n```diff\n{}\n```",
-                result.path, result.replaced, result.diff
-            ))
+            if dry {
+                collector.lock().unwrap().push(PendingEditMeta {
+                    path: path.to_string(),
+                    old_string: old_str.to_string(),
+                    new_string: new_str.to_string(),
+                    replace_all,
+                    result: result.clone(),
+                });
+                Ok(format!(
+                    "Edit preview for {} ({} replacement(s)) — awaiting user confirmation\n\n```diff\n{}\n```",
+                    result.path, result.replaced, result.diff
+                ))
+            } else {
+                Ok(format!(
+                    "Edit applied to {} ({} replacement(s))\n\n```diff\n{}\n```",
+                    result.path, result.replaced, result.diff
+                ))
+            }
         }
         "grep" => {
             let pattern = args["pattern"].as_str().ok_or("pattern required")?;
@@ -326,9 +362,11 @@ pub async fn run_loop(
     system_prompt: Option<String>,
     tools: Vec<AiToolDef>,
     max_iterations: usize,
+    config: LoopConfig,
 ) -> Result<ChatResponse, String> {
     let mut current_messages = messages;
     let mut iteration = 0;
+    let collector: EditCollector = Arc::new(Mutex::new(Vec::new()));
 
     loop {
         iteration += 1;
@@ -360,7 +398,7 @@ pub async fn run_loop(
         // If AI returned tool calls, execute them
         if let Some(tool_calls) = &response.tool_calls {
             if tool_calls.is_empty() {
-                return Ok(response);
+                return Ok(finalize_response(response, &collector));
             }
 
             // Add assistant message (with tool calls)
@@ -379,7 +417,7 @@ pub async fn run_loop(
                     "args": tc.arguments,
                 }));
 
-                let result = execute_tool(&project_root, &tc.name, &tc.arguments).await;
+                let result = execute_tool(&project_root, &tc.name, &tc.arguments, &config, &collector).await;
                 let result_str = match &result {
                     Ok(output) => output.clone(),
                     Err(err) => format!("Error: {}", err),
@@ -408,7 +446,21 @@ pub async fn run_loop(
             });
         } else {
             // No tool calls — this is the final response
-            return Ok(response);
+            return Ok(finalize_response(response, &collector));
         }
     }
+}
+
+fn finalize_response(mut response: ChatResponse, collector: &EditCollector) -> ChatResponse {
+    let pending = collector.lock().unwrap();
+    if !pending.is_empty() {
+        response.pending_edits = Some(pending.iter().map(|p| p.result.clone()).collect());
+        response.pending_edit_meta = Some(
+            pending
+                .iter()
+                .filter_map(|p| serde_json::to_value(p).ok())
+                .collect(),
+        );
+    }
+    response
 }

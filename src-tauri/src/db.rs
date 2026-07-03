@@ -80,6 +80,7 @@ impl Database {
                 diff_text TEXT NOT NULL,
                 status TEXT NOT NULL DEFAULT 'pending',
                 snapshot_id TEXT,
+                edit_meta TEXT,
                 created_at TEXT NOT NULL,
                 applied_at TEXT
             );
@@ -147,6 +148,9 @@ impl Database {
                 created_at TEXT NOT NULL
             );
         ")?;
+
+        // Migrate legacy DBs missing edit_meta column
+        let _ = conn.execute("ALTER TABLE changes ADD COLUMN edit_meta TEXT", []);
 
         Ok(())
     }

@@ -37,6 +37,13 @@ export interface DiffHunk {
   language: string
   lines: DiffLine[]
   status: "pending" | "applied" | "rejected" | "reverted"
+  changeId?: string
+  editMeta?: {
+    path?: string
+    old_string?: string
+    new_string?: string
+    replace_all?: boolean
+  }
 }
 
 export interface DiffLine {
@@ -124,4 +131,68 @@ export interface Skill {
   source: "builtin" | "registry" | "local"
   permissions: string[]
   enabled: boolean
+}
+
+export interface GrepMatch {
+  file: string
+  line: number
+  content: string
+}
+
+export interface GitCommit {
+  sha: string
+  message: string
+  author: string
+  date: string
+}
+
+export interface GitDiff {
+  diff: string
+  files: string[]
+  stats: { added: number; removed: number; changed: number }
+}
+
+export interface UpdateInfo {
+  currentVersion: string
+  latestVersion?: string
+  downloadUrl?: string
+  sizeBytes?: number
+  changelog?: string
+}
+
+export interface ChangeRecord {
+  id: string
+  sessionId: string
+  messageId?: string
+  filePath: string
+  diffText: string
+  status: string
+  snapshotId?: string
+  editMeta?: string
+  createdAt: string
+  appliedAt?: string
+}
+
+export interface TestRunResult {
+  command: string
+  exitCode: number
+  stdout: string
+  stderr: string
+  passed: boolean
+}
+
+export interface LintResult {
+  command: string
+  exitCode: number
+  issues: LintIssue[]
+  rawOutput: string
+}
+
+export interface LintIssue {
+  file: string
+  line: number
+  column: number
+  severity: string
+  message: string
+  rule?: string
 }

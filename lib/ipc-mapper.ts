@@ -14,6 +14,7 @@ import type {
   ToolCall,
   CIStatus,
 } from './types'
+import { parseDiffsFromRaw } from './diff-parser'
 
 // ── Raw shapes from Rust (serde default field names) ──
 
@@ -164,7 +165,7 @@ export function mapChatMessage(raw: RawChatMessage): ChatMessage {
     createdAt: raw.created_at,
     mode: raw.mode ? asAgentMode(raw.mode) : undefined,
     toolCalls: parseToolCalls(raw.tool_calls),
-    // diffs parsing deferred to P1
+    diffs: parseDiffsFromRaw(raw.diffs),
     fileRefs: Array.isArray(raw.file_refs)
       ? (raw.file_refs as string[])
       : undefined,

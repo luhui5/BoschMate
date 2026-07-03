@@ -1,6 +1,9 @@
+#[cfg(unix)]
+use std::os::unix::process::ChildExt;
+
 use regex::Regex;
 use std::path::PathBuf;
-use std::process::Command;
+use std::process::{Command, Stdio};
 use std::sync::OnceLock;
 
 // ── Dangerous command patterns ──
@@ -146,14 +149,12 @@ pub fn execute_sandboxed(
 
     cmd.current_dir(&work_dir);
 
-    // Set environment variables
     if let Some(env_vars) = &env {
         for (k, v) in env_vars {
             cmd.env(k, v);
         }
     }
 
-    // Network blocking via environment
     if !config.allow_network {
         cmd.env("http_proxy", "http://0.0.0.0:0")
             .env("https_proxy", "http://0.0.0.0:0")
@@ -162,13 +163,51 @@ pub fn execute_sandboxed(
             .env("no_proxy", "");
     }
 
-    // 5. Execute with timeout
-    let output = cmd.output().map_err(|e| {
-        format!(
-            "Failed to execute command: {}\n\nVerify that the command and arguments are valid.",
-            e
-        )
-    })?;
+    #[cfg(unix)]
+    cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
+
+    let output = {
+        #[cfg(unix)]
+        {
+            let mut child = cmd.spawn().map_err(|e| format!("Failed to execute command: {}", e))?;
+            let timeout = std::time::Duration::from_millis(config.timeout_ms);
+            match child.wait_timeout(timeout) {
+                Ok(Some(status)) => {
+                    use std::io::Read;
+                    let mut stdout_buf = Vec::new();
+                    let mut stderr_buf = Vec::new();
+                    if let Some(mut out) = child.stdout.take() {
+                        out.read_to_end(&mut stdout_buf).ok();
+                    }
+                    if let Some(mut err) = child.stderr.take() {
+                        err.read_to_end(&mut stderr_buf).ok();
+                    }
+                    std::process::Output {
+                        status,
+                        stdout: stdout_buf,
+                        stderr: stderr_buf,
+                    }
+                }
+                Ok(None) => {
+                    let _ = child.kill();
+                    return Err(format!(
+                        "Command timed out after {}ms: {}",
+                        config.timeout_ms, command
+                    ));
+                }
+                Err(e) => return Err(format!("Failed waiting for command: {}", e)),
+            }
+        }
+        #[cfg(not(unix))]
+        {
+            cmd.output().map_err(|e| {
+                format!(
+                    "Failed to execute command: {}\n\nVerify that the command and arguments are valid.",
+                    e
+                )
+            })?
+        }
+    };
 
     let duration_ms = start.elapsed().as_millis() as u64;
 

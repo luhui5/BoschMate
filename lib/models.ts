@@ -4,7 +4,7 @@
  * the settings page and the assistant chat dropdown.
  */
 
-import { getSetting, setSetting } from "@/lib/tauri-api"
+import { getSetting, setSetting, saveCredential, getCredential, deleteCredential } from "@/lib/tauri-api"
 
 // ── Types ──
 
@@ -181,23 +181,33 @@ function apiKeyStorageKey(modelId: string): string {
 }
 
 export async function loadApiKey(modelId: string): Promise<string | null> {
-  // 1. Try Tauri
+  const key = `api_key:${modelId}`
   try {
-    const val = await getSetting(`api_key:${modelId}`)
+    const val = await getCredential(key)
     if (val) return val
   } catch { /* fall through */ }
-  // 2. Try localStorage
+  try {
+    const val = await getSetting(key)
+    if (val) return val
+  } catch { /* fall through */ }
   return lsGet(apiKeyStorageKey(modelId))
 }
 
 export async function saveApiKey(modelId: string, key: string): Promise<void> {
-  lsSet(apiKeyStorageKey(modelId), key)
-  try { await setSetting(`api_key:${modelId}`, key) } catch { /* Tauri not available */ }
+  const storageKey = `api_key:${modelId}`
+  try {
+    await saveCredential(storageKey, key)
+  } catch {
+    lsSet(apiKeyStorageKey(modelId), key)
+    try { await setSetting(storageKey, key) } catch { /* Tauri not available */ }
+  }
 }
 
 export async function deleteApiKey(modelId: string): Promise<void> {
+  const storageKey = `api_key:${modelId}`
   lsRemove(apiKeyStorageKey(modelId))
-  try { await setSetting(`api_key:${modelId}`, "") } catch { /* Tauri not available */ }
+  try { await deleteCredential(storageKey) } catch { /* ignore */ }
+  try { await setSetting(storageKey, "") } catch { /* Tauri not available */ }
 }
 
 // ── Helpers ──

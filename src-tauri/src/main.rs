@@ -1,15 +1,21 @@
 mod ai_client;
 mod ai_loop;
 mod audit;
+mod changes_db;
 mod code_editor;
 mod code_graph;
+mod credentials;
 mod crypto;
 mod db;
 mod error_handler;
+mod file_watcher;
 mod fs_ops;
 mod git_ops;
+mod linter_analyzer;
 mod models;
+mod recovery;
 mod sandbox;
+mod test_runner;
 mod vector_store;
 
 use ai_client::{stream_chat as ai_stream_chat, list_ollama_models as ai_list_ollama_models};
@@ -1039,6 +1045,10 @@ struct AiLoopInput {
     max_iterations: Option<usize>,
     /// When true, use read-only assistant tools instead of full coding tools.
     assistant_mode: Option<bool>,
+    /// When true, edit_file runs dry_run (edit mode — wait for user confirm).
+    edit_dry_run: Option<bool>,
+    /// Agent mode label for persistence (ask/plan/edit/auto).
+    agent_mode: Option<String>,
 }
 
 #[tauri::command]
@@ -1075,7 +1085,7 @@ async fn ai_loop_chat(
 
     let response = ai_loop::run_loop(
         app,
-        project_root,
+        project_root.clone(),
         session_id.clone(),
         msg_id.clone(),
         input.provider,
@@ -1086,8 +1096,54 @@ async fn ai_loop_chat(
         input.system_prompt,
         tools,
         input.max_iterations.unwrap_or(10),
+        ai_loop::LoopConfig {
+            dry_run_edits: input.edit_dry_run.unwrap_or(false),
+        },
     )
     .await?;
+
+    // Build diffs JSON and persist changes
+    let mut change_ids: Vec<String> = Vec::new();
+    let diffs_json = if let Some(ref edits) = response.pending_edits {
+        let conn = state.db.conn.lock().unwrap();
+        let meta_list = response.pending_edit_meta.as_deref().unwrap_or(&[]);
+        let mut diffs_arr = Vec::new();
+        for (i, edit) in edits.iter().enumerate() {
+            let change_id = uuid::Uuid::new_v4().to_string();
+            change_ids.push(change_id.clone());
+            let status = if input.edit_dry_run.unwrap_or(false) {
+                "pending"
+            } else {
+                "applied"
+            };
+            let edit_meta = meta_list.get(i).map(|m| m.to_string());
+            let record = changes_db::ChangeRecord {
+                id: change_id.clone(),
+                session_id: session_id.clone(),
+                message_id: Some(msg_id.clone()),
+                file_path: edit.path.clone(),
+                diff_text: edit.diff.clone(),
+                status: status.into(),
+                snapshot_id: None,
+                edit_meta,
+                created_at: now.clone(),
+                applied_at: if status == "applied" { Some(now.clone()) } else { None },
+            };
+            changes_db::insert_change(&conn, &record).map_err(|e| e.to_string())?;
+            diffs_arr.push(serde_json::json!({
+                "id": change_id,
+                "filePath": edit.path,
+                "diffText": edit.diff,
+                "status": status,
+                "additions": edit.diff.lines().filter(|l| l.starts_with('+')).count(),
+                "deletions": edit.diff.lines().filter(|l| l.starts_with('-')).count(),
+                "editMeta": meta_list.get(i).cloned(),
+            }));
+        }
+        Some(serde_json::to_string(&diffs_arr).unwrap_or_default())
+    } else {
+        None
+    };
 
     // Save assistant response
     let conn = state.db.conn.lock().unwrap();
@@ -1101,8 +1157,17 @@ async fn ai_loop_chat(
     });
 
     conn.execute(
-        "INSERT INTO messages (id, session_id, role, content, mode, tool_calls, token_usage, created_at) VALUES (?1, ?2, 'assistant', ?3, 'ask', ?4, ?5, ?6)",
-        params![msg_id, session_id, response.content, tool_calls_json, usage_json.to_string(), now],
+        "INSERT INTO messages (id, session_id, role, content, mode, tool_calls, diffs, token_usage, created_at) VALUES (?1, ?2, 'assistant', ?3, ?4, ?5, ?6, ?7, ?8)",
+        params![
+            msg_id,
+            session_id,
+            response.content,
+            input.agent_mode.as_deref().unwrap_or("ask"),
+            tool_calls_json,
+            diffs_json,
+            usage_json.to_string(),
+            now
+        ],
     )
     .map_err(|e| e.to_string())?;
 
@@ -1118,13 +1183,129 @@ async fn ai_loop_chat(
         session_id,
         role: "assistant".into(),
         content: response.content,
-        mode: Some("ask".into()),
+        mode: input.agent_mode.or(Some("ask".into())),
         tool_calls: response.tool_calls.map(|tc| serde_json::to_value(tc).unwrap_or_default()),
-        diffs: None,
+        diffs: diffs_json.and_then(|d| serde_json::from_str(&d).ok()),
         file_refs: None,
         token_usage: Some(usage_json),
         created_at: now,
     })
+}
+
+// ── Changes (diff apply / rollback) ──
+
+#[tauri::command]
+fn list_changes(state: State<AppState>, session_id: String) -> Result<Vec<changes_db::ChangeRecord>, String> {
+    let conn = state.db.conn.lock().unwrap();
+    changes_db::list_changes(&conn, &session_id).map_err(|e| e.to_string())
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct ApplyChangeInput {
+    change_id: String,
+    path: String,
+    old_string: String,
+    new_string: String,
+    replace_all: Option<bool>,
+}
+
+#[tauri::command]
+fn apply_change(
+    state: State<AppState>,
+    project_id: String,
+    input: ApplyChangeInput,
+) -> Result<code_editor::EditResult, String> {
+    let project = get_project_path(&state, &project_id)?;
+    let result = code_editor::edit_file(
+        PathBuf::from(&project).as_path(),
+        &input.path,
+        &input.old_string,
+        &input.new_string,
+        input.replace_all.unwrap_or(false),
+        false,
+    )?;
+    let now = chrono::Utc::now().to_rfc3339();
+    let conn = state.db.conn.lock().unwrap();
+    changes_db::update_change_status(&conn, &input.change_id, "applied", Some(&now))
+        .map_err(|e| e.to_string())?;
+    Ok(result)
+}
+
+#[tauri::command]
+fn reject_change(state: State<AppState>, change_id: String) -> Result<(), String> {
+    let conn = state.db.conn.lock().unwrap();
+    changes_db::update_change_status(&conn, &change_id, "rejected", None).map_err(|e| e.to_string())
+}
+
+// ── Credentials (OS Keychain) ──
+
+#[tauri::command]
+fn save_credential(key: String, value: String) -> Result<(), String> {
+    credentials::save_secret(&key, &value)
+}
+
+#[tauri::command]
+fn get_credential(key: String) -> Result<Option<String>, String> {
+    credentials::get_secret(&key)
+}
+
+#[tauri::command]
+fn delete_credential(key: String) -> Result<(), String> {
+    credentials::delete_secret(&key)
+}
+
+// ── Test & Lint ──
+
+#[tauri::command]
+fn run_tests(
+    state: State<AppState>,
+    project_id: String,
+    filter: Option<String>,
+) -> Result<test_runner::TestRunResult, String> {
+    let project = get_project_path(&state, &project_id)?;
+    test_runner::run_tests(PathBuf::from(&project).as_path(), filter.as_deref())
+}
+
+#[tauri::command]
+fn run_linter(
+    state: State<AppState>,
+    project_id: String,
+    target: Option<String>,
+) -> Result<linter_analyzer::LintResult, String> {
+    let project = get_project_path(&state, &project_id)?;
+    linter_analyzer::run_linter(PathBuf::from(&project).as_path(), target.as_deref())
+}
+
+// ── Crash recovery ──
+
+#[tauri::command]
+fn save_recovery_snapshot(
+    state: State<AppState>,
+    snapshot: recovery::RecoverySnapshot,
+) -> Result<(), String> {
+    recovery::save_snapshot(&state.data_dir, &snapshot)
+}
+
+#[tauri::command]
+fn load_recovery_snapshots(state: State<AppState>) -> Result<Vec<recovery::RecoverySnapshot>, String> {
+    recovery::load_snapshots(&state.data_dir)
+}
+
+#[tauri::command]
+fn clear_recovery_snapshot(state: State<AppState>, session_id: String) -> Result<(), String> {
+    recovery::clear_snapshot(&state.data_dir, &session_id)
+}
+
+// ── File watcher ──
+
+#[tauri::command]
+fn watch_project_dir(
+    app: AppHandle,
+    state: State<AppState>,
+    project_id: String,
+) -> Result<(), String> {
+    let project = get_project_path(&state, &project_id)?;
+    file_watcher::watch_project(app, project_id, PathBuf::from(&project).as_path())
 }
 
 // ── Simple AI Chat (no tool loop, uses ai_client internally) ──
@@ -1216,9 +1397,28 @@ async fn list_models(provider: String, base_url: Option<String>) -> Result<Vec<S
 }
 
 #[tauri::command]
-fn get_update_info(state: State<AppState>) -> Result<UpdateInfo, String> {
+fn get_update_info(_state: State<AppState>) -> Result<UpdateInfo, String> {
+    let current = env!("CARGO_PKG_VERSION").to_string();
+    let repo = std::env::var("BOSCHCODE_UPDATE_REPO")
+        .unwrap_or_else(|_| "bosch/boschcode".into());
+    let url = format!("https://api.github.com/repos/{}/releases/latest", repo);
+    let client = reqwest::blocking::Client::new();
+    if let Ok(resp) = client.get(&url).header("User-Agent", "BoschCode").send() {
+        if resp.status().is_success() {
+            if let Ok(body) = resp.json::<serde_json::Value>() {
+                let latest = body["tag_name"].as_str().map(|s| s.trim_start_matches('v').to_string());
+                return Ok(UpdateInfo {
+                    current_version: current,
+                    latest_version: latest,
+                    download_url: body["html_url"].as_str().map(String::from),
+                    size_bytes: None,
+                    changelog: body["body"].as_str().map(String::from),
+                });
+            }
+        }
+    }
     Ok(UpdateInfo {
-        current_version: env!("CARGO_PKG_VERSION").to_string(),
+        current_version: current,
         latest_version: None,
         download_url: None,
         size_bytes: None,
@@ -1288,6 +1488,9 @@ fn main() {
             edit_file,
             search_replace,
             rollback_edit,
+            list_changes,
+            apply_change,
+            reject_change,
             // Code graph
             list_symbols,
             read_symbol,
@@ -1328,6 +1531,15 @@ fn main() {
             list_skills,
             get_setting,
             set_setting,
+            save_credential,
+            get_credential,
+            delete_credential,
+            run_tests,
+            run_linter,
+            save_recovery_snapshot,
+            load_recovery_snapshots,
+            clear_recovery_snapshot,
+            watch_project_dir,
             get_update_info,
         ])
         .run(tauri::generate_context!())

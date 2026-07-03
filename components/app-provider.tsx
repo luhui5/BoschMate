@@ -10,6 +10,7 @@ import {
   type UpdatePhase,
 } from "@/lib/update"
 import { UpdateManager } from "@/components/update/update-manager"
+import { OnboardingWizard } from "@/components/onboarding"
 import { isTauri, getSetting, setSetting as tauriSetSetting } from "@/lib/tauri-api"
 
 type ThemeMode = "dark" | "light" | "system"
@@ -57,6 +58,8 @@ interface AppState {
   skipVersion: () => void
   installNow: () => void
   dismissUpdate: () => void
+  showOnboarding: boolean
+  openOnboarding: () => void
 }
 
 const AppContext = createContext<AppState | null>(null)
@@ -74,6 +77,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [editorFont, setEditorFontState] = useState<EditorFont>("geist-mono")
   const [runMode, setRunMode] = useState<RunMode>("full")
   const [isDesktop, setIsDesktop] = useState(false)
+  const [showOnboarding, setShowOnboarding] = useState(false)
 
   const [update, setUpdate] = useState<UpdateState>({
     phase: "idle",
@@ -120,6 +124,13 @@ export function AppProvider({ children }: { children: ReactNode }) {
       await loadPref("lang", "bc-lang", "zh" as Lang, setLangState)
       await loadPref("font_size", "bc-font-size", "md" as FontSize, setFontSizeState)
       await loadPref("editor_font", "bc-editor-font", "geist-mono" as EditorFont, setEditorFontState)
+
+      if (desktop) {
+        try {
+          const done = await getSetting("onboarding_completed")
+          if (done !== "true") setShowOnboarding(true)
+        } catch { /* ignore */ }
+      }
 
       setSystemTheme(getSystemTheme())
       const mq = window.matchMedia("(prefers-color-scheme: dark)")
@@ -244,6 +255,14 @@ export function AppProvider({ children }: { children: ReactNode }) {
     }))
   }
 
+  const completeOnboarding = async () => {
+    setShowOnboarding(false)
+    try { localStorage.setItem("onboarding_completed", "true") } catch { /* ignore */ }
+    if (isDesktop) await tauriSetSetting("onboarding_completed", "true").catch(() => {})
+  }
+
+  const openOnboarding = () => setShowOnboarding(true)
+
   return (
     <AppContext.Provider
       value={{
@@ -270,10 +289,15 @@ export function AppProvider({ children }: { children: ReactNode }) {
         skipVersion,
         installNow,
         dismissUpdate,
+        showOnboarding,
+        openOnboarding,
       }}
     >
       {children}
       <UpdateManager />
+      {showOnboarding && (
+        <OnboardingWizard onComplete={() => void completeOnboarding()} onSkip={() => void completeOnboarding()} />
+      )}
     </AppContext.Provider>
   )
 }

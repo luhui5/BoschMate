@@ -120,7 +120,7 @@ export function OnboardingWizard({ onComplete, onSkip }: OnboardingProps) {
   const CurrentIcon = steps[step].icon
 
   return (
-    <Modal open onClose={onSkip}>
+    <Modal open title={steps[step].title} onClose={onSkip}>
       <div className="max-w-md mx-auto py-6 px-2">
         {/* Progress dots */}
         <div className="flex justify-center gap-1.5 mb-6">

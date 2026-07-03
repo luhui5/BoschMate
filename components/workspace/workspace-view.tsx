@@ -45,9 +45,14 @@ import {
   gitStatus,
   listMemories,
   listNotes,
+  applyChange,
+  rejectChange,
+  saveRecoverySnapshot,
+  watchProjectDir,
   type AiChatRequest,
 } from "@/lib/tauri-api"
 import { loadModels, findModel, loadApiKey, resolveActiveModelId, recordModelUsage } from "@/lib/models"
+import { parseCommand, executeCommand } from "@/lib/slash-commands"
 
 let idCounter = 1
 const nextId = () => `gen-${idCounter++}`
@@ -228,6 +233,37 @@ export function WorkspaceView({ projectId }: { projectId: string }) {
     return () => clearTimeout(t)
   }, [toast])
 
+  // File watcher + crash recovery autosave
+  useEffect(() => {
+    if (!project || !isTauri()) return
+    watchProjectDir(project.id).catch(() => {})
+    const onFileChanged = async () => {
+      await refreshFileTree()
+      await refreshGit()
+    }
+    let unlisten: (() => void) | undefined
+    import("@tauri-apps/api/event").then(({ listen }) => {
+      listen<{ project_id: string }>("file-changed", (e) => {
+        if (e.payload.project_id === project.id) void onFileChanged()
+      }).then((fn) => { unlisten = fn })
+    })
+    return () => { unlisten?.() }
+  }, [project, refreshFileTree, refreshGit])
+
+  useEffect(() => {
+    if (!activeSession || !project || !isTauri()) return
+    const timer = setInterval(() => {
+      void saveRecoverySnapshot({
+        session_id: activeSession.id,
+        project_id: project.id,
+        draft_content: "",
+        messages_json: JSON.stringify(activeSession.messages),
+        saved_at: new Date().toISOString(),
+      })
+    }, 30_000)
+    return () => clearInterval(timer)
+  }, [activeSession, project])
+
   const updateSession = (id: string, fn: (s: Session) => Session) =>
     setSessions((prev) => prev.map((s) => (s.id === id ? fn(s) : s)))
 
@@ -300,6 +336,8 @@ export function WorkspaceView({ projectId }: { projectId: string }) {
             api_key: apiKey,
             base_url: modelCfg.endpoint ?? undefined,
             max_iterations: mode === "auto" ? 15 : 8,
+            edit_dry_run: mode === "edit",
+            agent_mode: mode,
           },
           sessionId,
           project.id,
@@ -375,6 +413,48 @@ export function WorkspaceView({ projectId }: { projectId: string }) {
   const send = async (text: string) => {
     if (!project) return
 
+    const slash = parseCommand(text.trim())
+    if (slash) {
+      setThinking(true)
+      try {
+        const result = await executeCommand(slash.command, { projectId: project.id }, slash.args)
+        const { id: sessionId, messages: prior } = activeSession
+          ? { id: activeSession.id, messages: activeSession.messages }
+          : await (async () => {
+              if (isTauri()) {
+                const s = await createSession({ project_id: project.id, title: `/${slash.command}`, mode })
+                const session: Session = { ...s, messages: [] }
+                setSessions((prev) => [session, ...prev])
+                setActiveSessionId(s.id)
+                return { id: s.id, messages: [] as ChatMessage[] }
+              }
+              const id = nextId()
+              const s: Session = {
+                id, projectId: project.id, title: `/${slash.command}`, mode,
+                status: "active", updatedAt: new Date().toISOString(), tokenCount: 0, messages: [],
+              }
+              setSessions((prev) => [s, ...prev])
+              setActiveSessionId(id)
+              return { id, messages: [] as ChatMessage[] }
+            })()
+
+        const userMsg: ChatMessage = {
+          id: nextId(), role: "user", content: text, createdAt: new Date().toISOString(), mode,
+        }
+        const assistantMsg: ChatMessage = {
+          id: nextId(), role: "assistant", content: result, createdAt: new Date().toISOString(), mode,
+        }
+        updateSession(sessionId, (s) => ({
+          ...s,
+          messages: [...prior, userMsg, assistantMsg],
+          updatedAt: new Date().toISOString(),
+        }))
+      } finally {
+        setThinking(false)
+      }
+      return
+    }
+
     const ensureSession = async (): Promise<{ id: string; messages: ChatMessage[] }> => {
       if (activeSession) return { id: activeSession.id, messages: activeSession.messages }
       if (isTauri()) {
@@ -439,13 +519,38 @@ export function WorkspaceView({ projectId }: { projectId: string }) {
     }
   }
 
-  const onDiffAction = (
+  const onDiffAction = async (
     messageId: string,
     diffIndex: number,
     action: "accept" | "reject" | "revert",
   ) => {
-    if (!activeSession) return
+    if (!activeSession || !project) return
+    const msg = activeSession.messages.find((m) => m.id === messageId)
+    const diff = msg?.diffs?.[diffIndex]
+    if (!diff) return
+
     const statusMap = { accept: "applied", reject: "rejected", revert: "reverted" } as const
+
+    try {
+      if (action === "accept" && diff.editMeta && diff.changeId && isTauri()) {
+        await applyChange(project.id, {
+          change_id: diff.changeId,
+          path: diff.editMeta.path ?? diff.filePath,
+          old_string: diff.editMeta.old_string ?? "",
+          new_string: diff.editMeta.new_string ?? "",
+          replace_all: diff.editMeta.replace_all,
+        })
+        await refreshFileTree()
+        await refreshGit()
+      } else if (action === "reject" && diff.changeId && isTauri()) {
+        await rejectChange(diff.changeId)
+      }
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : String(err)
+      setToast(`操作失败：${reason}`)
+      return
+    }
+
     updateSession(activeSession.id, (s) => ({
       ...s,
       messages: s.messages.map((m) =>
