@@ -32,7 +32,7 @@ import { validateMessage, validateImageDataUrl } from "@/lib/input-validation"
 import type { ModelConfig } from "@/lib/models"
 
 const agentModes: { id: AgentMode; label: string; icon: typeof Bot; desc: string }[] = [
-  { id: "ask", label: "Ask", icon: MessageCircleQuestion, desc: "仅回答与解释，不修改代码" },
+  { id: "ask", label: "Ask", icon: MessageCircleQuestion, desc: "仅回答与解释，只读查看代码；修改请切换 Edit automation" },
   { id: "plan", label: "Plan", icon: ListTodo, desc: "生成计划文档，不执行" },
   { id: "edit", label: "Ask before edits", icon: FilePen, desc: "修改前需你确认每个变更" },
   { id: "auto", label: "Edit automation", icon: Bot, desc: "自动应用变更并运行验证" },

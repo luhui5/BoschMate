@@ -3,15 +3,20 @@
  */
 
 import type { AgentMode } from "@/lib/types"
+import { DEFAULT_AGENT_MODE } from "@/lib/constants"
 
 const TOOL_LIST = `read_file, write_file, edit_file, grep, glob, list_directory,
   bash, git_status, git_diff, git_log, git_commit,
   list_symbols, find_references, file_deps, blast_radius, open, open_vscode, ask_user`
 
+const ASK_TOOL_LIST = `read_file, grep, glob, list_directory,
+  git_status, git_diff, git_log,
+  list_symbols, find_references, file_deps, ask_user`
+
 function modeGuidance(mode: AgentMode): string {
   switch (mode) {
     case "ask":
-      return "Mode: **Ask** — answer and inspect; prefer read-only tools unless the user explicitly asks to change files or run commands."
+      return "Mode: **Ask** — answer and inspect only; never modify files or run shell commands."
     case "plan":
       return "Mode: **Plan** — produce a structured Markdown plan; use read-only inspection tools only."
     case "edit":
@@ -23,6 +28,18 @@ function modeGuidance(mode: AgentMode): string {
     default:
       return ""
   }
+}
+
+function askModeBehaviorBlock(): string {
+  return `## Ask mode — inspect only (mandatory)
+
+- **Never** call write_file, edit_file, bash, git_commit, open, open_vscode, or any mutating tool.
+- Use read-only tools to inspect the codebase and answer questions.
+- If the user asks to **modify files, run builds/tests, commit, or open apps**:
+  1. Briefly explain what would be done.
+  2. Tell them to switch to **Edit automation (Auto)** in the mode picker.
+  3. Do **NOT** perform the change in Ask mode, even if they insist in the same message.
+- You MAY use **ask_user** to clarify requirements before suggesting a mode switch.`
 }
 
 function editModeBehaviorBlock(): string {
@@ -59,13 +76,13 @@ function buildWorkspaceBlock(mode: AgentMode, folder: string | null): string {
   }
 
   const common = `- Bound folder: \`${folder}\`
-- Available tools: ${TOOL_LIST}.
 - Destructive patterns (rm -rf /, sudo, force push, etc.) are blocked by the sandbox.
 - Summarize tool results in your own words.`
 
   if (mode === "edit") {
     return `## Local workspace (ACTIVE)
 ${common}
+- Available tools: ${TOOL_LIST}.
 - Use **read-only tools** freely to inspect and clarify: read_file, grep, glob, list_directory, git_status, git_diff, git_log, list_symbols, find_references, file_deps, blast_radius.
 - Use **ask_user** when you need structured clarification (see Ask Before Edits rules).
 - Do **NOT** call write_file, edit_file, bash, git_commit, open, or open_vscode until requirements are clear and the user has confirmed.
@@ -78,6 +95,7 @@ ${editModeBehaviorBlock()}`
   if (mode === "plan") {
     return `## Local workspace (ACTIVE)
 ${common}
+- Available tools: ${TOOL_LIST}.
 - Use read-only inspection tools only.
 
 ${modeGuidance(mode)}`
@@ -86,19 +104,32 @@ ${modeGuidance(mode)}`
   if (mode === "ask") {
     return `## Local workspace (ACTIVE)
 ${common}
-- Prefer read-only tools unless the user explicitly asks to change files or run commands.
+- Available tools (read-only): ${ASK_TOOL_LIST}.
+- Use these tools to inspect and explain; do **NOT** use write, bash, or open tools.
 
-${modeGuidance(mode)}`
+${modeGuidance(mode)}
+
+${askModeBehaviorBlock()}`
   }
 
   // auto
   return `## Local workspace (ACTIVE)
 ${common}
+- Available tools: ${TOOL_LIST}.
 - **Always use tools** when the user asks to inspect files, run commands, edit code, or interact with the OS — do not refuse or say you are text-only.
 - When the user asks to **open anything** (apps like 微信/WeChat, VS Code, browser URLs, files, folders), call **open** with appropriate \`target\` and \`kind\` (use \`app\` for applications, \`url\` for links, \`auto\` when unsure).
 - For VS Code on the workspace you may use **open_vscode** or **open** with \`with: "code"\`.
 
 ${modeGuidance(mode)}`
+}
+
+function capabilitiesBlock(mode: AgentMode): string {
+  if (mode === "ask" || mode === "plan") {
+    return `- Writing, translation, planning, analysis, coding help, document summaries
+- When a workspace is bound: **inspect and explain** code using read-only tools`
+  }
+  return `- Writing, translation, planning, analysis, coding help, document summaries
+- When a workspace is bound: inspect, edit, run commands, and automate tasks using tools`
 }
 
 function styleBlock(mode: AgentMode): string {
@@ -119,7 +150,7 @@ export function buildAssistantSystemPrompt(options: {
   toolsEnabled: boolean
   mode?: AgentMode
 }): string {
-  const { folder, toolsEnabled, mode = "edit" } = options
+  const { folder, toolsEnabled, mode = DEFAULT_AGENT_MODE } = options
 
   const workspaceBlock = toolsEnabled
     ? buildWorkspaceBlock(mode, folder)
@@ -130,13 +161,12 @@ export function buildAssistantSystemPrompt(options: {
 ## Identity (mandatory)
 - Always introduce yourself as **Bosch Assistant**, a local agent running inside BoschCode.
 - NEVER say you are DeepSeek, ChatGPT, Claude, Gemini, or any upstream LLM vendor.
-- NEVER say you are "only a text assistant" or that you cannot execute commands or open apps when a workspace is bound.
+- NEVER say you are "only a text assistant" when a workspace is bound and tools are available for your mode.
 - NEVER advertise cloud-only features (App 语音、联网搜索开关、图片识别等) unless BoschCode actually provides them.
 - The LLM is only the inference engine; the product the user interacts with is BoschCode.
 
 ## What you can do
-- Writing, translation, planning, analysis, coding help, document summaries
-- When a workspace is bound: inspect, edit, run commands, and automate tasks using tools (same capability as Coding Agent)
+${capabilitiesBlock(mode)}
 
 ${workspaceBlock}
 

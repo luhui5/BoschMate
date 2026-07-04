@@ -1,8 +1,9 @@
 "use client"
 
-import { useState } from "react"
+import { useMemo, useState } from "react"
 import { FolderTree, FileDiff, GitMerge, Loader2, ScrollText } from "lucide-react"
 import { cn } from "@/lib/utils"
+import { sidebarFeatures } from "@/lib/ui-features"
 import { FileTree } from "@/components/workspace/file-tree"
 import { GitPanel } from "@/components/workspace/git-panel"
 import { DiffCard } from "@/components/workspace/diff-card"
@@ -11,6 +12,13 @@ import { AuditPanel } from "@/components/workspace/audit-panel"
 import type { DiffHunk, FileNode, GitFile } from "@/lib/types"
 
 type View = "files" | "changes" | "git" | "audit"
+
+const ALL_VIEWS: { id: View; label: string; icon: typeof FolderTree; feature?: keyof typeof sidebarFeatures }[] = [
+  { id: "files", label: "文件树", icon: FolderTree },
+  { id: "changes", label: "本次变更", icon: FileDiff, feature: "changes" },
+  { id: "git", label: "Git", icon: GitMerge, feature: "git" },
+  { id: "audit", label: "审计", icon: ScrollText, feature: "audit" },
+]
 
 export function RightSidebar({
   projectId,
@@ -51,42 +59,48 @@ export function RightSidebar({
   onCopyPath?: (path: string) => void
   onRevealInExplorer?: (path: string) => void
 }) {
-  const [view, setView] = useState<View>("files")
+  const views = useMemo(() => {
+    return ALL_VIEWS.filter((v) => !v.feature || sidebarFeatures[v.feature]).map((v) => ({
+      id: v.id,
+      label: v.label,
+      icon: v.icon,
+      count: v.id === "changes" ? changes.length : v.id === "git" ? gitFiles.length : undefined,
+    }))
+  }, [changes.length, gitFiles.length])
 
-  const views: { id: View; label: string; icon: typeof FolderTree; count?: number }[] = [
-    { id: "files", label: "文件树", icon: FolderTree },
-    { id: "changes", label: "本次变更", icon: FileDiff, count: changes.length },
-    { id: "git", label: "Git", icon: GitMerge, count: gitFiles.length },
-    { id: "audit", label: "审计", icon: ScrollText },
-  ]
+  const [view, setView] = useState<View>("files")
+  const activeView = views.some((v) => v.id === view) ? view : "files"
+  const showTabBar = views.length > 1
 
   return (
     <aside className="flex h-full w-80 shrink-0 flex-col border-l border-border bg-sidebar">
-      <div className="flex border-b border-border p-1">
-        {views.map((v) => {
-          const Icon = v.icon
-          return (
-            <button
-              key={v.id}
-              type="button"
-              onClick={() => setView(v.id)}
-              className={cn(
-                "flex flex-1 items-center justify-center gap-1.5 rounded-md py-1.5 text-xs transition-colors",
-                view === v.id ? "bg-sidebar-accent text-foreground" : "text-muted-foreground hover:text-foreground",
-              )}
-            >
-              <Icon className="size-3.5" />
-              <span>{v.label}</span>
-              {v.count != null && v.count > 0 && (
-                <span className="rounded bg-primary/15 px-1 text-[10px] text-primary">{v.count}</span>
-              )}
-            </button>
-          )
-        })}
-      </div>
+      {showTabBar && (
+        <div className="flex border-b border-border p-1">
+          {views.map((v) => {
+            const Icon = v.icon
+            return (
+              <button
+                key={v.id}
+                type="button"
+                onClick={() => setView(v.id)}
+                className={cn(
+                  "flex flex-1 items-center justify-center gap-1.5 rounded-md py-1.5 text-xs transition-colors",
+                  activeView === v.id ? "bg-sidebar-accent text-foreground" : "text-muted-foreground hover:text-foreground",
+                )}
+              >
+                <Icon className="size-3.5" />
+                <span>{v.label}</span>
+                {v.count != null && v.count > 0 && (
+                  <span className="rounded bg-primary/15 px-1 text-[10px] text-primary">{v.count}</span>
+                )}
+              </button>
+            )
+          })}
+        </div>
+      )}
 
       <div className="min-h-0 flex-1">
-        {view === "files" && (
+        {activeView === "files" && (
           fileTreeLoading ? (
             <div className="flex items-center justify-center gap-2 py-16 text-xs text-muted-foreground">
               <Loader2 className="size-4 animate-spin" />
@@ -107,7 +121,7 @@ export function RightSidebar({
           )
         )}
 
-        {view === "changes" && (
+        {sidebarFeatures.changes && activeView === "changes" && (
           <div className="h-full overflow-auto p-2 scrollbar-thin">
             {changes.length === 0 ? (
               <div className="flex flex-col items-center justify-center gap-2 py-16 text-center">
@@ -137,7 +151,7 @@ export function RightSidebar({
           </div>
         )}
 
-        {view === "git" && (
+        {sidebarFeatures.git && activeView === "git" && (
           <GitPanel
             projectId={projectId}
             workspaceName={workspaceName}
@@ -151,7 +165,7 @@ export function RightSidebar({
           />
         )}
 
-        {view === "audit" && <AuditPanel sessionId={activeSessionId} />}
+        {sidebarFeatures.audit && activeView === "audit" && <AuditPanel sessionId={activeSessionId} />}
       </div>
     </aside>
   )

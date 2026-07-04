@@ -1809,11 +1809,11 @@ async fn ai_loop_chat(
     let agent_mode = input.agent_mode.as_deref().unwrap_or("ask");
     let auto_mode = agent_mode == "auto";
 
-    // Run AI Loop — plan mode gets read-only tools; all other modes get the full set.
-    let tools = if agent_mode == "plan" {
-        ai_loop::get_plan_tools()
-    } else {
-        ai_loop::get_tools()
+    // Run AI Loop — ask/plan get read-only tool subsets; edit/auto get the full set.
+    let tools = match agent_mode {
+        "plan" => ai_loop::get_plan_tools(),
+        "ask" => ai_loop::get_ask_tools(),
+        _ => ai_loop::get_tools(),
     };
 
     let mut system_prompt = input.system_prompt.clone();
@@ -1845,6 +1845,7 @@ async fn ai_loop_chat(
             auto_mode,
             bulk_write_confirmed: input.bulk_write_confirmed.unwrap_or(false),
             write_count,
+            agent_mode: agent_mode.to_string(),
         },
         cancel,
     )

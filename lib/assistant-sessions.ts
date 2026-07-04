@@ -1,7 +1,7 @@
 import type { ThinkingDepth } from "@/lib/thinking-depth"
 import type { ActivityStep, AgentMode, DiffHunk, PendingQuestions } from "@/lib/types"
 import { DEFAULT_MODELS, resolveActiveModelId, resolveDefaultModelForNewSession } from "@/lib/models"
-import { ASSISTANT_PROJECT_ID } from "@/lib/constants"
+import { ASSISTANT_PROJECT_ID, DEFAULT_AGENT_MODE } from "@/lib/constants"
 import { resolveDefaultAssistantWorkspace } from "@/lib/assistant-workspace"
 import {
   findWorkspaceByFolder,
@@ -13,6 +13,7 @@ import {
   createSession as tauriCreateSession,
   listSessions as tauriListSessions,
   listMessages as tauriListMessages,
+  updateSessionTitle,
   getSetting,
   setSetting,
 } from "@/lib/tauri-api"
@@ -66,6 +67,48 @@ export function createSession(overrides: Partial<AssistantSession> = {}): Assist
 export function deriveTitle(text: string): string {
   const t = text.trim().replace(/\s+/g, " ")
   return t.length > 24 ? `${t.slice(0, 24)}…` : t || "新对话"
+}
+
+const PLACEHOLDER_TITLES = new Set(["新对话", "新会话"])
+
+/** Use first user message when DB still has placeholder title. */
+export function resolveSessionTitle(
+  dbTitle: string,
+  messages: AssistantMessage[],
+): string {
+  if (!PLACEHOLDER_TITLES.has(dbTitle.trim())) return dbTitle
+  const firstUser = messages.find((m) => m.role === "user")
+  if (!firstUser?.content?.trim()) return dbTitle
+  return deriveTitle(firstUser.content)
+}
+
+async function pushLoadedSession(
+  out: AssistantSession[],
+  s: { id: string; title: string; updatedAt: string },
+  msgs: AssistantMessage[],
+  projectId: string,
+  preferredModel: string,
+  folder: string | null,
+  legacy?: boolean,
+): Promise<void> {
+  const resolvedTitle = resolveSessionTitle(s.title, msgs)
+  if (resolvedTitle !== s.title && isTauri()) {
+    void updateSessionTitle(s.id, resolvedTitle).catch(() => {})
+  }
+  out.push(
+    toAssistantSession(
+      {
+        id: s.id,
+        title: resolvedTitle,
+        updatedAt: s.updatedAt,
+        messages: msgs,
+      },
+      projectId,
+      preferredModel,
+      folder,
+      legacy,
+    ),
+  )
 }
 
 function toAssistantSession(
@@ -136,7 +179,7 @@ export async function createPersistedSession(
     const db = await tauriCreateSession({
       project_id: projectId,
       title: overrides.title ?? "新对话",
-      mode: "ask",
+      mode: DEFAULT_AGENT_MODE,
     })
     if (folder) {
       await saveSessionFolder(db.id, folder)
@@ -196,19 +239,7 @@ export async function loadPersistedSessions(): Promise<AssistantSession[]> {
         folder = ws.localPath
         if (folder) await saveSessionFolder(s.id, folder)
       }
-      out.push(
-        toAssistantSession(
-          {
-            id: s.id,
-            title: s.title,
-            updatedAt: s.updatedAt,
-            messages: msgs,
-          },
-          ws.projectId,
-          preferredModel,
-          folder,
-        ),
-      )
+      await pushLoadedSession(out, s, msgs, ws.projectId, preferredModel, folder)
     }
   }
 
@@ -224,19 +255,14 @@ export async function loadPersistedSessions(): Promise<AssistantSession[]> {
       if (folder) await saveSessionFolder(s.id, folder)
     }
     const ws = findWorkspaceByFolder(workspaces, folder)
-    out.push(
-      toAssistantSession(
-        {
-          id: s.id,
-          title: s.title,
-          updatedAt: s.updatedAt,
-          messages: msgs,
-        },
-        ws?.projectId ?? ASSISTANT_PROJECT_ID,
-        preferredModel,
-        folder,
-        true,
-      ),
+    await pushLoadedSession(
+      out,
+      s,
+      msgs,
+      ws?.projectId ?? ASSISTANT_PROJECT_ID,
+      preferredModel,
+      folder,
+      true,
     )
   }
 

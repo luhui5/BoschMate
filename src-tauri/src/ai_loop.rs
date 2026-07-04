@@ -163,6 +163,8 @@ pub struct LoopConfig {
     pub bulk_write_confirmed: bool,
     /// Count of file writes in this loop iteration chain.
     pub write_count: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    /// Agent mode label (ask / plan / edit / auto).
+    pub agent_mode: String,
 }
 
 const BULK_WRITE_LIMIT: usize = 50;
@@ -407,17 +409,50 @@ const READONLY_TOOL_NAMES: &[&str] = &[
     "ask_user",
 ];
 
+const ASK_TOOL_NAMES: &[&str] = &[
+    "read_file",
+    "grep",
+    "glob",
+    "list_directory",
+    "git_status",
+    "git_diff",
+    "git_log",
+    "list_symbols",
+    "find_references",
+    "file_deps",
+    "ask_user",
+];
+
+const MUTATING_TOOL_NAMES: &[&str] = &[
+    "write_file",
+    "edit_file",
+    "bash",
+    "git_commit",
+    "open",
+    "open_vscode",
+];
+
+fn is_mutating_tool(name: &str) -> bool {
+    MUTATING_TOOL_NAMES.contains(&name)
+}
+
 /// Read-only tools for Plan mode (structured plan, no execution).
 pub fn get_plan_tools() -> Vec<AiToolDef> {
     get_tools()
         .into_iter()
-        .filter(|t| {
-            READONLY_TOOL_NAMES.contains(&t.name.as_str()) || t.name == "ask_user"
-        })
+        .filter(|t| READONLY_TOOL_NAMES.contains(&t.name.as_str()))
         .collect()
 }
 
-/// Write-capable tools excluded from plan mode.
+/// Read-only tools for Ask mode (inspect/explain; no bash, no blast_radius).
+pub fn get_ask_tools() -> Vec<AiToolDef> {
+    get_tools()
+        .into_iter()
+        .filter(|t| ASK_TOOL_NAMES.contains(&t.name.as_str()))
+        .collect()
+}
+
+/// Write-capable tools excluded from plan/ask mode.
 #[allow(dead_code)]
 pub fn get_write_tool_names() -> Vec<&'static str> {
     vec!["write_file", "edit_file", "bash", "git_commit"]
@@ -432,6 +467,12 @@ pub async fn execute_tool(
     config: &LoopConfig,
     collector: &EditCollector,
 ) -> Result<String, String> {
+    if matches!(config.agent_mode.as_str(), "ask" | "plan") && is_mutating_tool(tool_name) {
+        return Err(
+            "Ask/Plan 模式不允许修改或执行 shell。请切换到 Edit automation (Auto) 模式。".into(),
+        );
+    }
+
     match tool_name {
         "read_file" => {
             let path = args["path"].as_str().ok_or("path required")?;
@@ -1160,4 +1201,31 @@ fn finalize_response(
         );
     }
     response
+}
+
+#[cfg(test)]
+mod ask_mode_tests {
+    use super::*;
+
+    #[test]
+    fn get_ask_tools_excludes_mutating_tools() {
+        let names: Vec<_> = get_ask_tools().into_iter().map(|t| t.name).collect();
+        for forbidden in ["write_file", "edit_file", "bash", "git_commit", "open", "open_vscode", "blast_radius"] {
+            assert!(
+                !names.iter().any(|n| n == forbidden),
+                "ask tools must not include {forbidden}"
+            );
+        }
+        assert!(names.iter().any(|n| n == "read_file"));
+        assert!(names.iter().any(|n| n == "grep"));
+    }
+
+    #[test]
+    fn is_mutating_tool_classification() {
+        assert!(!is_mutating_tool("read_file"));
+        assert!(!is_mutating_tool("grep"));
+        assert!(is_mutating_tool("write_file"));
+        assert!(is_mutating_tool("bash"));
+        assert!(is_mutating_tool("open"));
+    }
 }

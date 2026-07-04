@@ -30,6 +30,7 @@ import {
   type AssistantMessage,
 } from "@/lib/assistant-sessions"
 import { buildAssistantSystemPrompt } from "@/lib/assistant-prompt"
+import { DEFAULT_AGENT_MODE } from "@/lib/constants"
 import { debounce } from "@/lib/debounce"
 import {
   addLocalWorkspace,
@@ -53,6 +54,7 @@ import {
   aiLoopChat,
   continueAiLoop,
   sendMessage as tauriSendMessage,
+  updateSessionTitle,
   deleteSession as tauriDeleteSession,
   cancelChat,
   applyChange,
@@ -69,6 +71,7 @@ import {
   type AiChatRequest,
 } from "@/lib/tauri-api"
 import { isChatCancelled } from "@/lib/chat-cancel"
+import { sidebarFeatures } from "@/lib/ui-features"
 import { parseLlmError } from "@/lib/llm-error"
 import { LlmErrorCard } from "@/components/llm-error-card"
 import { ChatInput } from "@/components/workspace/chat-input"
@@ -224,7 +227,7 @@ export function AssistantView({
   const stopRequestedRef = useRef(false)
   const activeAssistantMsgRef = useRef<string | null>(null)
   const [llmError, setLlmError] = useState<ReturnType<typeof parseLlmError> | null>(null)
-  const [mode, setMode] = useState<AgentMode>("edit")
+  const [mode, setMode] = useState<AgentMode>(DEFAULT_AGENT_MODE)
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
   const [rightOpen, setRightOpen] = useState(true)
   const [activeFile, setActiveFile] = useState<string | null>(null)
@@ -333,7 +336,7 @@ export function AssistantView({
   } = useProjectWorkspace(workspaceProjectId, workspaceLocalPath)
 
   useEffect(() => {
-    if (!workspaceProjectId || !isTauri()) {
+    if (!sidebarFeatures.git || !workspaceProjectId || !isTauri()) {
       setGitRemote(undefined)
       return
     }
@@ -355,7 +358,7 @@ export function AssistantView({
 
     const debouncedRefresh = debounce(() => {
       void refreshFileTree()
-      void refreshGit()
+      if (sidebarFeatures.git) void refreshGit()
     }, 400)
 
     watchProjectDir(workspaceProjectId).catch(() => {})
@@ -655,6 +658,7 @@ export function AssistantView({
     if (!content || generating || !active) return
 
     const isFirst = active.messages.length === 0
+    const derivedTitle = isFirst ? deriveTitle(content) : active.title
 
     if (!opts?.skipUserMessage) {
       const userMsg: AssistantMessage = {
@@ -670,13 +674,16 @@ export function AssistantView({
           s.id === activeId
             ? {
                 ...s,
-                title: isFirst ? deriveTitle(content) : s.title,
+                title: isFirst ? derivedTitle : s.title,
                 messages: [...s.messages, userMsg],
                 updatedAt: new Date().toISOString(),
               }
             : s,
         ),
       )
+      if (isFirst && isTauri()) {
+        void updateSessionTitle(activeId, derivedTitle).catch(() => {})
+      }
     }
 
     setGenerating(true)
