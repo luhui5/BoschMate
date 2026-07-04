@@ -4,4 +4,4 @@ import type { AgentMode } from "./types"
 export const ASSISTANT_PROJECT_ID = "__assistant__"
 
 /** Default agent mode for new sessions and prompt fallbacks. */
-export const DEFAULT_AGENT_MODE: AgentMode = "ask"
+export const DEFAULT_AGENT_MODE: AgentMode = "edit"

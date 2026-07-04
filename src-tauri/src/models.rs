@@ -66,7 +66,7 @@ pub struct CreateSessionInput {
     pub mode: String,
 }
 
-fn default_mode() -> String { "ask".into() }
+fn default_mode() -> String { "edit".into() }
 
 #[derive(Debug, Deserialize)]
 pub struct SendMessageInput {

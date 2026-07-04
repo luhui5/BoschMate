@@ -40,14 +40,12 @@ export function ChatMessageView({
   onDiffAction,
   onQuestionSubmit,
   onOpenFile,
-  onContentGrow,
   variant = "default",
 }: {
   message: TMessage
   onDiffAction: (messageId: string, diffIndex: number, action: "accept" | "reject" | "revert") => void
   onQuestionSubmit?: (messageId: string, answers: QuestionAnswer[]) => void
   onOpenFile: (path: string) => void
-  onContentGrow?: () => void
   variant?: "default" | "pinned" | "user-query" | "float"
 }) {
   const isUser = message.role === "user"
@@ -61,14 +59,28 @@ export function ChatMessageView({
       (message.activitySteps && message.activitySteps.length > 0) ||
       (message.toolCalls && message.toolCalls.length > 0))
   const hasOutput = !isUser && message.content.trim().length > 0
-  const stepsStillRunning =
-    message.activitySteps?.some((s) => s.status === "running") ?? false
   const stepCount = message.activitySteps?.length ?? 0
+  const toolSteps =
+    message.activitySteps?.filter((s) => s.kind === "tool") ?? []
+  const toolStepCount = toolSteps.length
+  const toolStepsStillRunning = toolSteps.some((s) => s.status === "running")
+  const thoughtRunning =
+    message.activitySteps?.some(
+      (s) => s.kind === "thought" && s.status === "running",
+    ) ?? false
+  // Hide preamble streamed before first tool call (cheap plain phase, not markdown)
+  const hideStreamingOutput =
+    Boolean(message.streaming) &&
+    toolStepCount === 0 &&
+    thoughtRunning &&
+    hasOutput
   const showOutput =
-    hasOutput && (!message.streaming || !stepsStillRunning)
+    hasOutput &&
+    !hideStreamingOutput &&
+    (!message.streaming || !toolStepsStillRunning)
   const explorePhase =
     Boolean(message.streaming) &&
-    (stepCount === 0 || stepsStillRunning || !hasOutput)
+    (stepCount === 0 || toolStepsStillRunning || !hasOutput || hideStreamingOutput)
 
   return (
     <div className="flex w-full flex-col gap-2 items-start text-left">
@@ -96,17 +108,19 @@ export function ChatMessageView({
           {hasActivity && (
             <ToolActivityPanel
               message={message}
-              streamingContent={message.content}
               explorePhase={explorePhase}
-              onContentGrow={onContentGrow}
             />
           )}
 
           {showOutput && (
             <div className="w-full text-left">
-              <MarkdownContent content={message.content} onOpenFile={onOpenFile} />
-              {message.streaming && (
-                <span className="mt-1 inline-block h-3.5 w-1.5 animate-pulse bg-primary align-middle" />
+              {message.streaming ? (
+                <p className="whitespace-pre-wrap text-sm leading-relaxed text-foreground/90">
+                  {message.content}
+                  <span className="ml-0.5 inline-block h-3.5 w-1.5 animate-pulse bg-primary align-middle" />
+                </p>
+              ) : (
+                <MarkdownContent content={message.content} onOpenFile={onOpenFile} />
               )}
             </div>
           )}

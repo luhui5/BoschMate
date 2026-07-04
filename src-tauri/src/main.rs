@@ -13,9 +13,11 @@ mod file_watcher;
 mod fs_ops;
 mod git_ops;
 mod linter_analyzer;
+mod loop_guard;
 mod memory_compressor;
 mod models;
 mod os_open;
+mod outlook;
 mod path_guard;
 mod paused_loop;
 mod recovery;
@@ -27,6 +29,7 @@ mod test_runner;
 mod tools;
 mod tracing_log;
 mod vector_store;
+mod web_fetch;
 
 use ai_client::{stream_chat as ai_stream_chat, list_ollama_models as ai_list_ollama_models};
 use db::Database;
@@ -43,6 +46,7 @@ struct AppState {
     vector_store: Mutex<vector_store::VectorStore>,
     data_dir: PathBuf,
     chat_cancel: chat_cancel::ChatCancelRegistry,
+    loop_guard: loop_guard::LoopGuardRegistry,
     paused_loops: paused_loop::PausedLoopRegistry,
     file_watcher: file_watcher::FileWatcherRegistry,
 }
@@ -1788,8 +1792,36 @@ async fn ai_loop_chat(
     input: AiLoopInput,
     session_id: String,
     project_id: String,
+    message_id: Option<String>,
 ) -> Result<ChatMessage, String> {
-    let msg_id = uuid::Uuid::new_v4().to_string();
+    state.loop_guard.begin(&session_id)?;
+
+    let msg_id = message_id
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+
+    let result = ai_loop_chat_inner(
+        app,
+        &state,
+        input,
+        session_id.clone(),
+        project_id,
+        msg_id,
+    )
+    .await;
+
+    state.loop_guard.end(&session_id);
+    result
+}
+
+async fn ai_loop_chat_inner(
+    app: AppHandle,
+    state: &State<'_, AppState>,
+    input: AiLoopInput,
+    session_id: String,
+    project_id: String,
+    msg_id: String,
+) -> Result<ChatMessage, String> {
     let now = chrono::Utc::now().to_rfc3339();
 
     // Get project root
@@ -1806,7 +1838,7 @@ async fn ai_loop_chat(
         .map_err(|e| e.to_string())?;
     }
 
-    let agent_mode = input.agent_mode.as_deref().unwrap_or("ask");
+    let agent_mode = input.agent_mode.as_deref().unwrap_or("edit");
     let auto_mode = agent_mode == "auto";
 
     // Run AI Loop — ask/plan get read-only tool subsets; edit/auto get the full set.
@@ -1816,13 +1848,7 @@ async fn ai_loop_chat(
         _ => ai_loop::get_tools(),
     };
 
-    let mut system_prompt = input.system_prompt.clone();
-    if agent_mode == "plan" {
-        system_prompt = Some(format!(
-            "{}\n\nYou are in PLAN mode. Produce a structured Markdown plan only. Do NOT execute write/bash/git_commit tools.",
-            system_prompt.unwrap_or_default()
-        ));
-    }
+    let system_prompt = input.system_prompt.clone();
 
     let write_count = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
 
@@ -1846,13 +1872,14 @@ async fn ai_loop_chat(
             bulk_write_confirmed: input.bulk_write_confirmed.unwrap_or(false),
             write_count,
             agent_mode: agent_mode.to_string(),
+            ask_user_satisfied: false,
         },
         cancel,
     )
     .await;
     state.chat_cancel.clear(&session_id);
     let outcome = outcome?;
-    let agent_mode = input.agent_mode.as_deref().unwrap_or("ask");
+    let agent_mode = input.agent_mode.as_deref().unwrap_or("edit");
     handle_loop_outcome(
         &state,
         outcome,
@@ -1891,7 +1918,7 @@ async fn continue_ai_loop(
         })
         .collect();
 
-    let cancel = state.chat_cancel.register(&session_id);
+    let _cancel = state.chat_cancel.register(&session_id);
     let outcome = ai_loop::run_loop_resume(paused, answers).await;
     state.chat_cancel.clear(&session_id);
     let outcome = outcome?;
@@ -2246,6 +2273,7 @@ fn main() {
         vector_store: Mutex::new(vs),
         data_dir: app_dir.clone(),
         chat_cancel: chat_cancel::ChatCancelRegistry::new(),
+        loop_guard: loop_guard::LoopGuardRegistry::new(),
         paused_loops: paused_loop::PausedLoopRegistry::new(),
         file_watcher: file_watcher::FileWatcherRegistry::new(),
     };

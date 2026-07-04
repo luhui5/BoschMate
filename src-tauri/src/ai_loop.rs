@@ -165,6 +165,8 @@ pub struct LoopConfig {
     pub write_count: std::sync::Arc<std::sync::atomic::AtomicUsize>,
     /// Agent mode label (ask / plan / edit / auto).
     pub agent_mode: String,
+    /// Set true after ask_user returns user answers in this loop (side-effect guard).
+    pub ask_user_satisfied: bool,
 }
 
 const BULK_WRITE_LIMIT: usize = 50;
@@ -359,6 +361,49 @@ pub fn get_tools() -> Vec<AiToolDef> {
             }),
         },
         AiToolDef {
+            name: "web_fetch".into(),
+            description: "Fetch a public HTTPS URL and return page content as Markdown. Read-only; use for documentation and articles.".into(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "url": {"type": "string", "description": "HTTPS URL to fetch (HTTP is upgraded to HTTPS)"},
+                    "prompt": {"type": "string", "description": "Optional focus hint for what to emphasize in the result"}
+                },
+                "required": ["url"]
+            }),
+        },
+        AiToolDef {
+            name: "outlook_read".into(),
+            description: "Read emails from the local Outlook desktop client (Windows). Use for inbox summaries, recent mail, today's mail, or unread messages. Examples: summarize today's inbox; fetch the 5 most recent emails.".into(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "folder": {"type": "string", "enum": ["inbox", "sent", "drafts", "deleted"], "description": "Mail folder (default: inbox)"},
+                    "filter": {"type": "string", "enum": ["recent", "today", "unread", "since"], "description": "Filter mode (default: recent)"},
+                    "since": {"type": "string", "description": "ISO date YYYY-MM-DD when filter=since"},
+                    "from": {"type": "string", "description": "Optional sender name or email substring"},
+                    "count": {"type": "integer", "description": "Max messages to return (default 10, max 25)"},
+                    "include_body": {"type": "boolean", "description": "Include message body (default true)"}
+                }
+            }),
+        },
+        AiToolDef {
+            name: "outlook_send".into(),
+            description: "Send or draft an email via the local Outlook desktop client (Windows). Requires edit or auto mode. Use ask_user to confirm recipients before sending unless the user explicitly says to send immediately.".into(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "to": {"type": "array", "items": {"type": "string"}, "description": "Recipient email addresses"},
+                    "cc": {"type": "array", "items": {"type": "string"}, "description": "CC recipients"},
+                    "bcc": {"type": "array", "items": {"type": "string"}, "description": "BCC recipients"},
+                    "subject": {"type": "string", "description": "Email subject"},
+                    "body": {"type": "string", "description": "Plain-text email body"},
+                    "draft": {"type": "boolean", "description": "If true, save to Drafts instead of sending (default false)"}
+                },
+                "required": ["to", "subject", "body"]
+            }),
+        },
+        AiToolDef {
             name: "ask_user".into(),
             description: "Ask the user structured clarification questions with selectable options. The agent pauses until the user answers. Use when requirements are ambiguous or multiple valid approaches exist — do NOT list options only in plain text. Each question must have exactly 3 options (recommended first with '(Recommended)' in label, plus 2 alternatives). Do NOT include Other — the UI adds it.".into(),
             parameters: serde_json::json!({
@@ -406,6 +451,8 @@ const READONLY_TOOL_NAMES: &[&str] = &[
     "find_references",
     "file_deps",
     "blast_radius",
+    "web_fetch",
+    "outlook_read",
     "ask_user",
 ];
 
@@ -420,6 +467,8 @@ const ASK_TOOL_NAMES: &[&str] = &[
     "list_symbols",
     "find_references",
     "file_deps",
+    "web_fetch",
+    "outlook_read",
     "ask_user",
 ];
 
@@ -430,10 +479,28 @@ const MUTATING_TOOL_NAMES: &[&str] = &[
     "git_commit",
     "open",
     "open_vscode",
+    "outlook_send",
 ];
 
 fn is_mutating_tool(name: &str) -> bool {
     MUTATING_TOOL_NAMES.contains(&name)
+}
+
+fn is_side_effect_tool(name: &str) -> bool {
+    matches!(
+        name,
+        "bash" | "git_commit" | "open" | "open_vscode" | "outlook_send"
+    )
+}
+
+fn check_side_effect_confirmation(config: &LoopConfig, tool_name: &str) -> Result<(), String> {
+    if !is_side_effect_tool(tool_name) {
+        return Ok(());
+    }
+    if matches!(config.agent_mode.as_str(), "edit" | "auto") && !config.ask_user_satisfied {
+        return Err("请先通过 ask_user 获得用户确认后再执行该操作".into());
+    }
+    Ok(())
 }
 
 /// Read-only tools for Plan mode (structured plan, no execution).
@@ -469,9 +536,10 @@ pub async fn execute_tool(
 ) -> Result<String, String> {
     if matches!(config.agent_mode.as_str(), "ask" | "plan") && is_mutating_tool(tool_name) {
         return Err(
-            "Ask/Plan 模式不允许修改或执行 shell。请切换到 Edit automation (Auto) 模式。".into(),
+            "Ask/Plan 模式不允许修改或执行 shell。请切换到 Auto 模式。".into(),
         );
     }
+    check_side_effect_confirmation(config, tool_name)?;
 
     match tool_name {
         "read_file" => {
@@ -610,6 +678,29 @@ pub async fn execute_tool(
         "open_vscode" => {
             let rel = args["path"].as_str().unwrap_or(".");
             crate::os_open::open_vscode_workspace(app, project_root.as_path(), rel)
+        }
+        "web_fetch" => {
+            let url = args["url"].as_str().ok_or("url required")?;
+            let prompt = args["prompt"].as_str();
+            let url = url.to_string();
+            let prompt = prompt.map(|s| s.to_string());
+            tokio::task::spawn_blocking(move || {
+                crate::web_fetch::fetch_url(&url, prompt.as_deref())
+            })
+            .await
+            .map_err(|e| format!("web_fetch task failed: {}", e))?
+        }
+        "outlook_read" => {
+            let args = args.clone();
+            tokio::task::spawn_blocking(move || crate::outlook::read_mail(&args))
+                .await
+                .map_err(|e| format!("outlook_read task failed: {}", e))?
+        }
+        "outlook_send" => {
+            let args = args.clone();
+            tokio::task::spawn_blocking(move || crate::outlook::send_mail(&args))
+                .await
+                .map_err(|e| format!("outlook_send task failed: {}", e))?
         }
         "git_status" => {
             let status = git_ops::get_status(project_root.as_path())?;
@@ -811,6 +902,9 @@ pub async fn run_loop_resume(
         ),
     });
 
+    let mut config = paused.config;
+    config.ask_user_satisfied = true;
+
     let ctx = LoopRunContext {
         app: paused.app,
         project_root: paused.project_root,
@@ -824,7 +918,7 @@ pub async fn run_loop_resume(
         current_messages,
         tools: paused.tools,
         max_iterations: paused.max_iterations,
-        config: paused.config,
+        config,
         iteration: paused.iteration,
         collector: paused.collector,
         activity_log: paused.activity_log,
@@ -1210,7 +1304,7 @@ mod ask_mode_tests {
     #[test]
     fn get_ask_tools_excludes_mutating_tools() {
         let names: Vec<_> = get_ask_tools().into_iter().map(|t| t.name).collect();
-        for forbidden in ["write_file", "edit_file", "bash", "git_commit", "open", "open_vscode", "blast_radius"] {
+        for forbidden in ["write_file", "edit_file", "bash", "git_commit", "open", "open_vscode", "blast_radius", "outlook_send"] {
             assert!(
                 !names.iter().any(|n| n == forbidden),
                 "ask tools must not include {forbidden}"
@@ -1218,14 +1312,47 @@ mod ask_mode_tests {
         }
         assert!(names.iter().any(|n| n == "read_file"));
         assert!(names.iter().any(|n| n == "grep"));
+        assert!(names.iter().any(|n| n == "web_fetch"));
+        assert!(names.iter().any(|n| n == "outlook_read"));
+    }
+
+    #[test]
+    fn get_plan_tools_includes_outlook_read() {
+        let names: Vec<_> = get_plan_tools().into_iter().map(|t| t.name).collect();
+        assert!(names.iter().any(|n| n == "outlook_read"));
+        assert!(!names.iter().any(|n| n == "outlook_send"));
+        assert!(names.iter().any(|n| n == "blast_radius"));
+    }
+
+    #[test]
+    fn side_effect_guard_requires_ask_user_in_edit_and_auto() {
+        let config = LoopConfig {
+            dry_run_edits: true,
+            auto_mode: false,
+            bulk_write_confirmed: false,
+            write_count: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            agent_mode: "edit".into(),
+            ask_user_satisfied: false,
+        };
+        assert!(check_side_effect_confirmation(&config, "bash").is_err());
+        assert!(check_side_effect_confirmation(&config, "read_file").is_ok());
+        let mut satisfied = config.clone();
+        satisfied.ask_user_satisfied = true;
+        assert!(check_side_effect_confirmation(&satisfied, "bash").is_ok());
+        satisfied.agent_mode = "auto".into();
+        satisfied.ask_user_satisfied = false;
+        assert!(check_side_effect_confirmation(&satisfied, "git_commit").is_err());
     }
 
     #[test]
     fn is_mutating_tool_classification() {
         assert!(!is_mutating_tool("read_file"));
         assert!(!is_mutating_tool("grep"));
+        assert!(!is_mutating_tool("web_fetch"));
+        assert!(!is_mutating_tool("outlook_read"));
         assert!(is_mutating_tool("write_file"));
         assert!(is_mutating_tool("bash"));
         assert!(is_mutating_tool("open"));
+        assert!(is_mutating_tool("outlook_send"));
     }
 }

@@ -26,6 +26,8 @@ hex = "0.4"
 dirs = "5"
 tokio = { version = "1", features = ["full"] }
 reqwest = { version = "0.12", features = ["json", "stream", "rustls-tls", "blocking"], default-features = false }
+htmd = "0.5"
+url = "2"
 futures = "0.3"
 ring = "0.17"
 keyring = "3"

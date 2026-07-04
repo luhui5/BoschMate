@@ -69,10 +69,10 @@ export function PrivacySection() {
           操作权限
         </p>
         <SettingsCard>
-          <SettingRow title="Git push 前确认" desc="Agent 推送到远端前必须经过你的批准">
+          <SettingRow title="Git push 前确认" desc="当前通过 Agent ask_user 确认；完整弹窗门禁待后续版本">
             <Switch checked={confirmPush} onCheckedChange={setConfirmPush} />
           </SettingRow>
-          <SettingRow title="执行 Shell 命令前确认" desc="运行任意终端命令前弹出确认">
+          <SettingRow title="执行 Shell 命令前确认" desc="当前通过 Agent ask_user 确认；完整弹窗门禁待后续版本">
             <Switch checked={confirmShell} onCheckedChange={setConfirmShell} />
           </SettingRow>
           <SettingRow title="文件写入范围" desc="限制 Agent 可修改的目录">

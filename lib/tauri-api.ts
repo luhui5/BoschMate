@@ -381,9 +381,15 @@ export async function streamChat(
 export async function aiLoopChat(
   input: AiLoopRequest,
   sessionId: string,
-  projectId: string
+  projectId: string,
+  messageId: string,
 ): Promise<ChatMessage> {
-  const raw = await invoke<RawChatMessage>('ai_loop_chat', { input, sessionId, projectId });
+  const raw = await invoke<RawChatMessage>('ai_loop_chat', {
+    input,
+    sessionId,
+    projectId,
+    messageId,
+  });
   return mapChatMessage(raw);
 }
 

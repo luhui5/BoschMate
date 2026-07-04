@@ -1,5 +1,6 @@
 "use client"
 
+import { useMemo } from "react"
 import { cn } from "@/lib/utils"
 import { isLikelyFileRef } from "@/lib/workspace-utils"
 
@@ -273,7 +274,7 @@ export function MarkdownContent({
   onOpenFile?: (path: string) => void
   className?: string
 }) {
-  const blocks = parseBlocks(content)
+  const blocks = useMemo(() => parseBlocks(content), [content])
   return (
     <div className={cn("flex flex-col gap-1.5 text-left", className)}>
       {blocks.map((block, i) => renderBlock(block, i, onOpenFile))}

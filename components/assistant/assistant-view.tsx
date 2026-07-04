@@ -224,10 +224,12 @@ export function AssistantView({
 
   const [generating, setGenerating] = useState(false)
   const generatingSessionRef = useRef<string | null>(null)
+  const sendInFlightRef = useRef(false)
   const stopRequestedRef = useRef(false)
   const activeAssistantMsgRef = useRef<string | null>(null)
   const [llmError, setLlmError] = useState<ReturnType<typeof parseLlmError> | null>(null)
   const [mode, setMode] = useState<AgentMode>(DEFAULT_AGENT_MODE)
+  const prevModeRef = useRef<AgentMode>(mode)
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
   const [rightOpen, setRightOpen] = useState(true)
   const [activeFile, setActiveFile] = useState<string | null>(null)
@@ -274,6 +276,14 @@ export function AssistantView({
     const t = setTimeout(() => setToast(null), 2500)
     return () => clearTimeout(t)
   }, [toast])
+
+  useEffect(() => {
+    const prev = prevModeRef.current
+    if (prev === "plan" && mode === "auto") {
+      setToast("建议发送：按上述计划执行")
+    }
+    prevModeRef.current = mode
+  }, [mode])
 
   const active = useMemo(
     () => sessions.find((s) => s.id === activeId) ?? sessions[0],
@@ -468,11 +478,6 @@ export function AssistantView({
     return undefined
   }, [chatMessages])
 
-  const scrollChatToBottom = useCallback((behavior: ScrollBehavior = "instant") => {
-    const c = scrollRef.current
-    if (!c || userScrolledUpRef.current) return
-    scrollContainerToBottom(c, behavior)
-  }, [])
 
   const jumpToBottom = useCallback(() => {
     const c = scrollRef.current
@@ -533,7 +538,6 @@ export function AssistantView({
     generating,
     chatLayout.usePinned,
     active,
-    lastAssistant?.content,
     lastAssistant?.streaming,
   ])
 
@@ -655,7 +659,12 @@ export function AssistantView({
     opts?: { bulkWriteConfirmed?: boolean; skipUserMessage?: boolean },
   ) => {
     const content = text.trim()
-    if (!content || generating || !active) return
+    if (!content || generating || sendInFlightRef.current || !active) return
+
+    sendInFlightRef.current = true
+    setGenerating(true)
+    generatingSessionRef.current = activeId
+    stopRequestedRef.current = false
 
     const isFirst = active.messages.length === 0
     const derivedTitle = isFirst ? deriveTitle(content) : active.title
@@ -686,10 +695,6 @@ export function AssistantView({
       }
     }
 
-    setGenerating(true)
-    generatingSessionRef.current = activeId
-    stopRequestedRef.current = false
-
     const modelCfg = findModel(availableModels, active.model)
 
     if (!isTauri()) {
@@ -706,6 +711,7 @@ export function AssistantView({
         ])
         setGenerating(false)
         generatingSessionRef.current = null
+        sendInFlightRef.current = false
       }, 900)
       return
     }
@@ -722,6 +728,7 @@ export function AssistantView({
       ])
       setGenerating(false)
       generatingSessionRef.current = null
+      sendInFlightRef.current = false
       return
     }
 
@@ -744,7 +751,7 @@ export function AssistantView({
     ])
 
     const unlistenToken = onChatToken((e) => {
-      if (e.session_id !== activeId) return
+      if (e.session_id !== activeId || e.message_id !== assistantMsgId) return
       updateActiveMessages((msgs) =>
         msgs.map((m) =>
           m.id === assistantMsgId ? { ...m, content: e.content, streaming: true } : m,
@@ -754,7 +761,7 @@ export function AssistantView({
 
     const unlistenActivity = toolsEnabled
       ? onLoopActivity((e) => {
-          if (e.session_id !== activeId) return
+          if (e.session_id !== activeId || e.message_id !== assistantMsgId) return
           const step = mapActivityStep(e.step)
           updateActiveMessages((msgs) =>
             msgs.map((m) =>
@@ -797,6 +804,7 @@ export function AssistantView({
           },
           activeId,
           workspaceProjectId,
+          assistantMsgId,
         )
       } else {
         const request: AiChatRequest = {
@@ -860,6 +868,7 @@ export function AssistantView({
       setGenerating(false)
       generatingSessionRef.current = null
       activeAssistantMsgRef.current = null
+      sendInFlightRef.current = false
     }
   }
 
@@ -910,7 +919,7 @@ export function AssistantView({
     )
 
     const unlistenToken = onChatToken((e) => {
-      if (e.session_id !== activeId) return
+      if (e.session_id !== activeId || e.message_id !== messageId) return
       updateActiveMessages((msgs) =>
         msgs.map((m) =>
           m.id === messageId ? { ...m, content: e.content, streaming: true } : m,
@@ -920,7 +929,7 @@ export function AssistantView({
 
     const unlistenActivity = workspaceProjectId
       ? onLoopActivity((e) => {
-          if (e.session_id !== activeId) return
+          if (e.session_id !== activeId || e.message_id !== messageId) return
           const step = mapActivityStep(e.step)
           updateActiveMessages((msgs) =>
             msgs.map((m) =>
@@ -1198,7 +1207,6 @@ export function AssistantView({
                       onDiffAction={onDiffAction}
                       onQuestionSubmit={onQuestionSubmit}
                       onOpenFile={openFile}
-                      onContentGrow={scrollChatToBottom}
                     />
                   )
                   if (m.role === "user") {

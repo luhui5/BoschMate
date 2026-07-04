@@ -32,10 +32,10 @@ import { validateMessage, validateImageDataUrl } from "@/lib/input-validation"
 import type { ModelConfig } from "@/lib/models"
 
 const agentModes: { id: AgentMode; label: string; icon: typeof Bot; desc: string }[] = [
-  { id: "ask", label: "Ask", icon: MessageCircleQuestion, desc: "仅回答与解释，只读查看代码；修改请切换 Edit automation" },
+  { id: "ask", label: "Ask", icon: MessageCircleQuestion, desc: "仅回答与解释，只读查看代码；修改请切换 Auto" },
   { id: "plan", label: "Plan", icon: ListTodo, desc: "生成计划文档，不执行" },
-  { id: "edit", label: "Ask before edits", icon: FilePen, desc: "修改前需你确认每个变更" },
-  { id: "auto", label: "Edit automation", icon: Bot, desc: "自动应用变更并运行验证" },
+  { id: "edit", label: "Ask before edits", icon: FilePen, desc: "逐步确认：每个文件 diff 需采纳；适合谨慎改动" },
+  { id: "auto", label: "Auto", icon: Bot, desc: "自动应用变更并运行验证" },
 ]
 
 function MenuBackdrop({ onClose }: { onClose: () => void }) {
@@ -133,8 +133,11 @@ export function ChatInput({
       }
     }
     if (degraded && mode === "auto") {
-      onValidationError?.("降级模式下无法使用 Edit automation，请切换为 Ask 或 Plan")
+      onValidationError?.("降级模式下无法使用 Auto 模式，请切换为 Ask 或 Plan")
       return
+    }
+    if (degraded && mode === "edit") {
+      onValidationError?.("降级模式下 Shell/Git 写入可能不可用，建议使用 Ask 或 Plan")
     }
     onSend(text, pastedImage ?? undefined)
     setValue("")

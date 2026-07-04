@@ -1,6 +1,6 @@
 "use client"
 
-import { useLayoutEffect, useMemo, useRef, useState, useCallback } from "react"
+import { useLayoutEffect, useRef, useState, useCallback } from "react"
 import {
   CheckCircle2,
   Loader2,
@@ -61,6 +61,23 @@ function toolStepLabel(step: ActivityStep): string {
       return `Analyze deps for ${args.file_path ?? "file"}`
     case "blast_radius":
       return `Blast radius for ${args.file_path ?? "file"}`
+    case "web_fetch":
+      return `Fetch ${args.url ?? "url"}`
+    case "outlook_read": {
+      const folder = String(args.folder ?? "inbox")
+      const count = args.count ?? 10
+      return `Read Outlook ${folder} (${count})`
+    }
+    case "outlook_send": {
+      const to = args.to
+      const recipient =
+        Array.isArray(to) && to.length > 0
+          ? String(to[0])
+          : typeof to === "string"
+            ? to
+            : "recipient"
+      return args.draft ? `Save Outlook draft to ${recipient}` : `Send mail to ${recipient}`
+    }
     default:
       return tool
   }
@@ -191,54 +208,29 @@ function CompactToolRow({ step }: { step: ActivityStep }) {
 
 function ExploringLivePanel({
   steps,
-  streamingContent,
   thinkingOnly = false,
-  onContentGrow,
 }: {
   steps: ActivityStep[]
-  streamingContent: string
   thinkingOnly?: boolean
-  onContentGrow?: () => void
 }) {
   const scrollRef = useRef<HTMLDivElement>(null)
   const contentRef = useRef<HTMLDivElement>(null)
   const stickToBottomRef = useRef(true)
 
-  const thoughtSteps = steps.filter((s) => s.kind === "thought")
   const toolSteps = steps.filter((s) => s.kind === "tool")
-  const hasRunningThought =
-    thinkingOnly || thoughtSteps.some((s) => s.status === "running")
   const hasRunningTool = toolSteps.some((s) => s.status === "running")
 
   const phaseTitle = thinkingOnly || !hasRunningTool ? "Exploring" : "Executing"
-
-  const thoughtBlocks = useMemo(() => {
-    const blocks: { key: string; text: string; live?: boolean }[] = []
-    for (const step of thoughtSteps) {
-      if (step.detail?.trim()) {
-        blocks.push({ key: step.id, text: step.detail.trim() })
-      }
-    }
-    const stream = streamingContent.trim()
-    if (hasRunningThought && stream) {
-      const last = blocks[blocks.length - 1]
-      if (!last || last.text !== stream) {
-        blocks.push({ key: "streaming", text: stream, live: true })
-      }
-    }
-    return blocks
-  }, [thoughtSteps, streamingContent, hasRunningThought])
 
   const scrollInnerToBottom = useCallback(() => {
     const el = scrollRef.current
     if (!el || !stickToBottomRef.current) return
     scrollContainerToBottom(el, "instant")
-    onContentGrow?.()
-  }, [onContentGrow])
+  }, [])
 
   useLayoutEffect(() => {
     scrollInnerToBottom()
-  }, [thoughtBlocks, toolSteps.length, streamingContent, scrollInnerToBottom])
+  }, [toolSteps.length, scrollInnerToBottom])
 
   useLayoutEffect(() => {
     const content = contentRef.current
@@ -261,7 +253,7 @@ function ExploringLivePanel({
     <div className="w-full min-w-0">
       <div className="mb-2 flex items-center gap-2">
         <span className="text-sm font-medium text-foreground/90">{phaseTitle}</span>
-        {(hasRunningThought || hasRunningTool) && (
+        {(thinkingOnly || hasRunningTool) && (
           <Loader2 className="size-3.5 animate-spin text-muted-foreground" />
         )}
       </div>
@@ -272,24 +264,12 @@ function ExploringLivePanel({
         className="scrollbar-hover-y max-h-[min(420px,50vh)] min-w-0 space-y-3 overflow-y-auto pr-1"
       >
         <div ref={contentRef} className="space-y-3">
-          {thoughtBlocks.length === 0 && hasRunningThought && (
+          {toolSteps.length === 0 && (
             <p className="text-sm leading-relaxed text-muted-foreground/60">正在分析…</p>
           )}
 
-          {thoughtBlocks.map((block) => (
-            <p
-              key={block.key}
-              className="whitespace-pre-wrap text-sm leading-relaxed text-muted-foreground"
-            >
-              {block.text}
-              {block.live && (
-                <span className="ml-0.5 inline-block h-3.5 w-1 animate-pulse bg-muted-foreground/50 align-middle" />
-              )}
-            </p>
-          ))}
-
           {toolSteps.length > 0 && (
-            <div className="space-y-0.5 border-t border-border/40 pt-3">
+            <div className="space-y-0.5">
               {toolSteps.map((step) => (
                 <CompactToolRow key={step.id} step={step} />
               ))}
@@ -303,46 +283,33 @@ function ExploringLivePanel({
 
 export function ToolActivityPanel({
   message,
-  streamingContent = "",
   explorePhase,
-  onContentGrow,
 }: {
   message: ChatMessage
-  streamingContent?: string
   /** When true, show live Exploring stream; false after tools finish and final reply streams. */
   explorePhase?: boolean
-  onContentGrow?: () => void
 }) {
   const steps = message.activitySteps ?? []
-  const hasRunning = steps.some((s) => s.status === "running")
+  const hasRunningTool = steps.some((s) => s.kind === "tool" && s.status === "running")
   const isLive =
     explorePhase ??
-    (Boolean(message.streaming) && (steps.length === 0 || hasRunning))
+    (Boolean(message.streaming) && (steps.length === 0 || hasRunningTool))
 
   const showThinking = isLive && steps.length === 0
 
   if (!showThinking && steps.length === 0) return null
 
   if (showThinking) {
-    return (
-      <ExploringLivePanel
-        steps={[]}
-        streamingContent={streamingContent}
-        thinkingOnly
-        onContentGrow={onContentGrow}
-      />
-    )
+    return <ExploringLivePanel steps={[]} thinkingOnly />
   }
 
   if (isLive) {
-    return (
-      <ExploringLivePanel
-        steps={steps}
-        streamingContent={streamingContent}
-        onContentGrow={onContentGrow}
-      />
-    )
+    return <ExploringLivePanel steps={steps} />
   }
+
+  const hasRunning =
+    steps.some((s) => s.kind === "tool" && s.status === "running") ||
+    steps.some((s) => s.kind === "thought" && s.status === "running" && explorePhase)
 
   return (
     <div className="flex w-full flex-col gap-0.5">

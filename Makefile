@@ -8,8 +8,6 @@ PROXY ?= http://127.0.0.1:17897
 dev:
 	@echo "==> Starting BoschCode development environment..."
 	npx kill-port 3000 2>/dev/null; \
-	export HTTP_PROXY=$(PROXY); \
-	export HTTPS_PROXY=$(PROXY); \
 	npx tauri dev
 
 # ── Build ──
@@ -24,20 +22,14 @@ build:
 
 package-windows:
 	@echo "==> Packaging BoschCode for Windows..."
-	export HTTP_PROXY=$(PROXY); \
-	export HTTPS_PROXY=$(PROXY); \
 	npx tauri build --bundles msi,nsis
 
 package-macos:
 	@echo "==> Packaging BoschCode for macOS..."
-	export HTTP_PROXY=$(PROXY); \
-	export HTTPS_PROXY=$(PROXY); \
 	npx tauri build --bundles dmg
 
 package-linux:
 	@echo "==> Packaging BoschCode for Linux..."
-	export HTTP_PROXY=$(PROXY); \
-	export HTTPS_PROXY=$(PROXY); \
 	npx tauri build --bundles deb,appimage
 
 # ── All platforms (for CI) ──
