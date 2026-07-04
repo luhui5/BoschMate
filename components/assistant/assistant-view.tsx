@@ -30,6 +30,7 @@ import {
   type AssistantMessage,
 } from "@/lib/assistant-sessions"
 import { buildAssistantSystemPrompt } from "@/lib/assistant-prompt"
+import { isAssistantSessionProcessing } from "@/lib/session-processing"
 import { DEFAULT_AGENT_MODE } from "@/lib/constants"
 import { debounce } from "@/lib/debounce"
 import {
@@ -166,6 +167,18 @@ function finalizeCancelledMessage(m: AssistantMessage): AssistantMessage {
   }
 }
 
+function isMessageProcessing(m: AssistantMessage): boolean {
+  return (
+    m.role === "assistant" &&
+    (Boolean(m.streaming) ||
+      (m.activitySteps?.some((s) => s.status === "running") ?? false))
+  )
+}
+
+function finalizeProcessingMessages(msgs: AssistantMessage[]): AssistantMessage[] {
+  return msgs.map((m) => (isMessageProcessing(m) ? finalizeCancelledMessage(m) : m))
+}
+
 export function AssistantView({
   knowledgeCount,
   onOpenKnowledge,
@@ -300,6 +313,17 @@ export function AssistantView({
     () => groupSessionsByWorkspace(workspaces, sessions),
     [workspaces, sessions],
   )
+
+  const processingSessionIds = useMemo(() => {
+    const ids = new Set<string>()
+    for (const s of sessions) {
+      if (isAssistantSessionProcessing(s)) ids.add(s.id)
+    }
+    if (generating && generatingSessionRef.current) {
+      ids.add(generatingSessionRef.current)
+    }
+    return ids
+  }, [sessions, generating])
 
   const handleSelectSession = useCallback((sessionId: string) => {
     setActiveId(sessionId)
@@ -740,7 +764,7 @@ export function AssistantView({
     const toolsEnabled = Boolean(folder)
 
     updateActiveMessages((msgs) => [
-      ...msgs,
+      ...finalizeProcessingMessages(msgs),
       {
         id: assistantMsgId,
         role: "assistant",
@@ -752,6 +776,7 @@ export function AssistantView({
 
     const unlistenToken = onChatToken((e) => {
       if (e.session_id !== activeId || e.message_id !== assistantMsgId) return
+      if (stopRequestedRef.current) return
       updateActiveMessages((msgs) =>
         msgs.map((m) =>
           m.id === assistantMsgId ? { ...m, content: e.content, streaming: true } : m,
@@ -762,6 +787,7 @@ export function AssistantView({
     const unlistenActivity = toolsEnabled
       ? onLoopActivity((e) => {
           if (e.session_id !== activeId || e.message_id !== assistantMsgId) return
+          if (stopRequestedRef.current) return
           const step = mapActivityStep(e.step)
           updateActiveMessages((msgs) =>
             msgs.map((m) =>
@@ -877,9 +903,16 @@ export function AssistantView({
     if (!sessionId || !generating) return
     stopRequestedRef.current = true
     if (isTauri()) void cancelChat(sessionId).catch(() => {})
-    const msgId = activeAssistantMsgRef.current
-    updateActiveMessages((msgs) =>
-      msgs.map((m) => (msgId && m.id === msgId ? finalizeCancelledMessage(m) : m)),
+    setSessions((prev) =>
+      prev.map((s) =>
+        s.id === sessionId
+          ? {
+              ...s,
+              messages: finalizeProcessingMessages(s.messages),
+              updatedAt: new Date().toISOString(),
+            }
+          : s,
+      ),
     )
     setGenerating(false)
     generatingSessionRef.current = null
@@ -911,7 +944,7 @@ export function AssistantView({
               ...m,
               streaming: true,
               pendingQuestions: m.pendingQuestions
-                ? { ...m.pendingQuestions, answers }
+                ? { ...m.pendingQuestions, status: "answered" as const, answers }
                 : undefined,
             }
           : m,
@@ -920,6 +953,7 @@ export function AssistantView({
 
     const unlistenToken = onChatToken((e) => {
       if (e.session_id !== activeId || e.message_id !== messageId) return
+      if (stopRequestedRef.current) return
       updateActiveMessages((msgs) =>
         msgs.map((m) =>
           m.id === messageId ? { ...m, content: e.content, streaming: true } : m,
@@ -930,6 +964,7 @@ export function AssistantView({
     const unlistenActivity = workspaceProjectId
       ? onLoopActivity((e) => {
           if (e.session_id !== activeId || e.message_id !== messageId) return
+          if (stopRequestedRef.current) return
           const step = mapActivityStep(e.step)
           updateActiveMessages((msgs) =>
             msgs.map((m) =>
@@ -958,10 +993,15 @@ export function AssistantView({
             mode: response.mode ?? m.mode,
             diffs: response.diffs,
             pendingQuestions:
-              response.pendingQuestions ??
-              (m.pendingQuestions
-                ? { ...m.pendingQuestions, status: "answered" as const, answers }
-                : undefined),
+              response.pendingQuestions?.status === "pending"
+                ? response.pendingQuestions
+                : m.pendingQuestions
+                  ? {
+                      ...m.pendingQuestions,
+                      status: "answered" as const,
+                      answers: m.pendingQuestions.answers ?? answers,
+                    }
+                  : response.pendingQuestions,
             activitySteps:
               response.activitySteps?.length
                 ? response.activitySteps
@@ -1058,6 +1098,7 @@ export function AssistantView({
         sessionsByWorkspace={sessionsByWorkspace}
         activeWorkspaceId={activeWorkspaceId}
         activeSessionId={activeId}
+        processingSessionIds={processingSessionIds}
         onSelectWorkspace={handleSelectWorkspace}
         onSelectSession={handleSelectSession}
         onNewSession={newSessionInWorkspace}

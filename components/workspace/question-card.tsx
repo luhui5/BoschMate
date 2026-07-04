@@ -48,6 +48,18 @@ function isQuestionComplete(
 type SelectionState = Record<string, string[]>
 type OtherTextState = Record<string, string>
 
+function defaultSelectionForQuestions(questions: AskUserQuestion[]): SelectionState {
+  const selection: SelectionState = {}
+  for (const q of questions) {
+    const options = normalizeOptions(q)
+    const recommended =
+      options.find((o) => o.recommended && o.id !== OTHER_ID) ??
+      options.find((o) => o.id !== OTHER_ID)
+    if (recommended) selection[q.id] = [recommended.id]
+  }
+  return selection
+}
+
 export function QuestionCard({
   pending,
   onSubmit,
@@ -57,7 +69,9 @@ export function QuestionCard({
   onSubmit: (answers: QuestionAnswer[]) => void
   disabled?: boolean
 }) {
-  const [selection, setSelection] = useState<SelectionState>(() => ({}))
+  const [selection, setSelection] = useState<SelectionState>(() =>
+    defaultSelectionForQuestions(pending.questions),
+  )
   const [otherText, setOtherText] = useState<OtherTextState>(() => ({}))
   const [currentIndex, setCurrentIndex] = useState(0)
 

@@ -20,6 +20,7 @@ import {
 } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { Button } from "@/components/ui/button"
+import { BoschGradientBorder } from "@/components/bosch-gradient-border"
 import { useApp } from "@/components/app-provider"
 import type { AssistantSession } from "@/lib/assistant-sessions"
 import type { AssistantWorkspace } from "@/lib/assistant-workspaces"
@@ -30,6 +31,27 @@ function WorkspaceIcon({ ws, className }: { ws: AssistantWorkspace; className?: 
   if (ws.isHome) return <Home className={className} />
   if (ws.kind === "ssh") return <Server className={className} />
   return <Folder className={className} />
+}
+
+function SidebarProcessingBorder({
+  active,
+  innerClassName,
+  children,
+}: {
+  active: boolean
+  innerClassName?: string
+  children: ReactNode
+}) {
+  if (!active) return <>{children}</>
+  return (
+    <BoschGradientBorder
+      spinActive
+      className="rounded-md"
+      innerClassName={cn("rounded-[5px] bg-card/40", innerClassName)}
+    >
+      {children}
+    </BoschGradientBorder>
+  )
 }
 
 function CollapsedIconButton({
@@ -73,6 +95,7 @@ export function WorkspaceSidebar({
   sessionsByWorkspace,
   activeWorkspaceId,
   activeSessionId,
+  processingSessionIds,
   onSelectWorkspace,
   onSelectSession,
   onNewSession,
@@ -89,6 +112,7 @@ export function WorkspaceSidebar({
   sessionsByWorkspace: Map<string, AssistantSession[]>
   activeWorkspaceId: string
   activeSessionId: string
+  processingSessionIds: ReadonlySet<string>
   onSelectWorkspace: (id: string) => void
   onSelectSession: (id: string) => void
   onNewSession: (workspaceId: string) => void
@@ -166,17 +190,22 @@ export function WorkspaceSidebar({
           </CollapsedIconButton>
 
           <div className="flex min-h-0 w-full flex-1 flex-col items-center gap-1 overflow-y-auto scrollbar-thin">
-            {workspaces.map((ws) => (
-              <CollapsedIconButton
-                key={ws.projectId}
-                active={ws.projectId === activeWorkspaceId}
-                title={`${ws.name}\n${ws.subtitle}`}
-                ariaLabel={ws.name}
-                onClick={() => selectWorkspaceFromRail(ws.projectId)}
-              >
-                <WorkspaceIcon ws={ws} className="size-5" />
-              </CollapsedIconButton>
-            ))}
+            {workspaces.map((ws) => {
+              const wsSessions = sessionsByWorkspace.get(ws.projectId) ?? []
+              const wsProcessing = wsSessions.some((s) => processingSessionIds.has(s.id))
+              return (
+                <SidebarProcessingBorder key={ws.projectId} active={wsProcessing}>
+                  <CollapsedIconButton
+                    active={ws.projectId === activeWorkspaceId}
+                    title={`${ws.name}\n${ws.subtitle}`}
+                    ariaLabel={ws.name}
+                    onClick={() => selectWorkspaceFromRail(ws.projectId)}
+                  >
+                    <WorkspaceIcon ws={ws} className="size-5" />
+                  </CollapsedIconButton>
+                </SidebarProcessingBorder>
+              )
+            })}
           </div>
 
           <div className="mt-auto flex flex-col items-center gap-1">
@@ -282,14 +311,19 @@ export function WorkspaceSidebar({
             filteredTree.map(({ ws, sessions }) => {
               const isExpanded = expanded.has(ws.projectId)
               const isActiveWs = ws.projectId === activeWorkspaceId
+              const wsProcessing = sessions.some((s) => processingSessionIds.has(s.id))
               return (
                 <div key={ws.projectId} className="mb-1">
-                  <div
-                    className={cn(
-                      "group flex items-center gap-1 rounded-md px-1 py-1",
-                      isActiveWs && "bg-accent/60",
-                    )}
+                  <SidebarProcessingBorder
+                    active={wsProcessing}
+                    innerClassName={isActiveWs ? "bg-accent/60" : undefined}
                   >
+                    <div
+                      className={cn(
+                        "group flex items-center gap-1 rounded-md px-1 py-1",
+                        isActiveWs && "bg-accent/60",
+                      )}
+                    >
                     <button
                       type="button"
                       onClick={() => {
@@ -332,19 +366,24 @@ export function WorkspaceSidebar({
                       </Button>
                     )}
                   </div>
+                  </SidebarProcessingBorder>
                   {isExpanded && (
                     <div className="ml-4 space-y-0.5 border-l border-border/60 pl-2">
                       {sessions.length === 0 ? (
                         <p className="px-2 py-2 text-[10px] text-muted-foreground">暂无对话</p>
                       ) : (
                         sessions.map((s) => (
-                          <div
+                          <SidebarProcessingBorder
                             key={s.id}
-                            className={cn(
-                              "group flex items-center gap-1 rounded-md px-1.5 py-1",
-                              s.id === activeSessionId ? "bg-accent" : "hover:bg-accent/50",
-                            )}
+                            active={processingSessionIds.has(s.id)}
+                            innerClassName={s.id === activeSessionId ? "bg-accent" : undefined}
                           >
+                            <div
+                              className={cn(
+                                "group flex items-center gap-1 rounded-md px-1.5 py-1",
+                                s.id === activeSessionId ? "bg-accent" : "hover:bg-accent/50",
+                              )}
+                            >
                             <button
                               type="button"
                               onClick={() => {
@@ -363,7 +402,8 @@ export function WorkspaceSidebar({
                             >
                               <Trash2 className="size-3" />
                             </button>
-                          </div>
+                            </div>
+                          </SidebarProcessingBorder>
                         ))
                       )}
                     </div>

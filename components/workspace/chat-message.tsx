@@ -82,6 +82,10 @@ export function ChatMessageView({
     Boolean(message.streaming) &&
     (stepCount === 0 || toolStepsStillRunning || !hasOutput || hideStreamingOutput)
 
+  const showQuestionCard = Boolean(
+    message.pendingQuestions?.status === "pending" && !message.streaming,
+  )
+
   return (
     <div className="flex w-full flex-col gap-2 items-start text-left">
       {isUser && (
@@ -127,11 +131,9 @@ export function ChatMessageView({
         </>
       )}
 
-      {message.pendingQuestions &&
-        (message.pendingQuestions.status === "pending" ||
-          (message.pendingQuestions.answers?.length ?? 0) > 0) && (
+      {showQuestionCard && (
         <QuestionCard
-          pending={message.pendingQuestions}
+          pending={message.pendingQuestions!}
           disabled={message.streaming}
           onSubmit={(answers) => onQuestionSubmit?.(message.id, answers)}
         />

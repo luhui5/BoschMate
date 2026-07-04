@@ -245,3 +245,7 @@
 .group:focus-within .bosch-border-spin-layer {
   animation-play-state: running;
 }
+
+.bosch-border-spin-group-active .bosch-border-spin-layer {
+  animation-play-state: running;
+}
