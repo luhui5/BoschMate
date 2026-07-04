@@ -1071,7 +1071,8 @@ export function AssistantView({
         onToggleCollapse={() => setSidebarCollapsed((v) => !v)}
       />
 
-      <div className="flex min-w-0 flex-1 flex-col">
+      <div className="flex min-h-0 min-w-0 flex-1">
+        <div className="flex min-w-0 flex-1 flex-col">
         <header className="flex items-center justify-between gap-3 border-b border-border px-5 py-2.5">
           <div className="flex min-w-0 items-center gap-2">
             <Sparkles className="size-5 shrink-0 text-primary" />
@@ -1082,21 +1083,22 @@ export function AssistantView({
               </span>
             )}
           </div>
-          <div className="flex shrink-0 items-center gap-1.5">
-            <Button
-              variant="ghost"
-              size="icon-sm"
-              onClick={() => setRightOpen((o) => !o)}
-              aria-label="切换右栏"
-              className={rightOpen ? "text-foreground" : "text-muted-foreground"}
-            >
-              <PanelRight />
-            </Button>
-          </div>
+          {!rightOpen && (
+            <div className="flex shrink-0 items-center gap-1.5">
+              <Button
+                variant="ghost"
+                size="icon-sm"
+                onClick={() => setRightOpen(true)}
+                aria-label="切换右栏"
+                className="text-muted-foreground"
+              >
+                <PanelRight />
+              </Button>
+            </div>
+          )}
         </header>
 
-        <div className="flex min-h-0 flex-1">
-          <main className="flex min-w-0 flex-1 flex-col">
+          <main className="flex min-h-0 flex-1 flex-col">
 
         {llmError && (
           <div className="border-b border-border px-5 py-2">
@@ -1260,6 +1262,7 @@ export function AssistantView({
           ]}
         />
           </main>
+        </div>
 
           {rightOpen && workspaceProjectId && (
             <RightSidebar
@@ -1288,9 +1291,9 @@ export function AssistantView({
                   void revealInExplorer(workspaceProjectId, p).catch((e) => setToast(String(e)))
                 }
               }}
+              onToggleRight={() => setRightOpen(false)}
             />
           )}
-        </div>
       </div>
 
       <BulkWriteDialog

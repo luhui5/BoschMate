@@ -1,9 +1,11 @@
 "use client"
 
 import { useMemo, useState } from "react"
-import { FolderTree, FileDiff, GitMerge, Loader2, ScrollText } from "lucide-react"
+import { FolderTree, FileDiff, GitMerge, Loader2, ScrollText, Search, PanelRight } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { sidebarFeatures } from "@/lib/ui-features"
+import { Button } from "@/components/ui/button"
+import { Input } from "@/components/ui/input"
 import { FileTree } from "@/components/workspace/file-tree"
 import { GitPanel } from "@/components/workspace/git-panel"
 import { DiffCard } from "@/components/workspace/diff-card"
@@ -39,6 +41,7 @@ export function RightSidebar({
   onCopyPath,
   onRevealInExplorer,
   activeSessionId,
+  onToggleRight,
 }: {
   projectId: string
   workspaceName?: string
@@ -58,7 +61,10 @@ export function RightSidebar({
   onFileTreeChange?: (nodes: FileNode[]) => void
   onCopyPath?: (path: string) => void
   onRevealInExplorer?: (path: string) => void
+  onToggleRight: () => void
 }) {
+  const [fileFilter, setFileFilter] = useState("")
+
   const views = useMemo(() => {
     return ALL_VIEWS.filter((v) => !v.feature || sidebarFeatures[v.feature]).map((v) => ({
       id: v.id,
@@ -74,8 +80,33 @@ export function RightSidebar({
 
   return (
     <aside className="flex h-full w-80 shrink-0 flex-col border-l border-border bg-sidebar">
+      <div className="flex shrink-0 items-center gap-2 px-2 py-2.5">
+        {activeView === "files" ? (
+          <div className="relative min-w-0 flex-1">
+            <Search className="pointer-events-none absolute left-2 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
+            <Input
+              value={fileFilter}
+              onChange={(e) => setFileFilter(e.target.value)}
+              placeholder="按名称过滤文件…"
+              className="h-7 pl-7 text-xs"
+            />
+          </div>
+        ) : (
+          <div className="flex-1" />
+        )}
+        <Button
+          variant="ghost"
+          size="icon-sm"
+          onClick={onToggleRight}
+          aria-label="切换右栏"
+          className="shrink-0 text-foreground"
+        >
+          <PanelRight />
+        </Button>
+      </div>
+
       {showTabBar && (
-        <div className="flex border-b border-border p-1">
+        <div className="flex p-1">
           {views.map((v) => {
             const Icon = v.icon
             return (
@@ -117,6 +148,9 @@ export function RightSidebar({
               onNodesChange={onFileTreeChange}
               onCopyPath={onCopyPath}
               onRevealInExplorer={onRevealInExplorer}
+              filter={fileFilter}
+              onFilterChange={setFileFilter}
+              hideFilter
             />
           )
         )}
@@ -143,7 +177,7 @@ export function RightSidebar({
               </div>
             )}
             {activeSessionId && (
-              <div className="border-t border-border pt-2">
+              <div className="pt-2">
                 <p className="mb-1 px-1 text-xs font-semibold text-muted-foreground">会话快照 (DB)</p>
                 <SessionChangesPanel sessionId={activeSessionId} />
               </div>

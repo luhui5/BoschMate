@@ -55,6 +55,9 @@ export function FileTree({
   onNodesChange,
   onCopyPath,
   onRevealInExplorer,
+  filter: filterProp,
+  onFilterChange,
+  hideFilter = false,
 }: {
   nodes: FileNode[]
   activePath: string | null
@@ -63,8 +66,13 @@ export function FileTree({
   onNodesChange?: (nodes: FileNode[]) => void
   onCopyPath?: (path: string) => void
   onRevealInExplorer?: (path: string) => void
+  filter?: string
+  onFilterChange?: (value: string) => void
+  hideFilter?: boolean
 }) {
-  const [filter, setFilter] = useState("")
+  const [internalFilter, setInternalFilter] = useState("")
+  const filter = filterProp ?? internalFilter
+  const setFilter = onFilterChange ?? setInternalFilter
   const [openDirs, setOpenDirs] = useState<Set<string>>(() => new Set())
   const [loadingDirs, setLoadingDirs] = useState<Set<string>>(() => new Set())
   const [menu, setMenu] = useState<{ path: string; x: number; y: number } | null>(null)
@@ -129,15 +137,17 @@ export function FileTree({
 
   return (
     <div className="flex h-full flex-col">
-      <div className="relative border-b border-border p-2">
-        <Search className="pointer-events-none absolute left-4 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
-        <Input
-          value={filter}
-          onChange={(e) => setFilter(e.target.value)}
-          placeholder="按名称过滤文件…"
-          className="h-7 pl-7 text-xs"
-        />
-      </div>
+      {!hideFilter && (
+        <div className="relative p-2">
+          <Search className="pointer-events-none absolute left-4 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
+          <Input
+            value={filter}
+            onChange={(e) => setFilter(e.target.value)}
+            placeholder="按名称过滤文件…"
+            className="h-7 pl-7 text-xs"
+          />
+        </div>
+      )}
       <div ref={parentRef} className="flex-1 overflow-auto p-1 scrollbar-thin">
         <div
           style={{

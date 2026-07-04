@@ -26,10 +26,6 @@ import type { AssistantWorkspace } from "@/lib/assistant-workspaces"
 import { NewProjectDialog } from "@/components/home/new-project-dialog"
 import type { Project } from "@/lib/types"
 
-function SidebarDivider({ className }: { className?: string }) {
-  return <div className={cn("my-1 h-px w-10 shrink-0 bg-border", className)} aria-hidden />
-}
-
 function WorkspaceIcon({ ws, className }: { ws: AssistantWorkspace; className?: string }) {
   if (ws.isHome) return <Home className={className} />
   if (ws.kind === "ssh") return <Server className={className} />
@@ -169,8 +165,6 @@ export function WorkspaceSidebar({
             <PanelLeftOpen className="size-5" />
           </CollapsedIconButton>
 
-          <SidebarDivider />
-
           <div className="flex min-h-0 w-full flex-1 flex-col items-center gap-1 overflow-y-auto scrollbar-thin">
             {workspaces.map((ws) => (
               <CollapsedIconButton
@@ -184,8 +178,6 @@ export function WorkspaceSidebar({
               </CollapsedIconButton>
             ))}
           </div>
-
-          <SidebarDivider />
 
           <div className="mt-auto flex flex-col items-center gap-1">
             <CollapsedIconButton
@@ -221,7 +213,7 @@ export function WorkspaceSidebar({
   return (
     <>
       <aside className="flex w-64 shrink-0 flex-col border-r border-border bg-card/40">
-        <div className="flex items-center justify-between gap-1 border-b border-border px-2 py-2">
+        <div className="flex items-center justify-between gap-1 px-2 py-2">
           <Button
             variant="ghost"
             size="icon-sm"
@@ -382,7 +374,7 @@ export function WorkspaceSidebar({
           )}
         </div>
 
-        <div className="mt-auto border-t border-border p-1.5">
+        <div className="mt-auto p-1.5">
           <button
             type="button"
             onClick={onOpenKnowledge}
