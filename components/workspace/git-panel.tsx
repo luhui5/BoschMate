@@ -44,16 +44,20 @@ function splitPath(path: string): { basename: string; dirname: string } {
 
 export function GitPanel({
   projectId,
+  workspaceName,
   branch,
   gitRemote,
+  gitError,
   files,
   onOpenFile,
   onCommitted,
   onBranchChange,
 }: {
   projectId: string
+  workspaceName?: string
   branch: string
   gitRemote?: string
+  gitError?: string | null
   files: GitFile[]
   onOpenFile: (path: string) => void
   onCommitted?: () => void
@@ -326,6 +330,11 @@ export function GitPanel({
   return (
     <div className="flex h-full flex-col">
       <div className="relative border-b border-border px-3 py-2">
+        {workspaceName && (
+          <p className="mb-1 truncate text-[10px] font-medium text-muted-foreground">
+            工作区：{workspaceName}
+          </p>
+        )}
         <button
           type="button"
           onClick={() => setShowBranches((s) => !s)}
@@ -441,7 +450,15 @@ export function GitPanel({
         )}
 
         {files.length === 0 ? (
-          <p className="px-3 py-8 text-center text-xs text-muted-foreground">工作区干净，没有未提交的变更。</p>
+          <p className="px-3 py-8 text-center text-xs text-muted-foreground">
+            {gitError
+              ? gitError.includes("Not a git repository") || gitError.includes("not a git repository")
+                ? workspaceName === "Home"
+                  ? "Home 工作区不是 Git 仓库。请在左侧切换到已打开的项目（如 BoschCode）以查看 Git 变更。"
+                  : "当前工作区不是 Git 仓库。"
+                : gitError
+              : "工作区干净，没有未提交的变更。"}
+          </p>
         ) : (
           <>
             {grouped.staged.length > 0 && (

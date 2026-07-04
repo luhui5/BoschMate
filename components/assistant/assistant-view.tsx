@@ -326,6 +326,7 @@ export function AssistantView({
     fileTreeLoading,
     gitFiles,
     gitBranch,
+    gitError,
     refreshGit,
     refreshFileTree,
     loadTreeChildren,
@@ -1248,8 +1249,10 @@ export function AssistantView({
           {rightOpen && workspaceProjectId && (
             <RightSidebar
               projectId={workspaceProjectId}
+              workspaceName={activeWorkspace?.name}
               gitBranch={gitBranch}
               gitRemote={gitRemote}
+              gitError={gitError}
               fileTree={fileTree}
               gitFiles={gitFiles}
               fileTreeLoading={fileTreeLoading}

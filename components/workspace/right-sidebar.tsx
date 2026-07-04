@@ -14,8 +14,10 @@ type View = "files" | "changes" | "git" | "audit"
 
 export function RightSidebar({
   projectId,
+  workspaceName,
   gitBranch,
   gitRemote,
+  gitError,
   fileTree,
   gitFiles,
   fileTreeLoading,
@@ -31,8 +33,10 @@ export function RightSidebar({
   activeSessionId,
 }: {
   projectId: string
+  workspaceName?: string
   gitBranch: string
   gitRemote?: string
+  gitError?: string | null
   fileTree: FileNode[]
   gitFiles: GitFile[]
   fileTreeLoading?: boolean
@@ -136,8 +140,10 @@ export function RightSidebar({
         {view === "git" && (
           <GitPanel
             projectId={projectId}
+            workspaceName={workspaceName}
             branch={gitBranch}
             gitRemote={gitRemote}
+            gitError={gitError}
             files={gitFiles}
             onOpenFile={onOpenFile}
             onCommitted={onGitRefresh}
