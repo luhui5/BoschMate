@@ -1,16 +1,19 @@
 "use client"
 
-import { useCallback, useEffect, useMemo, useState } from "react"
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react"
 import {
   GitBranch,
   GitCommitHorizontal,
   GitPullRequest,
-  FileQuestion,
   Loader2,
   Plus,
+  Minus,
   Archive,
   ChevronDown,
+  ChevronRight,
   Eye,
+  RefreshCw,
+  FileCode2,
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -32,6 +35,13 @@ import {
   isTauri,
 } from "@/lib/tauri-api"
 
+function splitPath(path: string): { basename: string; dirname: string } {
+  const normalized = path.replace(/\\/g, "/")
+  const idx = normalized.lastIndexOf("/")
+  if (idx === -1) return { basename: path, dirname: "" }
+  return { basename: normalized.slice(idx + 1), dirname: normalized.slice(0, idx) }
+}
+
 export function GitPanel({
   projectId,
   branch,
@@ -49,7 +59,6 @@ export function GitPanel({
   onCommitted?: () => void
   onBranchChange?: () => void
 }) {
-  const [selected, setSelected] = useState<Set<string>>(new Set())
   const [commitMsg, setCommitMsg] = useState("")
   const [committed, setCommitted] = useState<string | null>(null)
   const [committing, setCommitting] = useState(false)
@@ -62,6 +71,8 @@ export function GitPanel({
   const [previewDiff, setPreviewDiff] = useState<string>("")
   const [stashCount, setStashCount] = useState(0)
   const [recentCommits, setRecentCommits] = useState<Array<{ sha: string; message: string; author: string }>>([])
+  const [collapsedStaged, setCollapsedStaged] = useState(false)
+  const [collapsedChanges, setCollapsedChanges] = useState(false)
 
   const refreshMeta = useCallback(async () => {
     if (!isTauri()) return
@@ -83,34 +94,11 @@ export function GitPanel({
     void refreshMeta()
   }, [refreshMeta, projectId, branch])
 
-  const toggle = (path: string) => {
-    setSelected((prev) => {
-      const next = new Set(prev)
-      if (next.has(path)) next.delete(path)
-      else next.add(path)
-      return next
-    })
-  }
-
   const grouped = useMemo(() => {
     const staged = files.filter((f) => f.staged)
     const unstaged = files.filter((f) => !f.staged)
     return { staged, unstaged }
   }, [files])
-
-  const allPaths = useMemo(() => files.map((f) => f.path), [files])
-  const allSelected = allPaths.length > 0 && allPaths.every((p) => selected.has(p))
-
-  const selectAll = () => setSelected(new Set(allPaths))
-  const clearSelection = () => setSelected(new Set())
-
-  useEffect(() => {
-    const valid = new Set(allPaths)
-    setSelected((prev) => {
-      const next = new Set([...prev].filter((p) => valid.has(p)))
-      return next.size === prev.size ? prev : next
-    })
-  }, [allPaths])
 
   const stage = async (paths: string[]) => {
     if (!isTauri() || paths.length === 0) return
@@ -141,17 +129,16 @@ export function GitPanel({
   }
 
   const commit = async () => {
-    if (!commitMsg.trim() || selected.size === 0) return
+    if (!commitMsg.trim() || grouped.staged.length === 0) return
     setError(null)
     setCommitting(true)
     try {
       if (isTauri()) {
-        await gitCommit(projectId, commitMsg.trim(), Array.from(selected))
+        await gitCommit(projectId, commitMsg.trim(), [])
         onCommitted?.()
         onBranchChange?.()
       }
       setCommitted(commitMsg.trim())
-      setSelected(new Set())
       setCommitMsg("")
     } catch (e) {
       setError(typeof e === "string" ? e : e instanceof Error ? e.message : "提交失败")
@@ -250,33 +237,89 @@ export function GitPanel({
     untracked: "U",
   }
 
-  const FileRow = ({ f, isStaged }: { f: GitFile; isStaged: boolean }) => (
-    <div className="group flex items-center gap-1 rounded px-1.5 py-1 hover:bg-accent">
-      <input
-        type="checkbox"
-        checked={selected.has(f.path)}
-        onChange={() => toggle(f.path)}
-        className="size-3.5 accent-[var(--primary)]"
-        aria-label={`选择 ${f.path}`}
-      />
-      <span className={cn("w-4 text-center font-mono text-xs", statusColor[f.status])}>
-        {statusMark[f.status]}
-      </span>
-      <button type="button" onClick={() => onOpenFile(f.path)} className="min-w-0 flex-1 truncate text-left font-mono text-xs hover:underline">
-        {f.path}
+  const FileRow = ({ f, isStaged }: { f: GitFile; isStaged: boolean }) => {
+    const { basename, dirname } = splitPath(f.path)
+    const isDeleted = f.status === "deleted"
+
+    return (
+      <div className="group flex items-center gap-1 rounded px-1 py-0.5 hover:bg-accent">
+        <FileCode2 className="size-3.5 shrink-0 text-muted-foreground" />
+        <button
+          type="button"
+          onClick={() => onOpenFile(f.path)}
+          className="flex min-w-0 flex-1 items-baseline gap-1.5 truncate text-left"
+        >
+          <span className={cn("truncate font-mono text-xs", isDeleted && "line-through")}>
+            {basename}
+          </span>
+          {dirname && (
+            <span className="truncate font-mono text-[10px] text-muted-foreground">{dirname}</span>
+          )}
+        </button>
+        <div className="flex shrink-0 items-center gap-0.5">
+          <Button
+            variant="ghost"
+            size="icon-xs"
+            className="opacity-0 group-hover:opacity-100"
+            onClick={() => void (isStaged ? unstage([f.path]) : stage([f.path]))}
+            disabled={busy}
+            title={isStaged ? "取消暂存" : "暂存"}
+            aria-label={isStaged ? `取消暂存 ${f.path}` : `暂存 ${f.path}`}
+          >
+            {isStaged ? <Minus className="size-3" /> : <Plus className="size-3" />}
+          </Button>
+          <Button
+            variant="ghost"
+            size="icon-xs"
+            className="opacity-0 group-hover:opacity-100"
+            onClick={() => void showDiff(f.path, isStaged)}
+            title="查看 diff"
+            aria-label={`查看 ${f.path} diff`}
+          >
+            <Eye className="size-3" />
+          </Button>
+          <span className={cn("w-4 text-center font-mono text-xs", statusColor[f.status])}>
+            {statusMark[f.status]}
+          </span>
+        </div>
+      </div>
+    )
+  }
+
+  const SectionHeader = ({
+    title,
+    count,
+    collapsed,
+    onToggle,
+    action,
+  }: {
+    title: string
+    count: number
+    collapsed: boolean
+    onToggle: () => void
+    action?: ReactNode
+  }) => (
+    <div className="flex items-center gap-1 px-1 py-1">
+      <button
+        type="button"
+        onClick={onToggle}
+        className="flex min-w-0 flex-1 items-center gap-1 text-left"
+      >
+        {collapsed ? (
+          <ChevronRight className="size-3.5 shrink-0 text-muted-foreground" />
+        ) : (
+          <ChevronDown className="size-3.5 shrink-0 text-muted-foreground" />
+        )}
+        <span className="truncate text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+          {title}
+        </span>
       </button>
-      <Button variant="ghost" size="icon-xs" onClick={() => void showDiff(f.path, isStaged)} title="查看 diff">
-        <Eye className="size-3" />
-      </Button>
-      {isStaged ? (
-        <Button variant="ghost" size="xs" onClick={() => void unstage([f.path])} disabled={busy}>
-          取消暂存
-        </Button>
-      ) : (
-        <Button variant="ghost" size="xs" onClick={() => void stage([f.path])} disabled={busy}>
-          暂存
-        </Button>
+      {count > 0 && (
+        <span className="rounded-full bg-primary/15 px-1.5 text-[10px] font-medium text-primary">
+          {count}
+        </span>
       )}
+      {action}
     </div>
   )
 
@@ -337,6 +380,42 @@ export function GitPanel({
             Pop ({stashCount})
           </Button>
         )}
+        <Button
+          variant="ghost"
+          size="icon-xs"
+          className="ml-auto"
+          onClick={() => onBranchChange?.()}
+          disabled={busy}
+          title="刷新"
+          aria-label="刷新 Git 状态"
+        >
+          <RefreshCw className={cn("size-3.5", busy && "animate-spin")} />
+        </Button>
+      </div>
+
+      <div className="border-b border-border p-2">
+        <Textarea
+          value={commitMsg}
+          onChange={(e) => setCommitMsg(e.target.value)}
+          rows={2}
+          placeholder="提交信息…"
+          className="mb-2 text-xs"
+        />
+        {error && <p className="mb-2 text-xs text-destructive">{error}</p>}
+        <div className="flex gap-1.5">
+          <Button
+            size="sm"
+            className="flex-1"
+            onClick={commit}
+            disabled={!commitMsg.trim() || grouped.staged.length === 0 || committing}
+          >
+            {committing ? <Loader2 className="size-4 animate-spin" /> : <GitCommitHorizontal />}
+            提交
+          </Button>
+          <Button variant="outline" size="sm" title="push 需确认">
+            <GitPullRequest />
+          </Button>
+        </div>
       </div>
 
       <div className="flex-1 overflow-auto scrollbar-thin">
@@ -351,9 +430,13 @@ export function GitPanel({
           <div className="m-2 rounded-md border border-border bg-card p-2">
             <div className="mb-1 flex items-center justify-between">
               <span className="truncate font-mono text-[10px]">{previewPath}</span>
-              <Button variant="ghost" size="xs" onClick={() => setPreviewPath(null)}>关闭</Button>
+              <Button variant="ghost" size="xs" onClick={() => setPreviewPath(null)}>
+                关闭
+              </Button>
             </div>
-            <pre className="max-h-40 overflow-auto whitespace-pre-wrap font-mono text-[10px] text-muted-foreground">{previewDiff}</pre>
+            <pre className="max-h-40 overflow-auto whitespace-pre-wrap font-mono text-[10px] text-muted-foreground">
+              {previewDiff}
+            </pre>
           </div>
         )}
 
@@ -363,23 +446,55 @@ export function GitPanel({
           <>
             {grouped.staged.length > 0 && (
               <div className="p-2">
-                <p className="mb-1 px-1.5 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-                  已暂存 ({grouped.staged.length})
-                </p>
-                {grouped.staged.map((f) => (
-                  <FileRow key={`s-${f.path}`} f={f} isStaged />
-                ))}
+                <SectionHeader
+                  title="已暂存的更改"
+                  count={grouped.staged.length}
+                  collapsed={collapsedStaged}
+                  onToggle={() => setCollapsedStaged((v) => !v)}
+                  action={
+                    <Button
+                      variant="ghost"
+                      size="icon-xs"
+                      onClick={() => void unstage(grouped.staged.map((f) => f.path))}
+                      disabled={busy}
+                      title="全部取消暂存"
+                      aria-label="全部取消暂存"
+                    >
+                      <Minus className="size-3.5" />
+                    </Button>
+                  }
+                />
+                {!collapsedStaged &&
+                  grouped.staged.map((f) => <FileRow key={`s-${f.path}`} f={f} isStaged />)}
               </div>
             )}
             <div className="p-2">
-              <p className="mb-1 px-1.5 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-                未暂存 ({grouped.unstaged.length})
-              </p>
-              {grouped.unstaged.length === 0 ? (
-                <p className="px-1.5 text-[10px] text-muted-foreground">所有变更已暂存</p>
-              ) : (
-                grouped.unstaged.map((f) => <FileRow key={f.path} f={f} isStaged={false} />)
-              )}
+              <SectionHeader
+                title="更改"
+                count={grouped.unstaged.length}
+                collapsed={collapsedChanges}
+                onToggle={() => setCollapsedChanges((v) => !v)}
+                action={
+                  grouped.unstaged.length > 0 ? (
+                    <Button
+                      variant="ghost"
+                      size="icon-xs"
+                      onClick={() => void stage(grouped.unstaged.map((f) => f.path))}
+                      disabled={busy}
+                      title="全部暂存"
+                      aria-label="全部暂存"
+                    >
+                      <Plus className="size-3.5" />
+                    </Button>
+                  ) : undefined
+                }
+              />
+              {!collapsedChanges &&
+                (grouped.unstaged.length === 0 ? (
+                  <p className="px-1 py-1 text-[10px] text-muted-foreground">所有变更已暂存</p>
+                ) : (
+                  grouped.unstaged.map((f) => <FileRow key={f.path} f={f} isStaged={false} />)
+                ))}
             </div>
           </>
         )}
@@ -395,46 +510,6 @@ export function GitPanel({
             ))}
           </div>
         )}
-      </div>
-
-      <div className="border-t border-border p-2">
-        <Textarea
-          value={commitMsg}
-          onChange={(e) => setCommitMsg(e.target.value)}
-          rows={2}
-          placeholder="提交信息…"
-          className="mb-2 text-xs"
-        />
-        {error && <p className="mb-2 text-xs text-destructive">{error}</p>}
-        <div className="mb-2 flex flex-wrap gap-1.5">
-          <Button
-            variant="outline"
-            size="xs"
-            onClick={() => (allSelected ? clearSelection() : selectAll())}
-            disabled={files.length === 0}
-          >
-            {allSelected ? "取消全选" : "全选"}
-          </Button>
-          {grouped.unstaged.length > 0 && (
-            <Button
-              variant="outline"
-              size="xs"
-              onClick={() => void stage(grouped.unstaged.map((f) => f.path))}
-              disabled={busy}
-            >
-              全部暂存
-            </Button>
-          )}
-        </div>
-        <div className="flex gap-1.5">
-          <Button size="sm" className="flex-1" onClick={commit} disabled={!commitMsg.trim() || selected.size === 0 || committing}>
-            {committing ? <Loader2 className="size-4 animate-spin" /> : <GitCommitHorizontal />}
-            提交 ({selected.size})
-          </Button>
-          <Button variant="outline" size="sm" title="push 需确认">
-            <GitPullRequest />
-          </Button>
-        </div>
       </div>
     </div>
   )

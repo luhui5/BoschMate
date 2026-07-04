@@ -97,18 +97,21 @@ pub fn commit(repo_path: &Path, message: &str, files: Option<Vec<String>>) -> Re
     let mut index = repo.index().map_err(|e| format!("Index error: {}", e))?;
 
     if let Some(ref paths) = files {
-        for path in paths {
-            add_path_to_index(repo_path, &mut index, path)
-                .map_err(|e| format!("Add path error for '{}': {}", path, e))?;
+        if !paths.is_empty() {
+            for path in paths {
+                add_path_to_index(repo_path, &mut index, path)
+                    .map_err(|e| format!("Add path error for '{}': {}", path, e))?;
+            }
+            index.write().map_err(|e| format!("Index write error: {}", e))?;
         }
+        // empty vec: commit current index as-is (VS Code staged-only)
     } else {
-        // Stage all
         index
             .add_all(["*"].iter(), git2::IndexAddOption::DEFAULT, None)
             .map_err(|e| format!("Add all error: {}", e))?;
+        index.write().map_err(|e| format!("Index write error: {}", e))?;
     }
 
-    index.write().map_err(|e| format!("Index write error: {}", e))?;
     let oid = index.write_tree().map_err(|e| format!("Write tree error: {}", e))?;
     let tree = repo.find_tree(oid).map_err(|e| format!("Find tree error: {}", e))?;
 
@@ -447,5 +450,24 @@ mod stage_tests {
         assert!(f.staged, "deletion should be staged");
         assert_eq!(f.status, "deleted");
         let _ = unstage_files(&repo, std::slice::from_ref(&path));
+    }
+
+    #[test]
+    fn get_status_returns_worktree_files() {
+        let repo = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("parent")
+            .to_path_buf();
+        let status = get_status(&repo).expect("status");
+        eprintln!(
+            "file_count={} staged={} unstaged={}",
+            status.files.len(),
+            status.files.iter().filter(|f| f.staged).count(),
+            status.files.iter().filter(|f| !f.staged).count()
+        );
+        assert!(
+            !status.files.is_empty(),
+            "expected git changes in dev repo"
+        );
     }
 }

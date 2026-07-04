@@ -218,6 +218,7 @@ export async function gitLog(projectId: string, count?: number): Promise<GitComm
   return invoke<GitCommit[]>('git_log', { projectId, count });
 }
 
+/** Commit. Omit `files` to stage all then commit (AI). Pass `[]` to commit staged index only (UI). */
 export async function gitCommit(
   projectId: string,
   message: string,
