@@ -2,10 +2,11 @@
 
 import { FileCode2 } from "lucide-react"
 import { DiffCard } from "@/components/workspace/diff-card"
+import { QuestionCard } from "@/components/workspace/question-card"
 import { ToolActivityPanel } from "@/components/workspace/tool-activity-panel"
 import { MarkdownContent, MarkdownInline } from "@/components/markdown-content"
 import { cn } from "@/lib/utils"
-import type { ChatMessage as TMessage, DiffHunk } from "@/lib/types"
+import type { ChatMessage as TMessage, DiffHunk, QuestionAnswer } from "@/lib/types"
 import { extractFileRefs } from "@/lib/workspace-utils"
 
 export function findLastUserIndex(msgs: Pick<TMessage, "role">[]): number {
@@ -37,12 +38,16 @@ export function getReplyLayoutState(
 export function ChatMessageView({
   message,
   onDiffAction,
+  onQuestionSubmit,
   onOpenFile,
+  onContentGrow,
   variant = "default",
 }: {
   message: TMessage
   onDiffAction: (messageId: string, diffIndex: number, action: "accept" | "reject" | "revert") => void
+  onQuestionSubmit?: (messageId: string, answers: QuestionAnswer[]) => void
   onOpenFile: (path: string) => void
+  onContentGrow?: () => void
   variant?: "default" | "pinned" | "user-query" | "float"
 }) {
   const isUser = message.role === "user"
@@ -93,6 +98,7 @@ export function ChatMessageView({
               message={message}
               streamingContent={message.content}
               explorePhase={explorePhase}
+              onContentGrow={onContentGrow}
             />
           )}
 
@@ -105,6 +111,16 @@ export function ChatMessageView({
             </div>
           )}
         </>
+      )}
+
+      {message.pendingQuestions &&
+        (message.pendingQuestions.status === "pending" ||
+          (message.pendingQuestions.answers?.length ?? 0) > 0) && (
+        <QuestionCard
+          pending={message.pendingQuestions}
+          disabled={message.streaming}
+          onSubmit={(answers) => onQuestionSubmit?.(message.id, answers)}
+        />
       )}
 
       {message.diffs && message.diffs.length > 0 && (

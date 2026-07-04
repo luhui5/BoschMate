@@ -57,6 +57,7 @@ export interface DiffHunk {
     old_string?: string
     new_string?: string
     replace_all?: boolean
+    kind?: "edit" | "write"
   }
 }
 
@@ -65,6 +66,30 @@ export interface DiffLine {
   text: string
   oldNo?: number
   newNo?: number
+}
+
+export interface AskUserOption {
+  id: string
+  label: string
+}
+
+export interface AskUserQuestion {
+  id: string
+  prompt: string
+  options: AskUserOption[]
+  allow_multiple?: boolean
+}
+
+export interface QuestionAnswer {
+  question_id: string
+  selected_option_ids: string[]
+  other_text?: string
+}
+
+export interface PendingQuestions {
+  questions: AskUserQuestion[]
+  status: "pending" | "answered"
+  answers?: QuestionAnswer[]
 }
 
 export interface ChatMessage {
@@ -76,6 +101,7 @@ export interface ChatMessage {
   toolCalls?: ToolCall[]
   activitySteps?: ActivityStep[]
   diffs?: DiffHunk[]
+  pendingQuestions?: PendingQuestions
   fileRefs?: string[]
   streaming?: boolean
 }

@@ -58,17 +58,32 @@ export function expandCollapsedRows(
   return out
 }
 
+const FILE_REF_EXT =
+  /\.(tsx?|jsx?|rs|py|go|md|json|yaml|yml|toml|css|html|vue|svelte|bat|sh|ps1|cmd|sql|txt|xml|java|kt|swift|c|cpp|h|hpp)$/i
+
+/** True when a string plausibly names a workspace file (excludes @echo off false positives). */
+export function isLikelyFileRef(ref: string): boolean {
+  const t = ref.trim()
+  if (!t) return false
+  return t.includes("/") || FILE_REF_EXT.test(t)
+}
+
+function stripFencedCodeBlocks(text: string): string {
+  return text.replace(/```[\s\S]*?```/g, "")
+}
+
 /** Extract @path and bare file paths from message text. */
 export function extractFileRefs(text: string): string[] {
   const refs = new Set<string>()
+  const scanText = stripFencedCodeBlocks(text)
   const atPattern = /@([^\s@`]+(?:\/[^\s@`,]+)*)/g
   let m: RegExpExecArray | null
-  while ((m = atPattern.exec(text)) !== null) {
-    refs.add(m[1])
+  while ((m = atPattern.exec(scanText)) !== null) {
+    if (isLikelyFileRef(m[1])) refs.add(m[1])
   }
   const pathPattern =
-    /(?:^|\s)((?:[\w.-]+\/)+[\w.-]+\.(?:tsx?|jsx?|rs|py|go|md|json|yaml|yml|toml|css|html|vue|svelte))(?:\s|$|[,.])/g
-  while ((m = pathPattern.exec(text)) !== null) {
+    /(?:^|\s)((?:[\w.-]+\/)+[\w.-]+\.(?:tsx?|jsx?|rs|py|go|md|json|yaml|yml|toml|css|html|vue|svelte|bat|sh|ps1|cmd))(?:\s|$|[,.])/g
+  while ((m = pathPattern.exec(scanText)) !== null) {
     refs.add(m[1])
   }
   return Array.from(refs)

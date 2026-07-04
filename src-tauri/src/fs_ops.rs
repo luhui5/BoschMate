@@ -5,6 +5,31 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use walkdir::WalkDir;
 
+pub const SKIP_DIR_NAMES: &[&str] = &[
+    ".git",
+    "node_modules",
+    "target",
+    ".next",
+    "dist",
+    "build",
+    ".turbo",
+    ".pnpm-store",
+];
+
+pub fn should_skip_dir_name(name: &str) -> bool {
+    SKIP_DIR_NAMES.contains(&name)
+}
+
+pub fn should_skip_path(path: &Path) -> bool {
+    path.components().any(|c| {
+        if let std::path::Component::Normal(s) = c {
+            should_skip_dir_name(&s.to_string_lossy())
+        } else {
+            false
+        }
+    })
+}
+
 /// Recursively list directory contents as a tree
 pub fn list_directory(root: &Path, depth: usize, show_hidden: bool) -> Vec<FileEntry> {
     let mut entries = Vec::new();
@@ -14,8 +39,7 @@ pub fn list_directory(root: &Path, depth: usize, show_hidden: bool) -> Vec<FileE
             if !show_hidden && name.starts_with('.') {
                 continue;
             }
-            // Skip node_modules and .git for performance
-            if name == "node_modules" || name == ".git" || name == "target" {
+            if should_skip_dir_name(&name) {
                 continue;
             }
             let path = entry.path();
@@ -117,7 +141,7 @@ pub fn glob_search(root: &Path, glob_pattern: &str, search_path: Option<&str>) -
                 return true;
             }
             let name = e.file_name().to_string_lossy();
-            !name.starts_with('.') && name != "node_modules" && name != ".git" && name != "target"
+            !name.starts_with('.') && !should_skip_dir_name(&name)
         })
         .flatten()
     {
@@ -174,7 +198,7 @@ pub fn grep_search(
                 return true;
             }
             let name = e.file_name().to_string_lossy();
-            !name.starts_with('.') && name != "node_modules" && name != ".git" && name != "target"
+            !name.starts_with('.') && !should_skip_dir_name(&name)
         })
         .flatten()
     {

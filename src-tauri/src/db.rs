@@ -175,6 +175,7 @@ impl Database {
 
         // Migrate legacy DBs missing edit_meta column
         let _ = conn.execute("ALTER TABLE changes ADD COLUMN edit_meta TEXT", []);
+        let _ = conn.execute("ALTER TABLE messages ADD COLUMN questions TEXT", []);
 
         let _ = conn.execute_batch("
             CREATE TRIGGER IF NOT EXISTS memories_ai AFTER INSERT ON memories BEGIN

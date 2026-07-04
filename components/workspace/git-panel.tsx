@@ -81,7 +81,7 @@ export function GitPanel({
 
   useEffect(() => {
     void refreshMeta()
-  }, [refreshMeta, branch, files.length])
+  }, [refreshMeta, projectId, branch])
 
   const toggle = (path: string) => {
     setSelected((prev) => {
@@ -97,6 +97,20 @@ export function GitPanel({
     const unstaged = files.filter((f) => !f.staged)
     return { staged, unstaged }
   }, [files])
+
+  const allPaths = useMemo(() => files.map((f) => f.path), [files])
+  const allSelected = allPaths.length > 0 && allPaths.every((p) => selected.has(p))
+
+  const selectAll = () => setSelected(new Set(allPaths))
+  const clearSelection = () => setSelected(new Set())
+
+  useEffect(() => {
+    const valid = new Set(allPaths)
+    setSelected((prev) => {
+      const next = new Set([...prev].filter((p) => valid.has(p)))
+      return next.size === prev.size ? prev : next
+    })
+  }, [allPaths])
 
   const stage = async (paths: string[]) => {
     if (!isTauri() || paths.length === 0) return
@@ -323,11 +337,6 @@ export function GitPanel({
             Pop ({stashCount})
           </Button>
         )}
-        {grouped.unstaged.length > 0 && (
-          <Button variant="ghost" size="xs" className="ml-auto" onClick={() => void stage(grouped.unstaged.map((f) => f.path))} disabled={busy}>
-            全部暂存
-          </Button>
-        )}
       </div>
 
       <div className="flex-1 overflow-auto scrollbar-thin">
@@ -397,6 +406,26 @@ export function GitPanel({
           className="mb-2 text-xs"
         />
         {error && <p className="mb-2 text-xs text-destructive">{error}</p>}
+        <div className="mb-2 flex flex-wrap gap-1.5">
+          <Button
+            variant="outline"
+            size="xs"
+            onClick={() => (allSelected ? clearSelection() : selectAll())}
+            disabled={files.length === 0}
+          >
+            {allSelected ? "取消全选" : "全选"}
+          </Button>
+          {grouped.unstaged.length > 0 && (
+            <Button
+              variant="outline"
+              size="xs"
+              onClick={() => void stage(grouped.unstaged.map((f) => f.path))}
+              disabled={busy}
+            >
+              全部暂存
+            </Button>
+          )}
+        </div>
         <div className="flex gap-1.5">
           <Button size="sm" className="flex-1" onClick={commit} disabled={!commitMsg.trim() || selected.size === 0 || committing}>
             {committing ? <Loader2 className="size-4 animate-spin" /> : <GitCommitHorizontal />}

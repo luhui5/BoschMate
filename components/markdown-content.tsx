@@ -1,6 +1,7 @@
 "use client"
 
 import { cn } from "@/lib/utils"
+import { isLikelyFileRef } from "@/lib/workspace-utils"
 
 type Block =
   | { type: "heading"; level: number; text: string }
@@ -136,6 +137,7 @@ function inline(text: string, onOpenFile?: (path: string) => void) {
   return parts.map((p, i) => {
     if (p.startsWith("@") && onOpenFile) {
       const path = p.slice(1)
+      if (!isLikelyFileRef(path)) return p
       return (
         <button
           key={i}

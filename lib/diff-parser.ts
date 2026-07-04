@@ -51,6 +51,7 @@ export interface RawDiffEntry {
     old_string?: string
     new_string?: string
     replace_all?: boolean
+    kind?: "edit" | "write"
   }
   snapshotId?: string
 }

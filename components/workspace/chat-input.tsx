@@ -87,6 +87,7 @@ export function ChatInput({
 }) {
   const [value, setValue] = useState("")
   const [showAddMenu, setShowAddMenu] = useState(false)
+  const [showAgentModes, setShowAgentModes] = useState(false)
   const [showModels, setShowModels] = useState(false)
   const [showSlash, setShowSlash] = useState(false)
   const [pastedImage, setPastedImage] = useState<string | null>(null)
@@ -96,6 +97,8 @@ export function ChatInput({
   const imageInputRef = useRef<HTMLInputElement>(null)
 
   const currentModel = models.find((m) => m.id === selectedModelId)
+  const currentAgentMode = agentModes.find((m) => m.id === mode)
+  const CurrentModeIcon = currentAgentMode?.icon
   const activeDepth = getThinkingDepth(depth)
 
   const filteredModels = useMemo(() => {
@@ -153,7 +156,7 @@ export function ChatInput({
     <div
       className={cn(
         "relative border-t border-border bg-background p-3",
-        (showAddMenu || showModels || showSlash) && "z-30",
+        (showAddMenu || showAgentModes || showModels || showSlash) && "z-30",
       )}
     >
       {showSlash && slashFiltered.length > 0 && (
@@ -216,16 +219,18 @@ export function ChatInput({
         />
 
         <div className="flex items-center justify-between gap-2 px-2 pb-2">
-          {/* + menu: modes, image, file */}
-          <div className="relative">
+          <div className="flex min-w-0 flex-1 items-center gap-1">
+            {/* + menu: attachments & tools */}
+            <div className="relative shrink-0">
             <Button
               variant="ghost"
               size="icon-sm"
-              aria-label="添加附件或切换模式"
+              aria-label="添加附件或工具"
               aria-expanded={showAddMenu}
               className="size-8 rounded-full border border-border/60"
               onClick={() => {
                 setShowAddMenu((s) => !s)
+                setShowAgentModes(false)
                 setShowModels(false)
               }}
             >
@@ -237,43 +242,8 @@ export function ChatInput({
                 <MenuBackdrop onClose={() => setShowAddMenu(false)} />
                 <div className="absolute bottom-full left-0 z-20 mb-2 w-[280px] overflow-hidden rounded-xl border border-border bg-popover shadow-xl">
                   <p className="px-3 pb-1 pt-3 text-xs text-muted-foreground">
-                    {hideAgentModes ? "添加上下文与工具…" : "添加智能体、上下文、工具…"}
+                    添加上下文与工具…
                   </p>
-
-                  {!hideAgentModes && (
-                    <div className="p-1">
-                      {agentModes.map((m) => {
-                        const Icon = m.icon
-                        const modeDisabled = degraded && m.id === "auto"
-                        return (
-                          <button
-                            key={m.id}
-                            type="button"
-                            disabled={modeDisabled}
-                            onClick={() => {
-                              if (modeDisabled) return
-                              onModeChange(m.id)
-                              setShowAddMenu(false)
-                            }}
-                            className={cn(
-                              "flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-left transition-colors hover:bg-accent",
-                              m.id === mode && "bg-accent",
-                              modeDisabled && "cursor-not-allowed opacity-50",
-                            )}
-                          >
-                            <Icon className="size-4 shrink-0 text-foreground/80" />
-                            <span className="flex min-w-0 flex-col">
-                              <span className="text-sm font-medium">{m.label}</span>
-                              <span className="truncate text-xs text-muted-foreground">{m.desc}</span>
-                            </span>
-                            {m.id === mode && <Check className="ml-auto size-3.5 text-primary" />}
-                          </button>
-                        )
-                      })}
-                    </div>
-                  )}
-
-                  {!hideAgentModes && <div className="mx-2 border-t border-border" />}
 
                   <div className="p-1">
                     <button
@@ -316,8 +286,6 @@ export function ChatInput({
                         </button>
                       )
                     })}
-                    {!hideAgentModes && (
-                      <>
                     <button
                       type="button"
                       className="flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-left text-sm text-muted-foreground transition-colors hover:bg-accent"
@@ -336,16 +304,75 @@ export function ChatInput({
                       <span className="flex-1">MCP Servers</span>
                       <ChevronRight className="size-3.5" />
                     </button>
-                      </>
-                    )}
                   </div>
                 </div>
               </>
             )}
+            </div>
+
+            {!hideAgentModes && (
+              <div className="relative min-w-0">
+                <button
+                  type="button"
+                  aria-haspopup="listbox"
+                  aria-expanded={showAgentModes}
+                  onClick={() => {
+                    setShowAgentModes((s) => !s)
+                    setShowAddMenu(false)
+                    setShowModels(false)
+                  }}
+                  className="flex max-w-[200px] items-center gap-1 rounded-full border border-border bg-muted/30 px-2.5 py-1 text-xs font-medium transition-colors hover:bg-muted/50"
+                >
+                  {CurrentModeIcon && (
+                    <CurrentModeIcon className="size-3.5 shrink-0 text-foreground/80" />
+                  )}
+                  <span className="truncate">{currentAgentMode?.label ?? "选择模式"}</span>
+                  <ChevronDown className="size-3 shrink-0 text-muted-foreground" />
+                </button>
+
+                {showAgentModes && (
+                  <>
+                    <MenuBackdrop onClose={() => setShowAgentModes(false)} />
+                    <div className="absolute bottom-full left-0 z-20 mb-2 w-[240px] overflow-hidden rounded-xl border border-border bg-popover shadow-xl">
+                      <div className="p-1">
+                        {agentModes.map((m) => {
+                          const Icon = m.icon
+                          const modeDisabled = degraded && m.id === "auto"
+                          return (
+                            <button
+                              key={m.id}
+                              type="button"
+                              title={m.desc}
+                              disabled={modeDisabled}
+                              onClick={() => {
+                                if (modeDisabled) return
+                                onModeChange(m.id)
+                                setShowAgentModes(false)
+                              }}
+                              className={cn(
+                                "flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-sm transition-colors hover:bg-accent",
+                                m.id === mode && "bg-accent",
+                                modeDisabled && "cursor-not-allowed opacity-50",
+                              )}
+                            >
+                              <Icon className="size-4 shrink-0 text-foreground/80" />
+                              <span className="flex-1 font-medium">{m.label}</span>
+                              {m.id === mode && (
+                                <Check className="size-3.5 shrink-0 text-primary" />
+                              )}
+                            </button>
+                          )
+                        })}
+                      </div>
+                    </div>
+                  </>
+                )}
+              </div>
+            )}
           </div>
 
           {/* Model + send */}
-          <div className="flex items-center gap-1.5">
+          <div className="flex shrink-0 items-center gap-1.5">
             <div className="relative">
               <button
                 type="button"
@@ -354,6 +381,7 @@ export function ChatInput({
                 onClick={() => {
                   setShowModels((s) => !s)
                   setShowAddMenu(false)
+                  setShowAgentModes(false)
                 }}
                 className="flex max-w-[180px] items-center gap-1 rounded-full border border-border bg-muted/30 px-2.5 py-1 text-xs font-medium transition-colors hover:bg-muted/50"
               >

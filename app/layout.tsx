@@ -12,7 +12,7 @@ const geistMono = Geist_Mono({
 })
 
 export const metadata: Metadata = {
-  title: 'BoschCode — 本地 AI Coding Agent',
+  title: 'Bosch Assistant — 本地 AI 助手',
   description: '本地运行、安全可控的 AI 编码助手，具备长期记忆、自动化代码修改、Git 集成与计划生成能力。',
   generator: 'v0.app',
   icons: {

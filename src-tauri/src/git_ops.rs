@@ -98,8 +98,7 @@ pub fn commit(repo_path: &Path, message: &str, files: Option<Vec<String>>) -> Re
 
     if let Some(ref paths) = files {
         for path in paths {
-            index
-                .add_path(Path::new(path))
+            add_path_to_index(repo_path, &mut index, path)
                 .map_err(|e| format!("Add path error for '{}': {}", path, e))?;
         }
     } else {
@@ -188,13 +187,25 @@ pub fn create_and_checkout_branch(repo_path: &Path, name: &str) -> Result<(), St
     Ok(())
 }
 
+fn add_path_to_index(
+    repo_path: &Path,
+    index: &mut git2::Index,
+    path: &str,
+) -> Result<(), git2::Error> {
+    let full = repo_path.join(path);
+    if full.exists() {
+        index.add_path(Path::new(path))
+    } else {
+        index.add_all([path].iter(), git2::IndexAddOption::DEFAULT, None)
+    }
+}
+
 /// Stage files (git add)
 pub fn stage_files(repo_path: &Path, paths: &[String]) -> Result<(), String> {
     let repo = Repository::open(repo_path).map_err(|e| format!("Not a git repository: {}", e))?;
     let mut index = repo.index().map_err(|e| format!("Index error: {}", e))?;
     for path in paths {
-        index
-            .add_path(Path::new(path))
+        add_path_to_index(repo_path, &mut index, path)
             .map_err(|e| format!("Stage '{}' error: {}", path, e))?;
     }
     index.write().map_err(|e| format!("Index write error: {}", e))?;
@@ -411,4 +422,30 @@ fn diff_files(diff: &git2::Diff) -> Result<Vec<String>, String> {
     )
     .map_err(|e| format!("Diff foreach error: {}", e))?;
     Ok(files)
+}
+
+#[cfg(test)]
+mod stage_tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    #[test]
+    fn stage_deleted_tracked_file() {
+        let repo = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("parent")
+            .to_path_buf();
+        let path = "components/assistant/folder-picker.tsx".to_string();
+        let _ = unstage_files(&repo, std::slice::from_ref(&path));
+        stage_files(&repo, std::slice::from_ref(&path)).expect("stage deleted file");
+        let status = get_status(&repo).expect("status");
+        let f = status
+            .files
+            .iter()
+            .find(|f| f.path == path)
+            .expect("file in status");
+        assert!(f.staged, "deletion should be staged");
+        assert_eq!(f.status, "deleted");
+        let _ = unstage_files(&repo, std::slice::from_ref(&path));
+    }
 }

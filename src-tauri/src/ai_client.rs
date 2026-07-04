@@ -62,6 +62,8 @@ pub struct ChatResponse {
     pub pending_edit_meta: Option<Vec<serde_json::Value>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub activity_log: Option<Vec<crate::ai_loop::ActivityStep>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pending_questions: Option<crate::ai_loop::PendingQuestions>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -159,6 +161,7 @@ fn cancelled_response(content: String) -> ChatResponse {
         pending_edits: None,
         pending_edit_meta: None,
         activity_log: None,
+        pending_questions: None,
     }
 }
 
@@ -327,6 +330,7 @@ async fn stream_anthropic(
         pending_edits: None,
         pending_edit_meta: None,
         activity_log: None,
+        pending_questions: None,
     })
 }
 
@@ -506,6 +510,7 @@ async fn stream_openai(
         pending_edits: None,
         pending_edit_meta: None,
         activity_log: None,
+        pending_questions: None,
     })
 }
 
@@ -615,6 +620,7 @@ async fn stream_ollama(
         pending_edits: None,
         pending_edit_meta: None,
         activity_log: None,
+        pending_questions: None,
     })
 }
 

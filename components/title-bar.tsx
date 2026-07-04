@@ -66,7 +66,7 @@ export function TitleBar() {
         <div className="flex items-center gap-2 pl-3">
           <BoschLogo className={`size-4 ${resolvedTheme === "dark" ? "text-white" : "text-zinc-900"}`} />
           <span className="text-sm font-semibold tracking-wide">
-            BoschCode
+            Bosch Assistant
           </span>
         </div>
 

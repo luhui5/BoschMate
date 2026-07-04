@@ -14,6 +14,7 @@ import type {
   ToolCall,
   ActivityStep,
   CIStatus,
+  PendingQuestions,
 } from './types'
 import { parseDiffsFromRaw } from './diff-parser'
 
@@ -55,6 +56,7 @@ export interface RawChatMessage {
   diffs?: unknown
   file_refs?: unknown
   token_usage?: unknown
+  questions?: unknown
   created_at: string
 }
 
@@ -215,6 +217,17 @@ export function mapSession(raw: RawSession, messages: ChatMessage[] = []): Sessi
   }
 }
 
+export function parsePendingQuestions(raw: unknown): PendingQuestions | undefined {
+  if (!raw || typeof raw !== 'object') return undefined
+  const o = raw as Record<string, unknown>
+  if (!Array.isArray(o.questions)) return undefined
+  return {
+    questions: o.questions as PendingQuestions['questions'],
+    status: (o.status as PendingQuestions['status']) ?? 'pending',
+    answers: o.answers as PendingQuestions['answers'],
+  }
+}
+
 export function mapChatMessage(raw: RawChatMessage): ChatMessage {
   return {
     id: raw.id,
@@ -225,6 +238,7 @@ export function mapChatMessage(raw: RawChatMessage): ChatMessage {
     activitySteps: parseActivitySteps(raw.tool_calls),
     toolCalls: parseToolCalls(raw.tool_calls),
     diffs: parseDiffsFromRaw(raw.diffs),
+    pendingQuestions: parsePendingQuestions(raw.questions),
     fileRefs: Array.isArray(raw.file_refs)
       ? (raw.file_refs as string[])
       : undefined,

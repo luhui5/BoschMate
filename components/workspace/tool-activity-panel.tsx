@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useMemo, useRef, useState } from "react"
+import { useLayoutEffect, useMemo, useRef, useState, useCallback } from "react"
 import {
   CheckCircle2,
   Loader2,
@@ -11,6 +11,7 @@ import {
   Wrench,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
+import { isNearBottom, scrollContainerToBottom } from "@/lib/scroll-to-bottom"
 import type { ActivityStep, ChatMessage } from "@/lib/types"
 
 function parseArgs(args?: string): Record<string, unknown> {
@@ -191,19 +192,25 @@ function CompactToolRow({ step }: { step: ActivityStep }) {
 function ExploringLivePanel({
   steps,
   streamingContent,
+  thinkingOnly = false,
+  onContentGrow,
 }: {
   steps: ActivityStep[]
   streamingContent: string
+  thinkingOnly?: boolean
+  onContentGrow?: () => void
 }) {
   const scrollRef = useRef<HTMLDivElement>(null)
+  const contentRef = useRef<HTMLDivElement>(null)
   const stickToBottomRef = useRef(true)
 
   const thoughtSteps = steps.filter((s) => s.kind === "thought")
   const toolSteps = steps.filter((s) => s.kind === "tool")
-  const hasRunningThought = thoughtSteps.some((s) => s.status === "running")
+  const hasRunningThought =
+    thinkingOnly || thoughtSteps.some((s) => s.status === "running")
   const hasRunningTool = toolSteps.some((s) => s.status === "running")
 
-  const phaseTitle = hasRunningTool ? "Executing" : "Exploring"
+  const phaseTitle = thinkingOnly || !hasRunningTool ? "Exploring" : "Executing"
 
   const thoughtBlocks = useMemo(() => {
     const blocks: { key: string; text: string; live?: boolean }[] = []
@@ -222,16 +229,32 @@ function ExploringLivePanel({
     return blocks
   }, [thoughtSteps, streamingContent, hasRunningThought])
 
-  useEffect(() => {
+  const scrollInnerToBottom = useCallback(() => {
     const el = scrollRef.current
     if (!el || !stickToBottomRef.current) return
-    el.scrollTop = el.scrollHeight
-  }, [thoughtBlocks, toolSteps.length])
+    scrollContainerToBottom(el, "instant")
+    onContentGrow?.()
+  }, [onContentGrow])
+
+  useLayoutEffect(() => {
+    scrollInnerToBottom()
+  }, [thoughtBlocks, toolSteps.length, streamingContent, scrollInnerToBottom])
+
+  useLayoutEffect(() => {
+    const content = contentRef.current
+    if (!content) return
+
+    const ro = new ResizeObserver(() => {
+      scrollInnerToBottom()
+    })
+    ro.observe(content)
+    return () => ro.disconnect()
+  }, [scrollInnerToBottom])
 
   const onScroll = () => {
     const el = scrollRef.current
     if (!el) return
-    stickToBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 16
+    stickToBottomRef.current = isNearBottom(el, 16)
   }
 
   return (
@@ -248,29 +271,31 @@ function ExploringLivePanel({
         onScroll={onScroll}
         className="scrollbar-hover-y max-h-[min(420px,50vh)] min-w-0 space-y-3 overflow-y-auto pr-1"
       >
-        {thoughtBlocks.length === 0 && hasRunningThought && (
-          <p className="text-sm leading-relaxed text-muted-foreground/60">正在分析…</p>
-        )}
+        <div ref={contentRef} className="space-y-3">
+          {thoughtBlocks.length === 0 && hasRunningThought && (
+            <p className="text-sm leading-relaxed text-muted-foreground/60">正在分析…</p>
+          )}
 
-        {thoughtBlocks.map((block) => (
-          <p
-            key={block.key}
-            className="whitespace-pre-wrap text-sm leading-relaxed text-muted-foreground"
-          >
-            {block.text}
-            {block.live && (
-              <span className="ml-0.5 inline-block h-3.5 w-1 animate-pulse bg-muted-foreground/50 align-middle" />
-            )}
-          </p>
-        ))}
+          {thoughtBlocks.map((block) => (
+            <p
+              key={block.key}
+              className="whitespace-pre-wrap text-sm leading-relaxed text-muted-foreground"
+            >
+              {block.text}
+              {block.live && (
+                <span className="ml-0.5 inline-block h-3.5 w-1 animate-pulse bg-muted-foreground/50 align-middle" />
+              )}
+            </p>
+          ))}
 
-        {toolSteps.length > 0 && (
-          <div className="space-y-0.5 border-t border-border/40 pt-3">
-            {toolSteps.map((step) => (
-              <CompactToolRow key={step.id} step={step} />
-            ))}
-          </div>
-        )}
+          {toolSteps.length > 0 && (
+            <div className="space-y-0.5 border-t border-border/40 pt-3">
+              {toolSteps.map((step) => (
+                <CompactToolRow key={step.id} step={step} />
+              ))}
+            </div>
+          )}
+        </div>
       </div>
     </div>
   )
@@ -280,11 +305,13 @@ export function ToolActivityPanel({
   message,
   streamingContent = "",
   explorePhase,
+  onContentGrow,
 }: {
   message: ChatMessage
   streamingContent?: string
   /** When true, show live Exploring stream; false after tools finish and final reply streams. */
   explorePhase?: boolean
+  onContentGrow?: () => void
 }) {
   const steps = message.activitySteps ?? []
   const hasRunning = steps.some((s) => s.status === "running")
@@ -297,27 +324,24 @@ export function ToolActivityPanel({
   if (!showThinking && steps.length === 0) return null
 
   if (showThinking) {
-    const stream = streamingContent.trim()
     return (
-      <div className="w-full min-w-0">
-        <div className="mb-2 flex items-center gap-2">
-          <span className="text-sm font-medium text-foreground/90">Exploring</span>
-          <Loader2 className="size-3.5 animate-spin text-muted-foreground" />
-        </div>
-        {stream ? (
-          <p className="whitespace-pre-wrap text-sm leading-relaxed text-muted-foreground">
-            {stream}
-            <span className="ml-0.5 inline-block h-3.5 w-1 animate-pulse bg-muted-foreground/50 align-middle" />
-          </p>
-        ) : (
-          <p className="text-sm leading-relaxed text-muted-foreground/60">正在分析…</p>
-        )}
-      </div>
+      <ExploringLivePanel
+        steps={[]}
+        streamingContent={streamingContent}
+        thinkingOnly
+        onContentGrow={onContentGrow}
+      />
     )
   }
 
   if (isLive) {
-    return <ExploringLivePanel steps={steps} streamingContent={streamingContent} />
+    return (
+      <ExploringLivePanel
+        steps={steps}
+        streamingContent={streamingContent}
+        onContentGrow={onContentGrow}
+      />
+    )
   }
 
   return (

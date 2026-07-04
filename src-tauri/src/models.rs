@@ -53,6 +53,7 @@ pub struct ChatMessage {
     pub diffs: Option<serde_json::Value>,
     pub file_refs: Option<serde_json::Value>,
     pub token_usage: Option<serde_json::Value>,
+    pub questions: Option<serde_json::Value>,
     pub created_at: String,
 }
 

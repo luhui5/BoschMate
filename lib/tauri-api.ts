@@ -386,6 +386,23 @@ export async function aiLoopChat(
   return mapChatMessage(raw);
 }
 
+export async function continueAiLoop(
+  sessionId: string,
+  messageId: string,
+  answers: Array<{
+    question_id: string;
+    selected_option_ids: string[];
+    other_text?: string;
+  }>,
+): Promise<ChatMessage> {
+  const raw = await invoke<RawChatMessage>('continue_ai_loop', {
+    sessionId,
+    messageId,
+    answers,
+  });
+  return mapChatMessage(raw);
+}
+
 export async function listModels(
   provider: string,
   baseUrl?: string
@@ -497,6 +514,7 @@ export async function applyChange(
     old_string: string;
     new_string: string;
     replace_all?: boolean;
+    kind?: "edit" | "write";
   },
 ): Promise<{ path: string; diff: string }> {
   return invoke('apply_change', { projectId, input });

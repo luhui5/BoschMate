@@ -1,4 +1,4 @@
-use crate::ai_client::{self, AiMessage, AiToolDef, ChatRequest, ChatResponse};
+use crate::ai_client::{self, AiMessage, AiToolDef, ChatRequest, ChatResponse, ToolCallResult};
 use crate::chat_cancel;
 use crate::code_editor::{self, EditResult};
 use crate::code_graph;
@@ -86,7 +86,71 @@ pub struct PendingEditMeta {
     pub old_string: String,
     pub new_string: String,
     pub replace_all: bool,
+    /// "edit" for patch edits, "write" for full-file writes.
+    pub kind: String,
     pub result: EditResult,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AskUserOption {
+    pub id: String,
+    pub label: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AskUserQuestion {
+    pub id: String,
+    pub prompt: String,
+    pub options: Vec<AskUserOption>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub allow_multiple: Option<bool>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct QuestionAnswer {
+    pub question_id: String,
+    pub selected_option_ids: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub other_text: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PendingQuestions {
+    pub questions: Vec<AskUserQuestion>,
+    pub status: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub answers: Option<Vec<QuestionAnswer>>,
+}
+
+pub enum LoopOutcome {
+    Completed(ChatResponse),
+    Paused {
+        response: ChatResponse,
+        paused: PausedLoopState,
+    },
+}
+
+#[derive(Clone)]
+pub struct PausedLoopState {
+    pub app: AppHandle,
+    pub project_root: PathBuf,
+    pub session_id: String,
+    pub message_id: String,
+    pub provider: String,
+    pub model: String,
+    pub api_key: Option<String>,
+    pub base_url: Option<String>,
+    pub system_prompt: Option<String>,
+    pub current_messages: Vec<AiMessage>,
+    pub tools: Vec<AiToolDef>,
+    pub max_iterations: Option<usize>,
+    pub config: LoopConfig,
+    pub iteration: u32,
+    pub activity_log: ActivityLog,
+    pub collector: EditCollector,
+    pub ask_user_call: ToolCallResult,
+    pub pending_questions: PendingQuestions,
+    pub cancel: Arc<AtomicBool>,
 }
 
 #[derive(Debug, Clone)]
@@ -292,6 +356,39 @@ pub fn get_tools() -> Vec<AiToolDef> {
                 }
             }),
         },
+        AiToolDef {
+            name: "ask_user".into(),
+            description: "Ask the user structured clarification questions with selectable options. The agent pauses until the user answers. Use when requirements are ambiguous or multiple valid approaches exist — do NOT list options only in plain text. Each question must have exactly 3 options (recommended first with '(Recommended)' in label, plus 2 alternatives). Do NOT include Other — the UI adds it.".into(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "questions": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "id": {"type": "string"},
+                                "prompt": {"type": "string"},
+                                "options": {
+                                    "type": "array",
+                                    "items": {
+                                        "type": "object",
+                                        "properties": {
+                                            "id": {"type": "string"},
+                                            "label": {"type": "string"}
+                                        },
+                                        "required": ["id", "label"]
+                                    }
+                                },
+                                "allow_multiple": {"type": "boolean", "default": false}
+                            },
+                            "required": ["id", "prompt", "options"]
+                        }
+                    }
+                },
+                "required": ["questions"]
+            }),
+        },
     ]
 }
 
@@ -307,13 +404,16 @@ const READONLY_TOOL_NAMES: &[&str] = &[
     "find_references",
     "file_deps",
     "blast_radius",
+    "ask_user",
 ];
 
 /// Read-only tools for Plan mode (structured plan, no execution).
 pub fn get_plan_tools() -> Vec<AiToolDef> {
     get_tools()
         .into_iter()
-        .filter(|t| READONLY_TOOL_NAMES.contains(&t.name.as_str()))
+        .filter(|t| {
+            READONLY_TOOL_NAMES.contains(&t.name.as_str()) || t.name == "ask_user"
+        })
         .collect()
 }
 
@@ -342,11 +442,26 @@ pub async fn execute_tool(
         "write_file" => {
             let path = args["path"].as_str().ok_or("path required")?;
             let content = args["content"].as_str().ok_or("content required")?;
-            if !config.dry_run_edits {
+            if config.dry_run_edits {
+                let (original, result) =
+                    code_editor::preview_write(project_root.as_path(), path, content)?;
+                collector.lock().unwrap().push(PendingEditMeta {
+                    path: path.to_string(),
+                    old_string: original,
+                    new_string: content.to_string(),
+                    replace_all: false,
+                    kind: "write".into(),
+                    result: result.clone(),
+                });
+                Ok(format!(
+                    "Write preview for {} — awaiting user confirmation\n\n```diff\n{}\n```",
+                    result.path, result.diff
+                ))
+            } else {
                 check_bulk_write_limit(config)?;
+                let hash = fs_ops::write_file(project_root.as_path(), path, content)?;
+                Ok(format!("File written successfully. SHA256: {}", hash))
             }
-            let hash = fs_ops::write_file(project_root.as_path(), path, content)?;
-            Ok(format!("File written successfully. SHA256: {}", hash))
         }
         "edit_file" => {
             let path = args["path"].as_str().ok_or("path required")?;
@@ -365,6 +480,7 @@ pub async fn execute_tool(
                 old_string: old_str.to_string(),
                 new_string: new_str.to_string(),
                 replace_all,
+                kind: "edit".into(),
                 result: result.clone(),
             });
             if dry {
@@ -513,6 +629,92 @@ pub async fn execute_tool(
     }
 }
 
+fn is_other_option(id: &str, label: &str) -> bool {
+    id.eq_ignore_ascii_case("other") || label.eq_ignore_ascii_case("other")
+}
+
+fn parse_ask_user_questions(args: &Value) -> Result<Vec<AskUserQuestion>, String> {
+    let arr = args
+        .get("questions")
+        .and_then(|v| v.as_array())
+        .ok_or("ask_user: questions array required")?;
+    if arr.is_empty() {
+        return Err("ask_user: at least one question required".into());
+    }
+    let mut out = Vec::new();
+    for q in arr {
+        let id = q["id"].as_str().ok_or("ask_user: question id required")?;
+        let prompt = q["prompt"].as_str().ok_or("ask_user: question prompt required")?;
+        let opts = q["options"]
+            .as_array()
+            .ok_or("ask_user: question options required")?;
+        let mut options: Vec<AskUserOption> = Vec::new();
+        for o in opts {
+            let oid = o["id"].as_str().ok_or("ask_user: option id required")?;
+            let label = o["label"].as_str().ok_or("ask_user: option label required")?;
+            if is_other_option(oid, label) {
+                continue;
+            }
+            options.push(AskUserOption {
+                id: oid.to_string(),
+                label: label.to_string(),
+            });
+        }
+        if options.len() != 3 {
+            return Err(format!(
+                "ask_user: question '{}' needs exactly 3 options (got {} after filtering Other; recommended + 2 alternatives; no Other — UI adds it)",
+                id,
+                options.len()
+            ));
+        }
+        out.push(AskUserQuestion {
+            id: id.to_string(),
+            prompt: prompt.to_string(),
+            options,
+            allow_multiple: q.get("allow_multiple").and_then(|v| v.as_bool()),
+        });
+    }
+    Ok(out)
+}
+
+pub fn format_ask_user_result(answers: &[QuestionAnswer]) -> String {
+    let mut lines = vec!["User answers:".to_string()];
+    for a in answers {
+        let opts = a.selected_option_ids.join(", ");
+        if let Some(other) = &a.other_text {
+            if !other.trim().is_empty() {
+                lines.push(format!(
+                    "- {}: {} (Other: {})",
+                    a.question_id, opts, other.trim()
+                ));
+                continue;
+            }
+        }
+        lines.push(format!("- {}: {}", a.question_id, opts));
+    }
+    lines.join("\n")
+}
+
+struct LoopRunContext {
+    app: AppHandle,
+    project_root: PathBuf,
+    session_id: String,
+    message_id: String,
+    provider: String,
+    model: String,
+    api_key: Option<String>,
+    base_url: Option<String>,
+    system_prompt: Option<String>,
+    current_messages: Vec<AiMessage>,
+    tools: Vec<AiToolDef>,
+    max_iterations: Option<usize>,
+    config: LoopConfig,
+    iteration: u32,
+    collector: EditCollector,
+    activity_log: ActivityLog,
+    cancel: Arc<AtomicBool>,
+}
+
 /// Run the AI Loop: converse → tool calls → results → converse → final response
 pub async fn run_loop(
     app: AppHandle,
@@ -529,20 +731,82 @@ pub async fn run_loop(
     max_iterations: Option<usize>,
     config: LoopConfig,
     cancel: Arc<AtomicBool>,
-) -> Result<ChatResponse, String> {
-    let mut current_messages = messages;
-    let mut iteration = 0u32;
+) -> Result<LoopOutcome, String> {
+    let ctx = LoopRunContext {
+        app,
+        project_root,
+        session_id,
+        message_id,
+        provider,
+        model,
+        api_key,
+        base_url,
+        system_prompt,
+        current_messages: messages,
+        tools,
+        max_iterations,
+        config,
+        iteration: 0,
+        collector: Arc::new(Mutex::new(Vec::new())),
+        activity_log: Arc::new(Mutex::new(Vec::new())),
+        cancel,
+    };
+    run_loop_inner(ctx).await
+}
+
+/// Resume a paused loop after the user answers ask_user questions.
+pub async fn run_loop_resume(
+    paused: PausedLoopState,
+    answers: Vec<QuestionAnswer>,
+) -> Result<LoopOutcome, String> {
+    let result_str = format_ask_user_result(&answers);
+    let mut current_messages = paused.current_messages;
+    current_messages.push(AiMessage {
+        role: "user".into(),
+        content: format!(
+            "Tool execution results:\n\nTool: ask_user\nArguments: {}\nResult:\n{}",
+            serde_json::to_string_pretty(&paused.ask_user_call.arguments).unwrap_or_default(),
+            result_str
+        ),
+    });
+
+    let ctx = LoopRunContext {
+        app: paused.app,
+        project_root: paused.project_root,
+        session_id: paused.session_id,
+        message_id: paused.message_id,
+        provider: paused.provider,
+        model: paused.model,
+        api_key: paused.api_key,
+        base_url: paused.base_url,
+        system_prompt: paused.system_prompt,
+        current_messages,
+        tools: paused.tools,
+        max_iterations: paused.max_iterations,
+        config: paused.config,
+        iteration: paused.iteration,
+        collector: paused.collector,
+        activity_log: paused.activity_log,
+        cancel: paused.cancel,
+    };
+    run_loop_inner(ctx).await
+}
+
+async fn run_loop_inner(mut ctx: LoopRunContext) -> Result<LoopOutcome, String> {
     let mut last_response: Option<ChatResponse> = None;
-    let collector: EditCollector = Arc::new(Mutex::new(Vec::new()));
-    let activity_log: ActivityLog = Arc::new(Mutex::new(Vec::new()));
 
     loop {
-        if chat_cancel::ChatCancelRegistry::is_cancelled(&cancel) {
+        if chat_cancel::ChatCancelRegistry::is_cancelled(&ctx.cancel) {
             if let Some(mut resp) = last_response.take() {
                 resp.finish_reason = "cancelled".into();
-                return Ok(finalize_response(resp, &collector, &activity_log));
+                return Ok(LoopOutcome::Completed(finalize_response(
+                    resp,
+                    &ctx.collector,
+                    &ctx.activity_log,
+                    None,
+                )));
             }
-            return Ok(finalize_response(
+            return Ok(LoopOutcome::Completed(finalize_response(
                 ChatResponse {
                     content: String::new(),
                     tool_calls: None,
@@ -554,40 +818,47 @@ pub async fn run_loop(
                     pending_edits: None,
                     pending_edit_meta: None,
                     activity_log: None,
+                    pending_questions: None,
                 },
-                &collector,
-                &activity_log,
-            ));
+                &ctx.collector,
+                &ctx.activity_log,
+                None,
+            )));
         }
 
-        iteration += 1;
-        if let Some(limit) = max_iterations {
-            if iteration > limit as u32 {
+        ctx.iteration += 1;
+        if let Some(limit) = ctx.max_iterations {
+            if ctx.iteration > limit as u32 {
                 return Err(format!("AI Loop exceeded maximum iterations ({})", limit));
             }
         }
 
-        let thought_id = push_thought(&activity_log, &app, &session_id, &message_id, iteration);
+        let thought_id = push_thought(
+            &ctx.activity_log,
+            &ctx.app,
+            &ctx.session_id,
+            &ctx.message_id,
+            ctx.iteration,
+        );
 
-        // Send request to AI
         let request = ChatRequest {
-            provider: provider.clone(),
-            model: model.clone(),
-            messages: current_messages.clone(),
-            tools: Some(tools.clone()),
+            provider: ctx.provider.clone(),
+            model: ctx.model.clone(),
+            messages: ctx.current_messages.clone(),
+            tools: Some(ctx.tools.clone()),
             temperature: Some(0.3),
             max_tokens: Some(8192),
-            api_key: api_key.clone(),
-            base_url: base_url.clone(),
-            system: system_prompt.clone(),
+            api_key: ctx.api_key.clone(),
+            base_url: ctx.base_url.clone(),
+            system: ctx.system_prompt.clone(),
         };
 
         let response = ai_client::stream_chat(
-            app.clone(),
+            ctx.app.clone(),
             request,
-            session_id.clone(),
-            message_id.clone(),
-            cancel.clone(),
+            ctx.session_id.clone(),
+            ctx.message_id.clone(),
+            ctx.cancel.clone(),
         )
         .await?;
 
@@ -595,44 +866,187 @@ pub async fn run_loop(
 
         if response.finish_reason == "cancelled" {
             finish_thought(
-                &activity_log,
-                &app,
-                &session_id,
-                &message_id,
+                &ctx.activity_log,
+                &ctx.app,
+                &ctx.session_id,
+                &ctx.message_id,
                 &thought_id,
                 &response.content,
             );
-            return Ok(finalize_response(response, &collector, &activity_log));
+            return Ok(LoopOutcome::Completed(finalize_response(
+                response,
+                &ctx.collector,
+                &ctx.activity_log,
+                None,
+            )));
         }
 
         finish_thought(
-            &activity_log,
-            &app,
-            &session_id,
-            &message_id,
+            &ctx.activity_log,
+            &ctx.app,
+            &ctx.session_id,
+            &ctx.message_id,
             &thought_id,
             &response.content,
         );
 
-        // If AI returned tool calls, execute them
         if let Some(tool_calls) = &response.tool_calls {
             if tool_calls.is_empty() {
-                return Ok(finalize_response(response, &collector, &activity_log));
+                return Ok(LoopOutcome::Completed(finalize_response(
+                    response,
+                    &ctx.collector,
+                    &ctx.activity_log,
+                    None,
+                )));
             }
 
-            // Add assistant message (with tool calls)
-            current_messages.push(AiMessage {
+            ctx.current_messages.push(AiMessage {
                 role: "assistant".into(),
                 content: response.content.clone(),
             });
 
-            // Execute each tool call and add results
             let mut tool_results = Vec::new();
             for tc in tool_calls {
-                if chat_cancel::ChatCancelRegistry::is_cancelled(&cancel) {
+                if chat_cancel::ChatCancelRegistry::is_cancelled(&ctx.cancel) {
                     let mut resp = response.clone();
                     resp.finish_reason = "cancelled".into();
-                    return Ok(finalize_response(resp, &collector, &activity_log));
+                    return Ok(LoopOutcome::Completed(finalize_response(
+                        resp,
+                        &ctx.collector,
+                        &ctx.activity_log,
+                        None,
+                    )));
+                }
+
+                if tc.name == "ask_user" {
+                    let step_id = uuid::Uuid::new_v4().to_string();
+                    let args_str = serde_json::to_string(&tc.arguments).unwrap_or_default();
+                    match parse_ask_user_questions(&tc.arguments) {
+                        Err(err) => {
+                            {
+                                let step = ActivityStep {
+                                    id: step_id.clone(),
+                                    kind: "tool".into(),
+                                    round: ctx.iteration,
+                                    label: "ask_user".into(),
+                                    detail: None,
+                                    tool: Some("ask_user".into()),
+                                    args: Some(args_str.clone()),
+                                    status: "running".into(),
+                                    result: None,
+                                };
+                                ctx.activity_log.lock().unwrap().push(step.clone());
+                                emit_activity(&ctx.app, &ctx.session_id, &ctx.message_id, &step);
+                            }
+
+                            let _ = ctx.app.emit("tool-call-start", serde_json::json!({
+                                "session_id": ctx.session_id,
+                                "message_id": ctx.message_id,
+                                "call_id": step_id,
+                                "tool": "ask_user",
+                                "args": tc.arguments,
+                            }));
+
+                            let result_str = format!("Error: {}", err);
+                            {
+                                let mut steps = ctx.activity_log.lock().unwrap();
+                                if let Some(step) = steps.iter_mut().find(|s| s.id == step_id) {
+                                    step.status = "error".into();
+                                    step.result = Some(result_str.clone());
+                                    emit_activity(&ctx.app, &ctx.session_id, &ctx.message_id, step);
+                                }
+                            }
+
+                            let _ = ctx.app.emit("tool-call-end", serde_json::json!({
+                                "session_id": ctx.session_id,
+                                "message_id": ctx.message_id,
+                                "call_id": step_id,
+                                "tool": "ask_user",
+                                "success": false,
+                                "result": result_str.clone(),
+                            }));
+
+                            tool_results.push(format!(
+                                "Tool: ask_user\nArguments: {}\nResult:\n{}",
+                                serde_json::to_string_pretty(&tc.arguments).unwrap_or_default(),
+                                result_str
+                            ));
+                            continue;
+                        }
+                        Ok(questions) => {
+                            let pending = PendingQuestions {
+                                questions: questions.clone(),
+                                status: "pending".into(),
+                                answers: None,
+                            };
+
+                            let step = ActivityStep {
+                                id: step_id.clone(),
+                                kind: "tool".into(),
+                                round: ctx.iteration,
+                                label: "ask_user".into(),
+                                detail: None,
+                                tool: Some("ask_user".into()),
+                                args: Some(args_str.clone()),
+                                status: "success".into(),
+                                result: Some("Awaiting user input".into()),
+                            };
+                            ctx.activity_log.lock().unwrap().push(step.clone());
+                            emit_activity(&ctx.app, &ctx.session_id, &ctx.message_id, &step);
+
+                            let _ = ctx.app.emit("tool-call-start", serde_json::json!({
+                                "session_id": ctx.session_id,
+                                "message_id": ctx.message_id,
+                                "call_id": step_id,
+                                "tool": "ask_user",
+                                "args": tc.arguments,
+                            }));
+                            let _ = ctx.app.emit("tool-call-end", serde_json::json!({
+                                "session_id": ctx.session_id,
+                                "message_id": ctx.message_id,
+                                "call_id": step_id,
+                                "tool": "ask_user",
+                                "success": true,
+                                "result": "Awaiting user input",
+                            }));
+
+                            let mut resp = response.clone();
+                            resp.finish_reason = "awaiting_user".into();
+                            resp.pending_questions = Some(pending.clone());
+
+                            let paused = PausedLoopState {
+                                app: ctx.app.clone(),
+                                project_root: ctx.project_root.clone(),
+                                session_id: ctx.session_id.clone(),
+                                message_id: ctx.message_id.clone(),
+                                provider: ctx.provider.clone(),
+                                model: ctx.model.clone(),
+                                api_key: ctx.api_key.clone(),
+                                base_url: ctx.base_url.clone(),
+                                system_prompt: ctx.system_prompt.clone(),
+                                current_messages: ctx.current_messages.clone(),
+                                tools: ctx.tools.clone(),
+                                max_iterations: ctx.max_iterations,
+                                config: ctx.config.clone(),
+                                iteration: ctx.iteration,
+                                activity_log: ctx.activity_log.clone(),
+                                collector: ctx.collector.clone(),
+                                ask_user_call: tc.clone(),
+                                pending_questions: pending,
+                                cancel: ctx.cancel.clone(),
+                            };
+
+                            return Ok(LoopOutcome::Paused {
+                                response: finalize_response(
+                                    resp,
+                                    &ctx.collector,
+                                    &ctx.activity_log,
+                                    Some(pending_questions_for_finalize(&questions)),
+                                ),
+                                paused,
+                            });
+                        }
+                    }
                 }
 
                 let step_id = uuid::Uuid::new_v4().to_string();
@@ -641,7 +1055,7 @@ pub async fn run_loop(
                     let step = ActivityStep {
                         id: step_id.clone(),
                         kind: "tool".into(),
-                        round: iteration,
+                        round: ctx.iteration,
                         label: tc.name.clone(),
                         detail: None,
                         tool: Some(tc.name.clone()),
@@ -649,19 +1063,27 @@ pub async fn run_loop(
                         status: "running".into(),
                         result: None,
                     };
-                    activity_log.lock().unwrap().push(step.clone());
-                    emit_activity(&app, &session_id, &message_id, &step);
+                    ctx.activity_log.lock().unwrap().push(step.clone());
+                    emit_activity(&ctx.app, &ctx.session_id, &ctx.message_id, &step);
                 }
 
-                let _ = app.emit("tool-call-start", serde_json::json!({
-                    "session_id": session_id,
-                    "message_id": message_id,
+                let _ = ctx.app.emit("tool-call-start", serde_json::json!({
+                    "session_id": ctx.session_id,
+                    "message_id": ctx.message_id,
                     "call_id": step_id,
                     "tool": tc.name,
                     "args": tc.arguments,
                 }));
 
-                let result = execute_tool(&app, &project_root, &tc.name, &tc.arguments, &config, &collector).await;
+                let result = execute_tool(
+                    &ctx.app,
+                    &ctx.project_root,
+                    &tc.name,
+                    &tc.arguments,
+                    &ctx.config,
+                    &ctx.collector,
+                )
+                .await;
                 let result_str = match &result {
                     Ok(output) => output.clone(),
                     Err(err) => format!("Error: {}", err),
@@ -669,11 +1091,11 @@ pub async fn run_loop(
                 let success = result.is_ok();
 
                 {
-                    let mut steps = activity_log.lock().unwrap();
+                    let mut steps = ctx.activity_log.lock().unwrap();
                     if let Some(step) = steps.iter_mut().find(|s| s.id == step_id) {
                         step.status = if success { "success" } else { "error" }.into();
                         step.result = Some(result_str.clone());
-                        emit_activity(&app, &session_id, &message_id, step);
+                        emit_activity(&ctx.app, &ctx.session_id, &ctx.message_id, step);
                     }
                 }
 
@@ -684,9 +1106,9 @@ pub async fn run_loop(
                     result_str
                 ));
 
-                let _ = app.emit("tool-call-end", serde_json::json!({
-                    "session_id": session_id,
-                    "message_id": message_id,
+                let _ = ctx.app.emit("tool-call-end", serde_json::json!({
+                    "session_id": ctx.session_id,
+                    "message_id": ctx.message_id,
                     "call_id": step_id,
                     "tool": tc.name,
                     "success": success,
@@ -694,15 +1116,26 @@ pub async fn run_loop(
                 }));
             }
 
-            // Add tool results as user messages
-            current_messages.push(AiMessage {
+            ctx.current_messages.push(AiMessage {
                 role: "user".into(),
                 content: format!("Tool execution results:\n\n{}", tool_results.join("\n\n---\n\n")),
             });
         } else {
-            // No tool calls — this is the final response
-            return Ok(finalize_response(response, &collector, &activity_log));
+            return Ok(LoopOutcome::Completed(finalize_response(
+                response,
+                &ctx.collector,
+                &ctx.activity_log,
+                None,
+            )));
         }
+    }
+}
+
+fn pending_questions_for_finalize(questions: &[AskUserQuestion]) -> PendingQuestions {
+    PendingQuestions {
+        questions: questions.to_vec(),
+        status: "pending".into(),
+        answers: None,
     }
 }
 
@@ -710,8 +1143,12 @@ fn finalize_response(
     mut response: ChatResponse,
     collector: &EditCollector,
     activity_log: &ActivityLog,
+    pending_questions: Option<PendingQuestions>,
 ) -> ChatResponse {
     response.activity_log = Some(activity_log.lock().unwrap().clone());
+    if let Some(pq) = pending_questions {
+        response.pending_questions = Some(pq);
+    }
     let pending = collector.lock().unwrap();
     if !pending.is_empty() {
         response.pending_edits = Some(pending.iter().map(|p| p.result.clone()).collect());

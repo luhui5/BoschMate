@@ -17,6 +17,7 @@ mod memory_compressor;
 mod models;
 mod os_open;
 mod path_guard;
+mod paused_loop;
 mod recovery;
 mod retriever;
 mod sandbox;
@@ -42,6 +43,8 @@ struct AppState {
     vector_store: Mutex<vector_store::VectorStore>,
     data_dir: PathBuf,
     chat_cancel: chat_cancel::ChatCancelRegistry,
+    paused_loops: paused_loop::PausedLoopRegistry,
+    file_watcher: file_watcher::FileWatcherRegistry,
 }
 
 // ── Project commands ──
@@ -109,6 +112,17 @@ fn remove_project(state: State<AppState>, id: String) -> Result<(), String> {
         return Err("无法移除 Assistant 内置项目".into());
     }
     let conn = state.db.conn.lock().unwrap();
+    let local_path: String = conn
+        .query_row(
+            "SELECT local_path FROM projects WHERE id = ?1",
+            params![id],
+            |row| row.get(0),
+        )
+        .map_err(|e| e.to_string())?;
+    let normalized = local_path.replace('\\', "/").to_lowercase();
+    if normalized.ends_with("/.boschassistant/workspace") {
+        return Err("无法移除默认 Home 工作区".into());
+    }
     Database::delete_project_cascade(&conn, &id).map_err(|e| e.to_string())
 }
 
@@ -251,7 +265,7 @@ fn update_session_title(state: State<AppState>, id: String, title: String) -> Re
 fn list_messages(state: State<AppState>, session_id: String) -> Result<Vec<ChatMessage>, String> {
     let conn = state.db.conn.lock().unwrap();
     let mut stmt = conn
-        .prepare("SELECT id, session_id, role, content, mode, tool_calls, diffs, file_refs, token_usage, created_at FROM messages WHERE session_id = ?1 ORDER BY created_at ASC")
+        .prepare("SELECT id, session_id, role, content, mode, tool_calls, diffs, file_refs, token_usage, questions, created_at FROM messages WHERE session_id = ?1 ORDER BY created_at ASC")
         .map_err(|e| e.to_string())?;
 
     let messages = stmt
@@ -266,7 +280,8 @@ fn list_messages(state: State<AppState>, session_id: String) -> Result<Vec<ChatM
                 diffs: row.get::<_, Option<String>>(6).ok().flatten().and_then(|s| serde_json::from_str(&s).ok()),
                 file_refs: row.get::<_, Option<String>>(7).ok().flatten().and_then(|s| serde_json::from_str(&s).ok()),
                 token_usage: row.get::<_, Option<String>>(8).ok().flatten().and_then(|s| serde_json::from_str(&s).ok()),
-                created_at: row.get(9)?,
+                questions: row.get::<_, Option<String>>(9).ok().flatten().and_then(|s| serde_json::from_str(&s).ok()),
+                created_at: row.get(10)?,
             })
         })
         .map_err(|e| e.to_string())?
@@ -307,6 +322,7 @@ fn send_message(state: State<AppState>, input: SendMessageInput) -> Result<ChatM
         diffs: None,
         file_refs: None,
         token_usage: None,
+        questions: None,
         created_at: now,
     })
 }
@@ -344,6 +360,7 @@ fn save_assistant_message(
         diffs: None,
         file_refs: None,
         token_usage: None,
+        questions: None,
         created_at: now,
     })
 }
@@ -351,19 +368,34 @@ fn save_assistant_message(
 // ── File system commands ──
 
 #[tauri::command]
-fn list_directory(state: State<AppState>, project_id: String, path: Option<String>) -> Result<Vec<FileEntry>, String> {
-    let conn = state.db.conn.lock().unwrap();
-    let project_path: String = conn
-        .query_row("SELECT local_path FROM projects WHERE id = ?1", params![project_id], |row| row.get(0))
-        .map_err(|e| e.to_string())?;
+async fn list_directory(
+    state: State<'_, AppState>,
+    project_id: String,
+    path: Option<String>,
+) -> Result<Vec<FileEntry>, String> {
+    let project_path: String = {
+        let conn = state.db.conn.lock().unwrap();
+        conn.query_row(
+            "SELECT local_path FROM projects WHERE id = ?1",
+            params![project_id],
+            |row| row.get(0),
+        )
+        .map_err(|e| e.to_string())?
+    };
 
     let root = PathBuf::from(&project_path);
-    let depth = 1;
+    let depth = 1usize;
     let target = match &path {
         Some(p) => root.join(p.trim_start_matches('/').trim_start_matches('\\')),
-        None => root.clone(),
+        None => root,
     };
-    Ok(fs_ops::list_directory(&target, depth, false))
+
+    let entries = tauri::async_runtime::spawn_blocking(move || {
+        fs_ops::list_directory(&target, depth, false)
+    })
+    .await
+    .map_err(|e| format!("list_directory task failed: {}", e))?;
+    Ok(entries)
 }
 
 #[tauri::command]
@@ -535,9 +567,27 @@ fn get_audit_log(
 // ── Git commands ──
 
 #[tauri::command]
-fn git_status(state: State<AppState>, project_id: String) -> Result<GitStatus, String> {
+async fn git_status(state: State<'_, AppState>, project_id: String) -> Result<GitStatus, String> {
     let project = get_project_path(&state, &project_id)?;
-    git_ops::get_status(PathBuf::from(&project).as_path())
+    tauri::async_runtime::spawn_blocking(move || {
+        git_ops::get_status(PathBuf::from(&project).as_path())
+    })
+    .await
+    .map_err(|e| format!("git_status task failed: {}", e))?
+}
+
+#[tauri::command]
+async fn git_log(
+    state: State<'_, AppState>,
+    project_id: String,
+    count: Option<usize>,
+) -> Result<Vec<GitCommit>, String> {
+    let project = get_project_path(&state, &project_id)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        git_ops::get_log(PathBuf::from(&project).as_path(), count)
+    })
+    .await
+    .map_err(|e| format!("git_log task failed: {}", e))?
 }
 
 #[tauri::command]
@@ -552,9 +602,13 @@ fn git_diff(
 }
 
 #[tauri::command]
-fn git_log(state: State<AppState>, project_id: String, count: Option<usize>) -> Result<Vec<GitCommit>, String> {
+async fn git_branches(state: State<'_, AppState>, project_id: String) -> Result<Vec<String>, String> {
     let project = get_project_path(&state, &project_id)?;
-    git_ops::get_log(PathBuf::from(&project).as_path(), count)
+    tauri::async_runtime::spawn_blocking(move || {
+        git_ops::list_branches(PathBuf::from(&project).as_path())
+    })
+    .await
+    .map_err(|e| format!("git_branches task failed: {}", e))?
 }
 
 #[tauri::command]
@@ -566,12 +620,6 @@ fn git_commit(
 ) -> Result<String, String> {
     let project = get_project_path(&state, &project_id)?;
     git_ops::commit(PathBuf::from(&project).as_path(), &message, files)
-}
-
-#[tauri::command]
-fn git_branches(state: State<AppState>, project_id: String) -> Result<Vec<String>, String> {
-    let project = get_project_path(&state, &project_id)?;
-    git_ops::list_branches(PathBuf::from(&project).as_path())
 }
 
 #[tauri::command]
@@ -1423,9 +1471,313 @@ struct AiLoopInput {
     agent_mode: Option<String>,
 }
 
+#[derive(Debug, serde::Deserialize)]
+struct QuestionAnswerInput {
+    question_id: String,
+    selected_option_ids: Vec<String>,
+    other_text: Option<String>,
+}
+
+fn persist_loop_diffs(
+    conn: &rusqlite::Connection,
+    response: &ai_client::ChatResponse,
+    session_id: &str,
+    msg_id: &str,
+    edit_dry_run: bool,
+    now: &str,
+) -> Result<Option<String>, String> {
+    let mut change_ids: Vec<String> = Vec::new();
+    let diffs_json = if let Some(ref edits) = response.pending_edits {
+        let meta_list = response.pending_edit_meta.as_deref().unwrap_or(&[]);
+        let mut diffs_arr = Vec::new();
+        for (i, edit) in edits.iter().enumerate() {
+            let change_id = uuid::Uuid::new_v4().to_string();
+            change_ids.push(change_id.clone());
+            let status = if edit_dry_run { "pending" } else { "applied" };
+            let edit_meta = meta_list.get(i).map(|m| m.to_string());
+            let record = changes_db::ChangeRecord {
+                id: change_id.clone(),
+                session_id: session_id.to_string(),
+                message_id: Some(msg_id.to_string()),
+                file_path: edit.path.clone(),
+                diff_text: edit.diff.clone(),
+                status: status.into(),
+                snapshot_id: edit.backup_hash.clone(),
+                edit_meta,
+                created_at: now.to_string(),
+                applied_at: if status == "applied" { Some(now.to_string()) } else { None },
+            };
+            changes_db::insert_change(conn, &record).map_err(|e| e.to_string())?;
+            diffs_arr.push(serde_json::json!({
+                "id": change_id,
+                "filePath": edit.path,
+                "diffText": edit.diff,
+                "status": status,
+                "snapshotId": edit.backup_hash,
+                "additions": edit.diff.lines().filter(|l| l.starts_with('+')).count(),
+                "deletions": edit.diff.lines().filter(|l| l.starts_with('-')).count(),
+                "editMeta": meta_list.get(i).cloned(),
+            }));
+        }
+        Some(serde_json::to_string(&diffs_arr).unwrap_or_default())
+    } else {
+        None
+    };
+    Ok(diffs_json)
+}
+
+fn questions_json(response: &ai_client::ChatResponse) -> Option<String> {
+    response
+        .pending_questions
+        .as_ref()
+        .map(|q| serde_json::to_string(q).unwrap_or_default())
+}
+
+fn build_chat_message(
+    msg_id: String,
+    session_id: String,
+    response: &ai_client::ChatResponse,
+    agent_mode: &str,
+    tool_calls_json: Option<String>,
+    diffs_json: Option<String>,
+    questions_json: Option<String>,
+    now: String,
+) -> ChatMessage {
+    let usage_json = serde_json::json!({
+        "prompt_tokens": response.usage.prompt_tokens,
+        "completion_tokens": response.usage.completion_tokens,
+    });
+    ChatMessage {
+        id: msg_id,
+        session_id,
+        role: "assistant".into(),
+        content: response.content.clone(),
+        mode: Some(agent_mode.into()),
+        tool_calls: tool_calls_json.and_then(|d| serde_json::from_str(&d).ok()),
+        diffs: diffs_json.and_then(|d| serde_json::from_str(&d).ok()),
+        file_refs: None,
+        token_usage: Some(usage_json),
+        questions: questions_json.and_then(|d| serde_json::from_str(&d).ok()),
+        created_at: now,
+    }
+}
+
+async fn handle_loop_outcome(
+    state: &AppState,
+    outcome: ai_loop::LoopOutcome,
+    session_id: &str,
+    msg_id: &str,
+    agent_mode: &str,
+    edit_dry_run: bool,
+    now: &str,
+    register_paused: bool,
+) -> Result<ChatMessage, String> {
+    match outcome {
+        ai_loop::LoopOutcome::Paused { response, paused } => {
+            if register_paused {
+                state.paused_loops.register(session_id, paused);
+            }
+            let conn = state.db.conn.lock().unwrap();
+            let tool_calls_json = response
+                .activity_log
+                .as_ref()
+                .map(|log| serde_json::to_string(log).unwrap_or_default());
+            let q_json = questions_json(&response);
+            conn.execute(
+                "INSERT INTO messages (id, session_id, role, content, mode, tool_calls, diffs, token_usage, questions, created_at) VALUES (?1, ?2, 'assistant', ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                params![
+                    msg_id,
+                    session_id,
+                    response.content,
+                    agent_mode,
+                    tool_calls_json,
+                    None::<String>,
+                    serde_json::json!({
+                        "prompt_tokens": response.usage.prompt_tokens,
+                        "completion_tokens": response.usage.completion_tokens,
+                    })
+                    .to_string(),
+                    q_json,
+                    now,
+                ],
+            )
+            .map_err(|e| e.to_string())?;
+            let total_tokens = response.usage.prompt_tokens + response.usage.completion_tokens;
+            conn.execute(
+                "UPDATE sessions SET token_count = token_count + ?1, updated_at = ?2 WHERE id = ?3",
+                params![total_tokens as i64, now, session_id],
+            )
+            .map_err(|e| e.to_string())?;
+            Ok(build_chat_message(
+                msg_id.to_string(),
+                session_id.to_string(),
+                &response,
+                agent_mode,
+                tool_calls_json,
+                None,
+                q_json,
+                now.to_string(),
+            ))
+        }
+        ai_loop::LoopOutcome::Completed(response) => {
+            let conn = state.db.conn.lock().unwrap();
+            let diffs_json = persist_loop_diffs(&conn, &response, session_id, msg_id, edit_dry_run, now)?;
+            let tool_calls_json = response
+                .activity_log
+                .as_ref()
+                .map(|log| serde_json::to_string(log).unwrap_or_default())
+                .or_else(|| {
+                    response
+                        .tool_calls
+                        .as_ref()
+                        .map(|tc| serde_json::to_string(tc).unwrap_or_default())
+                });
+            let q_json = questions_json(&response);
+            conn.execute(
+                "INSERT INTO messages (id, session_id, role, content, mode, tool_calls, diffs, token_usage, questions, created_at) VALUES (?1, ?2, 'assistant', ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                params![
+                    msg_id,
+                    session_id,
+                    response.content,
+                    agent_mode,
+                    tool_calls_json,
+                    diffs_json,
+                    serde_json::json!({
+                        "prompt_tokens": response.usage.prompt_tokens,
+                        "completion_tokens": response.usage.completion_tokens,
+                    })
+                    .to_string(),
+                    q_json,
+                    now,
+                ],
+            )
+            .map_err(|e| e.to_string())?;
+            let total_tokens = response.usage.prompt_tokens + response.usage.completion_tokens;
+            conn.execute(
+                "UPDATE sessions SET token_count = token_count + ?1, updated_at = ?2 WHERE id = ?3",
+                params![total_tokens as i64, now, session_id],
+            )
+            .map_err(|e| e.to_string())?;
+            Ok(build_chat_message(
+                msg_id.to_string(),
+                session_id.to_string(),
+                &response,
+                agent_mode,
+                tool_calls_json,
+                diffs_json,
+                q_json,
+                now.to_string(),
+            ))
+        }
+    }
+}
+
+async fn handle_loop_outcome_update(
+    state: &AppState,
+    outcome: ai_loop::LoopOutcome,
+    session_id: &str,
+    msg_id: &str,
+    agent_mode: &str,
+    edit_dry_run: bool,
+    now: &str,
+) -> Result<ChatMessage, String> {
+    match outcome {
+        ai_loop::LoopOutcome::Paused { response, paused } => {
+            state.paused_loops.register(session_id, paused);
+            let conn = state.db.conn.lock().unwrap();
+            let tool_calls_json = response
+                .activity_log
+                .as_ref()
+                .map(|log| serde_json::to_string(log).unwrap_or_default());
+            let q_json = questions_json(&response);
+            conn.execute(
+                "UPDATE messages SET content = ?1, tool_calls = ?2, diffs = ?3, token_usage = ?4, questions = ?5 WHERE id = ?6",
+                params![
+                    response.content,
+                    tool_calls_json,
+                    None::<String>,
+                    serde_json::json!({
+                        "prompt_tokens": response.usage.prompt_tokens,
+                        "completion_tokens": response.usage.completion_tokens,
+                    })
+                    .to_string(),
+                    q_json,
+                    msg_id,
+                ],
+            )
+            .map_err(|e| e.to_string())?;
+            Ok(build_chat_message(
+                msg_id.to_string(),
+                session_id.to_string(),
+                &response,
+                agent_mode,
+                tool_calls_json,
+                None,
+                q_json,
+                now.to_string(),
+            ))
+        }
+        ai_loop::LoopOutcome::Completed(response) => {
+            let conn = state.db.conn.lock().unwrap();
+            let diffs_json = persist_loop_diffs(&conn, &response, session_id, msg_id, edit_dry_run, now)?;
+            let tool_calls_json = response
+                .activity_log
+                .as_ref()
+                .map(|log| serde_json::to_string(log).unwrap_or_default());
+            let q_json = if response.pending_questions.is_some() {
+                questions_json(&response)
+            } else {
+                let existing: Option<String> = conn
+                    .query_row(
+                        "SELECT questions FROM messages WHERE id = ?1",
+                        params![msg_id],
+                        |r| r.get(0),
+                    )
+                    .ok()
+                    .flatten();
+                existing.map(|s| {
+                    if let Ok(mut v) = serde_json::from_str::<serde_json::Value>(&s) {
+                        v["status"] = serde_json::json!("answered");
+                        v.to_string()
+                    } else {
+                        s
+                    }
+                })
+            };
+            conn.execute(
+                "UPDATE messages SET content = ?1, tool_calls = ?2, diffs = ?3, token_usage = ?4, questions = ?5 WHERE id = ?6",
+                params![
+                    response.content,
+                    tool_calls_json,
+                    diffs_json,
+                    serde_json::json!({
+                        "prompt_tokens": response.usage.prompt_tokens,
+                        "completion_tokens": response.usage.completion_tokens,
+                    })
+                    .to_string(),
+                    q_json,
+                    msg_id,
+                ],
+            )
+            .map_err(|e| e.to_string())?;
+            Ok(build_chat_message(
+                msg_id.to_string(),
+                session_id.to_string(),
+                &response,
+                agent_mode,
+                tool_calls_json,
+                diffs_json,
+                q_json,
+                now.to_string(),
+            ))
+        }
+    }
+}
+
 #[tauri::command]
 fn cancel_chat(app: AppHandle, state: State<AppState>, session_id: String) -> Result<(), String> {
     state.chat_cancel.cancel(&session_id, &app);
+    state.paused_loops.clear(&session_id);
     Ok(())
 }
 
@@ -1475,7 +1827,7 @@ async fn ai_loop_chat(
     let write_count = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
 
     let cancel = state.chat_cancel.register(&session_id);
-    let response = ai_loop::run_loop(
+    let outcome = ai_loop::run_loop(
         app,
         project_root.clone(),
         session_id.clone(),
@@ -1498,103 +1850,75 @@ async fn ai_loop_chat(
     )
     .await;
     state.chat_cancel.clear(&session_id);
-    let response = response?;
+    let outcome = outcome?;
+    let agent_mode = input.agent_mode.as_deref().unwrap_or("ask");
+    handle_loop_outcome(
+        &state,
+        outcome,
+        &session_id,
+        &msg_id,
+        agent_mode,
+        input.edit_dry_run.unwrap_or(false),
+        &now,
+        true,
+    )
+    .await
+}
 
-    // Build diffs JSON and persist changes
-    let mut change_ids: Vec<String> = Vec::new();
-    let diffs_json = if let Some(ref edits) = response.pending_edits {
+#[tauri::command]
+async fn continue_ai_loop(
+    state: State<'_, AppState>,
+    session_id: String,
+    message_id: String,
+    answers: Vec<QuestionAnswerInput>,
+) -> Result<ChatMessage, String> {
+    let paused = state
+        .paused_loops
+        .take(&session_id)
+        .ok_or("会话已过期或未处于等待回答状态，请重新发送消息。")?;
+    if paused.message_id != message_id {
+        state.paused_loops.register(&session_id, paused);
+        return Err("消息 ID 不匹配".into());
+    }
+
+    let answers: Vec<ai_loop::QuestionAnswer> = answers
+        .into_iter()
+        .map(|a| ai_loop::QuestionAnswer {
+            question_id: a.question_id,
+            selected_option_ids: a.selected_option_ids,
+            other_text: a.other_text,
+        })
+        .collect();
+
+    let cancel = state.chat_cancel.register(&session_id);
+    let outcome = ai_loop::run_loop_resume(paused, answers).await;
+    state.chat_cancel.clear(&session_id);
+    let outcome = outcome?;
+    let now = chrono::Utc::now().to_rfc3339();
+
+    let agent_mode: Option<String> = {
         let conn = state.db.conn.lock().unwrap();
-        let meta_list = response.pending_edit_meta.as_deref().unwrap_or(&[]);
-        let mut diffs_arr = Vec::new();
-        for (i, edit) in edits.iter().enumerate() {
-            let change_id = uuid::Uuid::new_v4().to_string();
-            change_ids.push(change_id.clone());
-            let status = if input.edit_dry_run.unwrap_or(false) {
-                "pending"
-            } else {
-                "applied"
-            };
-            let edit_meta = meta_list.get(i).map(|m| m.to_string());
-            let record = changes_db::ChangeRecord {
-                id: change_id.clone(),
-                session_id: session_id.clone(),
-                message_id: Some(msg_id.clone()),
-                file_path: edit.path.clone(),
-                diff_text: edit.diff.clone(),
-                status: status.into(),
-                snapshot_id: edit.backup_hash.clone(),
-                edit_meta,
-                created_at: now.clone(),
-                applied_at: if status == "applied" { Some(now.clone()) } else { None },
-            };
-            changes_db::insert_change(&conn, &record).map_err(|e| e.to_string())?;
-            diffs_arr.push(serde_json::json!({
-                "id": change_id,
-                "filePath": edit.path,
-                "diffText": edit.diff,
-                "status": status,
-                "snapshotId": edit.backup_hash,
-                "additions": edit.diff.lines().filter(|l| l.starts_with('+')).count(),
-                "deletions": edit.diff.lines().filter(|l| l.starts_with('-')).count(),
-                "editMeta": meta_list.get(i).cloned(),
-            }));
-        }
-        Some(serde_json::to_string(&diffs_arr).unwrap_or_default())
-    } else {
-        None
+        conn.query_row(
+            "SELECT mode FROM messages WHERE id = ?1",
+            params![message_id],
+            |r| r.get(0),
+        )
+        .map_err(|e| e.to_string())?
     };
 
-    // Save assistant response
-    let conn = state.db.conn.lock().unwrap();
-    let tool_calls_json = response
-        .activity_log
-        .as_ref()
-        .map(|log| serde_json::to_string(log).unwrap_or_default())
-        .or_else(|| {
-            response
-                .tool_calls
-                .as_ref()
-                .map(|tc| serde_json::to_string(tc).unwrap_or_default())
-        });
-    let usage_json = serde_json::json!({
-        "prompt_tokens": response.usage.prompt_tokens,
-        "completion_tokens": response.usage.completion_tokens,
-    });
+    let mode = agent_mode.as_deref().unwrap_or("edit");
+    let edit_dry_run = mode == "edit";
 
-    conn.execute(
-        "INSERT INTO messages (id, session_id, role, content, mode, tool_calls, diffs, token_usage, created_at) VALUES (?1, ?2, 'assistant', ?3, ?4, ?5, ?6, ?7, ?8)",
-        params![
-            msg_id,
-            session_id,
-            response.content,
-            input.agent_mode.as_deref().unwrap_or("ask"),
-            tool_calls_json,
-            diffs_json,
-            usage_json.to_string(),
-            now
-        ],
+    handle_loop_outcome_update(
+        &state,
+        outcome,
+        &session_id,
+        &message_id,
+        mode,
+        edit_dry_run,
+        &now,
     )
-    .map_err(|e| e.to_string())?;
-
-    let total_tokens = response.usage.prompt_tokens + response.usage.completion_tokens;
-    conn.execute(
-        "UPDATE sessions SET token_count = token_count + ?1, updated_at = ?2 WHERE id = ?3",
-        params![total_tokens as i64, now, session_id],
-    )
-    .map_err(|e| e.to_string())?;
-
-    Ok(ChatMessage {
-        id: msg_id,
-        session_id,
-        role: "assistant".into(),
-        content: response.content,
-        mode: input.agent_mode.or(Some("ask".into())),
-        tool_calls: tool_calls_json.and_then(|d| serde_json::from_str(&d).ok()),
-        diffs: diffs_json.and_then(|d| serde_json::from_str(&d).ok()),
-        file_refs: None,
-        token_usage: Some(usage_json),
-        created_at: now,
-    })
+    .await
 }
 
 // ── Changes (diff apply / rollback) ──
@@ -1612,6 +1936,8 @@ struct ApplyChangeInput {
     old_string: String,
     new_string: String,
     replace_all: Option<bool>,
+    /// "edit" for patch edits (default), "write" for full-file writes.
+    kind: Option<String>,
 }
 
 #[tauri::command]
@@ -1621,14 +1947,19 @@ fn apply_change(
     input: ApplyChangeInput,
 ) -> Result<code_editor::EditResult, String> {
     let project = get_project_path(&state, &project_id)?;
-    let result = code_editor::edit_file(
-        PathBuf::from(&project).as_path(),
-        &input.path,
-        &input.old_string,
-        &input.new_string,
-        input.replace_all.unwrap_or(false),
-        false,
-    )?;
+    let root = PathBuf::from(&project);
+    let result = if input.kind.as_deref() == Some("write") {
+        code_editor::apply_write(root.as_path(), &input.path, &input.new_string)?
+    } else {
+        code_editor::edit_file(
+            root.as_path(),
+            &input.path,
+            &input.old_string,
+            &input.new_string,
+            input.replace_all.unwrap_or(false),
+            false,
+        )?
+    };
     let now = chrono::Utc::now().to_rfc3339();
     let conn = state.db.conn.lock().unwrap();
     changes_db::update_change_applied(
@@ -1754,7 +2085,9 @@ fn watch_project_dir(
     project_id: String,
 ) -> Result<(), String> {
     let project = get_project_path(&state, &project_id)?;
-    file_watcher::watch_project(app, project_id, PathBuf::from(&project).as_path())
+    state
+        .file_watcher
+        .watch_project(app, project_id, PathBuf::from(&project).as_path())
 }
 
 // ── Simple AI Chat (no tool loop, uses ai_client internally) ──
@@ -1826,6 +2159,7 @@ async fn stream_chat(
         diffs: None,
         file_refs: None,
         token_usage: Some(usage_json),
+        questions: None,
         created_at: now,
     })
 }
@@ -1911,6 +2245,8 @@ fn main() {
         vector_store: Mutex::new(vs),
         data_dir: app_dir.clone(),
         chat_cancel: chat_cancel::ChatCancelRegistry::new(),
+        paused_loops: paused_loop::PausedLoopRegistry::new(),
+        file_watcher: file_watcher::FileWatcherRegistry::new(),
     };
 
     tauri::Builder::default()
@@ -1997,6 +2333,7 @@ fn main() {
             save_note,
             // AI
             ai_loop_chat,
+            continue_ai_loop,
             stream_chat,
             list_models,
             // Crypto & Health

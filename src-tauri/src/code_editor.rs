@@ -78,6 +78,76 @@ pub fn edit_file(
     })
 }
 
+/// Preview a full-file write without applying it. Returns a unified diff.
+pub fn preview_write(root: &Path, rel_path: &str, content: &str) -> Result<(String, EditResult), String> {
+    crate::path_guard::reject_protected_path(rel_path)?;
+    let safe_path = sanitize_path(root, rel_path)?;
+    let original = if safe_path.exists() {
+        fs::read_to_string(&safe_path)
+            .map_err(|e| format!("Failed to read {}: {}", rel_path, e))?
+    } else {
+        String::new()
+    };
+
+    let diff = generate_unified_diff(rel_path, &original, content);
+
+    Ok((
+        original,
+        EditResult {
+            path: rel_path.to_string(),
+            replaced: 1,
+            diff,
+            dry_run: true,
+            backup_hash: None,
+        },
+    ))
+}
+
+/// Apply a full-file write with backup for rollback.
+pub fn apply_write(root: &Path, rel_path: &str, content: &str) -> Result<EditResult, String> {
+    crate::path_guard::reject_protected_path(rel_path)?;
+    let safe_path = sanitize_path(root, rel_path)?;
+    let original = if safe_path.exists() {
+        fs::read_to_string(&safe_path)
+            .map_err(|e| format!("Failed to read {}: {}", rel_path, e))?
+    } else {
+        String::new()
+    };
+
+    if !original.is_empty() || safe_path.exists() {
+        let hash = sha2::Sha256::digest(original.as_bytes());
+        let backup_dir = root.join(".boschcode").join("backups");
+        fs::create_dir_all(&backup_dir)
+            .map_err(|e| format!("Failed to create backup dir: {}", e))?;
+        let backup_name = format!("{:x}_{}", hash, rel_path.replace(['/', '\\'], "_"));
+        fs::write(backup_dir.join(&backup_name), &original)
+            .map_err(|e| format!("Failed to create backup: {}", e))?;
+    }
+
+    if let Some(parent) = safe_path.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|e| format!("Failed to create dirs: {}", e))?;
+    }
+    fs::write(&safe_path, content)
+        .map_err(|e| format!("Failed to write {}: {}", rel_path, e))?;
+
+    let diff = generate_unified_diff(rel_path, &original, content);
+    let backup_hash = if !original.is_empty() {
+        let hash = sha2::Sha256::digest(original.as_bytes());
+        Some(format!("{:x}", hash))
+    } else {
+        None
+    };
+
+    Ok(EditResult {
+        path: rel_path.to_string(),
+        replaced: 1,
+        diff,
+        dry_run: false,
+        backup_hash,
+    })
+}
+
 /// Regex-based search and replace in a file or glob-matched files.
 pub fn search_replace(
     root: &Path,
