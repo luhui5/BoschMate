@@ -14,6 +14,12 @@ mod fs_ops;
 mod git_ops;
 mod linter_analyzer;
 mod loop_guard;
+mod knowledge;
+mod knowledge_chunker;
+mod knowledge_indexer;
+mod knowledge_parser;
+mod knowledge_retriever;
+mod knowledge_tools;
 mod memory_compressor;
 mod models;
 mod os_open;
@@ -33,17 +39,20 @@ mod web_fetch;
 
 use ai_client::{stream_chat as ai_stream_chat, list_ollama_models as ai_list_ollama_models};
 use db::Database;
+use knowledge::KnowledgeStoreManager;
+use knowledge_tools::KnowledgeToolCtx;
 use models::*;
 use rusqlite::params;
 use std::path::PathBuf;
 use std::sync::Mutex;
-use tauri::{AppHandle, State};
+use tauri::{AppHandle, Manager, State};
 
-struct AppState {
+pub struct AppState {
     db: Database,
     #[allow(dead_code)]
     projects_dir: Mutex<PathBuf>,
     vector_store: Mutex<vector_store::VectorStore>,
+    knowledge_stores: KnowledgeStoreManager,
     data_dir: PathBuf,
     chat_cancel: chat_cancel::ChatCancelRegistry,
     loop_guard: loop_guard::LoopGuardRegistry,
@@ -1473,6 +1482,8 @@ struct AiLoopInput {
     bulk_write_confirmed: Option<bool>,
     /// Agent mode label for persistence (ask/plan/edit/auto).
     agent_mode: Option<String>,
+    /// Knowledge base ids enabled in the UI (empty = search all bases).
+    enabled_kbase_ids: Option<Vec<String>>,
 }
 
 #[derive(Debug, serde::Deserialize)]
@@ -1840,17 +1851,29 @@ async fn ai_loop_chat_inner(
 
     let agent_mode = input.agent_mode.as_deref().unwrap_or("edit");
     let auto_mode = agent_mode == "auto";
+    let assistant_mode = input.assistant_mode.unwrap_or(false);
+    let knowledge_only = assistant_mode && project_id == "__assistant__";
+    let enabled_kbase_ids = input.enabled_kbase_ids.unwrap_or_default();
 
     // Run AI Loop — ask/plan get read-only tool subsets; edit/auto get the full set.
-    let tools = match agent_mode {
-        "plan" => ai_loop::get_plan_tools(),
-        "ask" => ai_loop::get_ask_tools(),
-        _ => ai_loop::get_tools(),
+    let tools = if knowledge_only {
+        ai_loop::get_knowledge_only_tools()
+    } else {
+        match agent_mode {
+            "plan" => ai_loop::get_plan_tools(),
+            "ask" => ai_loop::get_ask_tools(),
+            _ => ai_loop::get_tools(),
+        }
     };
 
     let system_prompt = input.system_prompt.clone();
 
     let write_count = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+
+    let knowledge_ctx = Some(std::sync::Arc::new(KnowledgeToolCtx {
+        db: state.db.conn.clone(),
+        enabled_kbase_ids: enabled_kbase_ids.clone(),
+    }));
 
     let cancel = state.chat_cancel.register(&session_id);
     let outcome = ai_loop::run_loop(
@@ -1873,8 +1896,10 @@ async fn ai_loop_chat_inner(
             write_count,
             agent_mode: agent_mode.to_string(),
             ask_user_satisfied: false,
+            enabled_kbase_ids,
         },
         cancel,
+        knowledge_ctx,
     )
     .await;
     state.chat_cancel.clear(&session_id);
@@ -2104,6 +2129,11 @@ fn clear_recovery_snapshot(state: State<AppState>, session_id: String) -> Result
     recovery::clear_snapshot(&state.data_dir, &session_id)
 }
 
+#[tauri::command]
+fn clear_all_recovery_snapshots(state: State<AppState>) -> Result<(), String> {
+    recovery::clear_all(&state.data_dir)
+}
+
 // ── File watcher ──
 
 #[tauri::command]
@@ -2274,6 +2304,7 @@ fn main() {
         db,
         projects_dir: Mutex::new(app_dir.clone()),
         vector_store: Mutex::new(vs),
+        knowledge_stores: KnowledgeStoreManager::new(app_dir.clone()),
         data_dir: app_dir.clone(),
         chat_cancel: chat_cancel::ChatCancelRegistry::new(),
         loop_guard: loop_guard::LoopGuardRegistry::new(),
@@ -2288,6 +2319,13 @@ fn main() {
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_process::init())
         .manage(state)
+        .on_window_event(|window, event| {
+            if let tauri::WindowEvent::CloseRequested { .. } = event {
+                if let Some(state) = window.app_handle().try_state::<AppState>() {
+                    let _ = recovery::clear_all(&state.data_dir);
+                }
+            }
+        })
         .invoke_handler(tauri::generate_handler![
             // Projects
             list_projects,
@@ -2360,6 +2398,16 @@ fn main() {
             check_disk_space,
             embed_memory,
             compress_memories,
+            // Knowledge base
+            knowledge::list_knowledge_bases,
+            knowledge::create_knowledge_base,
+            knowledge::update_knowledge_base,
+            knowledge::delete_knowledge_base,
+            knowledge::list_knowledge_documents,
+            knowledge::ingest_knowledge_document,
+            knowledge::ingest_knowledge_document_from_paths,
+            knowledge::delete_knowledge_document,
+            knowledge::retrieve_knowledge_context,
             // Notes
             list_notes,
             save_note,
@@ -2389,9 +2437,17 @@ fn main() {
             save_recovery_snapshot,
             load_recovery_snapshots,
             clear_recovery_snapshot,
+            clear_all_recovery_snapshots,
             watch_project_dir,
             get_update_info,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while running tauri application")
+        .run(|app_handle, event| {
+            if let tauri::RunEvent::ExitRequested { .. } = event {
+                if let Some(state) = app_handle.try_state::<AppState>() {
+                    let _ = recovery::clear_all(&state.data_dir);
+                }
+            }
+        });
 }

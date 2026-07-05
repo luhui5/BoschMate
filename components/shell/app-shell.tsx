@@ -1,40 +1,41 @@
 "use client"
 
-import { useCallback, useState } from "react"
+import { useCallback, useEffect, useState } from "react"
 import { AssistantView } from "@/components/assistant/assistant-view"
-import { KnowledgeDialog } from "@/components/knowledge/knowledge-dialog"
-import { SEED_KNOWLEDGE, type KnowledgeFile } from "@/lib/knowledge"
+import { KnowledgePanel } from "@/components/knowledge/knowledge-panel"
+import { isTauri, listKnowledgeBases } from "@/lib/tauri-api"
 
 export function AppShell() {
   const [knowledgeOpen, setKnowledgeOpen] = useState(false)
-  const [knowledge, setKnowledge] = useState<KnowledgeFile[]>(SEED_KNOWLEDGE)
+  const [documentCount, setDocumentCount] = useState(0)
 
-  const upsertKnowledge = useCallback((incoming: KnowledgeFile[]) => {
-    setKnowledge((prev) => {
-      const map = new Map(prev.map((f) => [f.id, f]))
-      for (const f of incoming) map.set(f.id, f)
-      return Array.from(map.values()).sort(
-        (a, b) => new Date(b.addedAt).getTime() - new Date(a.addedAt).getTime(),
-      )
-    })
+  const refreshDocumentCount = useCallback(async () => {
+    if (!isTauri()) {
+      setDocumentCount(0)
+      return
+    }
+    try {
+      const bases = await listKnowledgeBases()
+      setDocumentCount(bases.reduce((sum, b) => sum + b.documentCount, 0))
+    } catch {
+      setDocumentCount(0)
+    }
   }, [])
 
-  const removeKnowledge = useCallback((id: string) => {
-    setKnowledge((prev) => prev.filter((f) => f.id !== id))
-  }, [])
+  useEffect(() => {
+    void refreshDocumentCount()
+  }, [refreshDocumentCount])
 
   return (
     <>
       <AssistantView
-        knowledgeCount={knowledge.length}
+        knowledgeCount={documentCount}
         onOpenKnowledge={() => setKnowledgeOpen(true)}
       />
-      <KnowledgeDialog
+      <KnowledgePanel
         open={knowledgeOpen}
         onClose={() => setKnowledgeOpen(false)}
-        files={knowledge}
-        onAdd={upsertKnowledge}
-        onRemove={removeKnowledge}
+        onDocumentCountChange={setDocumentCount}
       />
     </>
   )

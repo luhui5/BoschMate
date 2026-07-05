@@ -21,6 +21,12 @@ import type {
   TestRunResult,
   LintResult,
 } from './types';
+import type {
+  KnowledgeBase,
+  KnowledgeDocument,
+  KnowledgeIndexProgressEvent,
+  KnowledgeKind,
+} from './knowledge';
 import {
   mapProject,
   mapSession,
@@ -28,6 +34,8 @@ import {
   mapGitFile,
   mapMemory,
   mapNote,
+  mapKnowledgeBase,
+  mapKnowledgeDocument,
   fileEntryToNode,
   type RawProject,
   type RawSession,
@@ -36,6 +44,8 @@ import {
   type RawGitStatus,
   type RawMemory,
   type RawNote,
+  type RawKnowledgeBase,
+  type RawKnowledgeDocument,
 } from './ipc-mapper';
 
 // ── Helpers ──
@@ -360,6 +370,7 @@ export interface AiLoopRequest {
   edit_dry_run?: boolean;
   bulk_write_confirmed?: boolean;
   agent_mode?: string;
+  enabled_kbase_ids?: string[];
 }
 
 export interface ChatTokenEvent {
@@ -620,6 +631,10 @@ export async function clearRecoverySnapshot(sessionId: string): Promise<void> {
   return invoke('clear_recovery_snapshot', { sessionId });
 }
 
+export async function clearAllRecoverySnapshots(): Promise<void> {
+  return invoke('clear_all_recovery_snapshots');
+}
+
 export async function watchProjectDir(projectId: string): Promise<void> {
   return invoke('watch_project_dir', { projectId });
 }
@@ -768,6 +783,8 @@ export interface RawActivityStep {
   args?: string;
   status: string;
   result?: string;
+  started_at?: string;
+  finished_at?: string;
 }
 
 export interface LoopActivityEvent {
@@ -787,6 +804,8 @@ export function mapActivityStep(raw: RawActivityStep): import('./types').Activit
     args: raw.args,
     status: raw.status === 'running' || raw.status === 'error' ? raw.status : 'success',
     result: raw.result,
+    startedAt: raw.started_at,
+    finishedAt: raw.finished_at,
   };
 }
 
@@ -836,4 +855,115 @@ export async function saveSshConnection(host: string, user: string, port?: numbe
 
 export async function exportBackup(outputPath: string): Promise<void> {
   return invoke('export_backup', { outputPath });
+}
+
+// ── Knowledge Base ──
+
+export async function listKnowledgeBases(): Promise<KnowledgeBase[]> {
+  const raw = await invoke<RawKnowledgeBase[]>('list_knowledge_bases');
+  return raw.map(mapKnowledgeBase);
+}
+
+export async function createKnowledgeBase(input: {
+  name: string;
+  description?: string;
+}): Promise<KnowledgeBase> {
+  const raw = await invoke<RawKnowledgeBase>('create_knowledge_base', { input });
+  return mapKnowledgeBase(raw);
+}
+
+export async function updateKnowledgeBase(input: {
+  id: string;
+  name?: string;
+  description?: string;
+}): Promise<KnowledgeBase> {
+  const raw = await invoke<RawKnowledgeBase>('update_knowledge_base', { input });
+  return mapKnowledgeBase(raw);
+}
+
+export async function deleteKnowledgeBase(id: string): Promise<void> {
+  return invoke('delete_knowledge_base', { id });
+}
+
+export async function listKnowledgeDocuments(kbaseId: string): Promise<KnowledgeDocument[]> {
+  const raw = await invoke<RawKnowledgeDocument[]>('list_knowledge_documents', { kbaseId });
+  return raw.map(mapKnowledgeDocument);
+}
+
+export async function ingestKnowledgeDocument(input: {
+  kbaseId: string;
+  name: string;
+  kind: KnowledgeKind;
+  dataBase64: string;
+}): Promise<KnowledgeDocument> {
+  const raw = await invoke<RawKnowledgeDocument>('ingest_knowledge_document', {
+    input: {
+      kbase_id: input.kbaseId,
+      name: input.name,
+      kind: input.kind,
+      data_base64: input.dataBase64,
+    },
+  });
+  return mapKnowledgeDocument(raw);
+}
+
+export async function ingestKnowledgeDocumentFromPaths(input: {
+  kbaseId: string;
+  paths: string[];
+}): Promise<KnowledgeDocument[]> {
+  const raw = await invoke<RawKnowledgeDocument[]>('ingest_knowledge_document_from_paths', {
+    input: {
+      kbase_id: input.kbaseId,
+      paths: input.paths,
+    },
+  });
+  return raw.map(mapKnowledgeDocument);
+}
+
+export async function deleteKnowledgeDocument(documentId: string): Promise<void> {
+  return invoke('delete_knowledge_document', { documentId });
+}
+
+export async function retrieveKnowledgeContext(
+  kbaseIds: string[],
+  query: string,
+  topK?: number,
+): Promise<{ context: string }> {
+  const raw = await invoke<{ context: string }>('retrieve_knowledge_context', {
+    input: {
+      kbase_ids: kbaseIds,
+      query,
+      top_k: topK,
+    },
+  });
+  return { context: raw.context };
+}
+
+export function onKnowledgeIndexProgress(
+  callback: (event: KnowledgeIndexProgressEvent) => void,
+): () => void {
+  if (!isTauri()) return () => {};
+  const { listen } = require('@tauri-apps/api/event');
+  let unlisten: (() => void) | null = null;
+  listen('knowledge-index-progress', (event: {
+    payload: {
+      document_id: string;
+      kbase_id: string;
+      status: string;
+      chunk_count: number;
+      error?: string;
+    };
+  }) => {
+    const p = event.payload;
+    callback({
+      documentId: p.document_id,
+      kbaseId: p.kbase_id,
+      status: p.status as KnowledgeIndexProgressEvent['status'],
+      chunkCount: p.chunk_count,
+      error: p.error,
+    });
+  }).then((fn: () => void) => {
+    unlisten = fn;
+  });
+  return () => { if (unlisten) unlisten(); };
 }

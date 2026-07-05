@@ -4,6 +4,10 @@ use crate::code_editor::{self, EditResult};
 use crate::code_graph;
 use crate::fs_ops;
 use crate::git_ops;
+use crate::knowledge_tools::{
+    tool_list_knowledge_bases, tool_read_knowledge_document, tool_search_knowledge,
+    KnowledgeToolCtx,
+};
 use crate::sandbox;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -28,6 +32,10 @@ pub struct ActivityStep {
     pub status: String, // "running" | "success" | "error"
     #[serde(skip_serializing_if = "Option::is_none")]
     pub result: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub started_at: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub finished_at: Option<String>,
 }
 
 pub type ActivityLog = Arc<Mutex<Vec<ActivityStep>>>;
@@ -45,6 +53,7 @@ fn emit_activity(app: &AppHandle, session_id: &str, message_id: &str, step: &Act
 
 fn push_thought(log: &ActivityLog, app: &AppHandle, session_id: &str, message_id: &str, round: u32) -> String {
     let id = uuid::Uuid::new_v4().to_string();
+    let now = chrono::Utc::now().to_rfc3339();
     let step = ActivityStep {
         id: id.clone(),
         kind: "thought".into(),
@@ -55,6 +64,8 @@ fn push_thought(log: &ActivityLog, app: &AppHandle, session_id: &str, message_id
         args: None,
         status: "running".into(),
         result: None,
+        started_at: Some(now),
+        finished_at: None,
     };
     log.lock().unwrap().push(step.clone());
     emit_activity(app, session_id, message_id, &step);
@@ -72,6 +83,7 @@ fn finish_thought(
     let mut steps = log.lock().unwrap();
     if let Some(step) = steps.iter_mut().find(|s| s.id == thought_id) {
         step.status = "success".into();
+        step.finished_at = Some(chrono::Utc::now().to_rfc3339());
         if !content.trim().is_empty() {
             step.detail = Some(content.to_string());
         }
@@ -151,6 +163,7 @@ pub struct PausedLoopState {
     pub ask_user_call: ToolCallResult,
     pub pending_questions: PendingQuestions,
     pub cancel: Arc<AtomicBool>,
+    pub knowledge_ctx: Option<Arc<KnowledgeToolCtx>>,
 }
 
 #[derive(Debug, Clone)]
@@ -167,6 +180,8 @@ pub struct LoopConfig {
     pub agent_mode: String,
     /// Set true after ask_user returns user answers in this loop (side-effect guard).
     pub ask_user_satisfied: bool,
+    /// Enabled knowledge base ids from the frontend (empty = all bases).
+    pub enabled_kbase_ids: Vec<String>,
 }
 
 const BULK_WRITE_LIMIT: usize = 50;
@@ -408,6 +423,37 @@ pub fn get_tools() -> Vec<AiToolDef> {
             }),
         },
         AiToolDef {
+            name: "list_knowledge_bases".into(),
+            description: "List available knowledge bases and their document counts.".into(),
+            parameters: serde_json::json!({"type": "object", "properties": {}}),
+        },
+        AiToolDef {
+            name: "search_knowledge".into(),
+            description: "Search uploaded knowledge base documents by keyword. Returns excerpts with document_id and chunk_index for follow-up reads.".into(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "Search query"},
+                    "kbase_id": {"type": "string", "description": "Optional knowledge base id to limit search"},
+                    "limit": {"type": "integer", "description": "Max results (default 8)"}
+                },
+                "required": ["query"]
+            }),
+        },
+        AiToolDef {
+            name: "read_knowledge_document".into(),
+            description: "Read content from an indexed knowledge base document. Use document_id from search_knowledge results.".into(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "document_id": {"type": "string"},
+                    "chunk_index": {"type": "integer", "description": "Start chunk index (optional)"},
+                    "limit": {"type": "integer", "description": "Number of chunks to read (default 1 when chunk_index set)"}
+                },
+                "required": ["document_id"]
+            }),
+        },
+        AiToolDef {
             name: "ask_user".into(),
             description: "Ask the user structured clarification questions with selectable options. The agent pauses until the user answers. Use when requirements are ambiguous or multiple valid approaches exist — do NOT list options only in plain text. Each question must have exactly 3 options (recommended first with '(Recommended)' in label, plus 2 alternatives). Do NOT include Other — the UI adds it.".into(),
             parameters: serde_json::json!({
@@ -443,6 +489,12 @@ pub fn get_tools() -> Vec<AiToolDef> {
     ]
 }
 
+const KNOWLEDGE_TOOL_NAMES: &[&str] = &[
+    "list_knowledge_bases",
+    "search_knowledge",
+    "read_knowledge_document",
+];
+
 const READONLY_TOOL_NAMES: &[&str] = &[
     "read_file",
     "grep",
@@ -458,6 +510,9 @@ const READONLY_TOOL_NAMES: &[&str] = &[
     "web_fetch",
     "outlook_read",
     "ask_user",
+    "list_knowledge_bases",
+    "search_knowledge",
+    "read_knowledge_document",
 ];
 
 const ASK_TOOL_NAMES: &[&str] = &[
@@ -474,6 +529,9 @@ const ASK_TOOL_NAMES: &[&str] = &[
     "web_fetch",
     "outlook_read",
     "ask_user",
+    "list_knowledge_bases",
+    "search_knowledge",
+    "read_knowledge_document",
 ];
 
 const MUTATING_TOOL_NAMES: &[&str] = &[
@@ -515,6 +573,17 @@ pub fn get_plan_tools() -> Vec<AiToolDef> {
         .collect()
 }
 
+/// Knowledge + minimal read-only tools when no workspace is bound.
+pub fn get_knowledge_only_tools() -> Vec<AiToolDef> {
+    get_tools()
+        .into_iter()
+        .filter(|t| {
+            KNOWLEDGE_TOOL_NAMES.contains(&t.name.as_str())
+                || matches!(t.name.as_str(), "web_fetch" | "ask_user")
+        })
+        .collect()
+}
+
 /// Read-only tools for Ask mode (inspect/explain; no bash, no blast_radius).
 pub fn get_ask_tools() -> Vec<AiToolDef> {
     get_tools()
@@ -537,6 +606,7 @@ pub async fn execute_tool(
     args: &Value,
     config: &LoopConfig,
     collector: &EditCollector,
+    knowledge_ctx: Option<&KnowledgeToolCtx>,
 ) -> Result<String, String> {
     if matches!(config.agent_mode.as_str(), "ask" | "plan") && is_mutating_tool(tool_name) {
         return Err(
@@ -761,6 +831,24 @@ pub async fn execute_tool(
             let br = code_graph::blast_radius(project_root.as_path(), fp, sym)?;
             Ok(format!("{}\n\nAffected files:\n{}", br.summary, br.affected_files.iter().map(|f| format!("  {} - {}", f.path, f.reason)).collect::<Vec<_>>().join("\n")))
         }
+        "list_knowledge_bases" => {
+            let ctx = knowledge_ctx.ok_or("Knowledge tools not available")?;
+            tool_list_knowledge_bases(ctx)
+        }
+        "search_knowledge" => {
+            let ctx = knowledge_ctx.ok_or("Knowledge tools not available")?;
+            let query = args["query"].as_str().ok_or("query required")?;
+            let kbase_id = args["kbase_id"].as_str();
+            let limit = args["limit"].as_u64().unwrap_or(8) as usize;
+            tool_search_knowledge(ctx, query, kbase_id, limit)
+        }
+        "read_knowledge_document" => {
+            let ctx = knowledge_ctx.ok_or("Knowledge tools not available")?;
+            let document_id = args["document_id"].as_str().ok_or("document_id required")?;
+            let chunk_index = args["chunk_index"].as_i64();
+            let limit = args["limit"].as_i64();
+            tool_read_knowledge_document(ctx, document_id, chunk_index, limit)
+        }
         _ => Err(format!("Unknown tool: {}", tool_name)),
     }
 }
@@ -849,6 +937,7 @@ struct LoopRunContext {
     collector: EditCollector,
     activity_log: ActivityLog,
     cancel: Arc<AtomicBool>,
+    knowledge_ctx: Option<Arc<KnowledgeToolCtx>>,
 }
 
 /// Run the AI Loop: converse → tool calls → results → converse → final response
@@ -867,6 +956,7 @@ pub async fn run_loop(
     max_iterations: Option<usize>,
     config: LoopConfig,
     cancel: Arc<AtomicBool>,
+    knowledge_ctx: Option<Arc<KnowledgeToolCtx>>,
 ) -> Result<LoopOutcome, String> {
     let ctx = LoopRunContext {
         app,
@@ -886,6 +976,7 @@ pub async fn run_loop(
         collector: Arc::new(Mutex::new(Vec::new())),
         activity_log: Arc::new(Mutex::new(Vec::new())),
         cancel,
+        knowledge_ctx,
     };
     run_loop_inner(ctx).await
 }
@@ -927,6 +1018,7 @@ pub async fn run_loop_resume(
         collector: paused.collector,
         activity_log: paused.activity_log,
         cancel: paused.cancel,
+        knowledge_ctx: paused.knowledge_ctx,
     };
     run_loop_inner(ctx).await
 }
@@ -1073,6 +1165,8 @@ async fn run_loop_inner(mut ctx: LoopRunContext) -> Result<LoopOutcome, String> 
                                     args: Some(args_str.clone()),
                                     status: "running".into(),
                                     result: None,
+                                    started_at: None,
+                                    finished_at: None,
                                 };
                                 ctx.activity_log.lock().unwrap().push(step.clone());
                                 emit_activity(&ctx.app, &ctx.session_id, &ctx.message_id, &step);
@@ -1129,6 +1223,8 @@ async fn run_loop_inner(mut ctx: LoopRunContext) -> Result<LoopOutcome, String> 
                                 args: Some(args_str.clone()),
                                 status: "success".into(),
                                 result: Some("Awaiting user input".into()),
+                                started_at: None,
+                                finished_at: None,
                             };
                             ctx.activity_log.lock().unwrap().push(step.clone());
                             emit_activity(&ctx.app, &ctx.session_id, &ctx.message_id, &step);
@@ -1173,6 +1269,7 @@ async fn run_loop_inner(mut ctx: LoopRunContext) -> Result<LoopOutcome, String> 
                                 ask_user_call: tc.clone(),
                                 pending_questions: pending,
                                 cancel: ctx.cancel.clone(),
+                                knowledge_ctx: ctx.knowledge_ctx.clone(),
                             };
 
                             return Ok(LoopOutcome::Paused {
@@ -1201,6 +1298,8 @@ async fn run_loop_inner(mut ctx: LoopRunContext) -> Result<LoopOutcome, String> 
                         args: Some(args_str.clone()),
                         status: "running".into(),
                         result: None,
+                        started_at: None,
+                        finished_at: None,
                     };
                     ctx.activity_log.lock().unwrap().push(step.clone());
                     emit_activity(&ctx.app, &ctx.session_id, &ctx.message_id, &step);
@@ -1221,6 +1320,7 @@ async fn run_loop_inner(mut ctx: LoopRunContext) -> Result<LoopOutcome, String> 
                     &tc.arguments,
                     &ctx.config,
                     &ctx.collector,
+                    ctx.knowledge_ctx.as_deref(),
                 )
                 .await;
                 let result_str = match &result {
@@ -1337,6 +1437,7 @@ mod ask_mode_tests {
             write_count: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             agent_mode: "edit".into(),
             ask_user_satisfied: false,
+            enabled_kbase_ids: vec![],
         };
         assert!(check_side_effect_confirmation(&config, "bash").is_err());
         assert!(check_side_effect_confirmation(&config, "read_file").is_ok());

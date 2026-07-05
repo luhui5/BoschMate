@@ -16,6 +16,12 @@ import type {
   CIStatus,
   PendingQuestions,
 } from './types'
+import type {
+  KnowledgeBase,
+  KnowledgeDocument,
+  KnowledgeKind,
+  KnowledgeStatus,
+} from './knowledge'
 import { parseDiffsFromRaw } from './diff-parser'
 
 // ── Raw shapes from Rust (serde default field names) ──
@@ -107,6 +113,29 @@ export interface RawNote {
   updated_at: string
 }
 
+export interface RawKnowledgeBase {
+  id: string
+  name: string
+  description?: string | null
+  document_count: number
+  chunk_count: number
+  created_at: string
+  updated_at: string
+}
+
+export interface RawKnowledgeDocument {
+  id: string
+  kbase_id: string
+  name: string
+  kind: string
+  size_bytes: number
+  status: string
+  chunk_count: number
+  error?: string | null
+  created_at: string
+  updated_at: string
+}
+
 function asAgentMode(m: string): AgentMode {
   if (m === 'ask' || m === 'plan' || m === 'edit' || m === 'auto') return m
   return 'ask'
@@ -138,6 +167,18 @@ function parseActivitySteps(raw: unknown): ActivityStep[] | undefined {
               : undefined,
         status: (o.status as ActivityStep['status']) ?? 'success',
         result: o.result != null ? String(o.result) : undefined,
+        startedAt:
+          o.startedAt != null
+            ? String(o.startedAt)
+            : o.started_at != null
+              ? String(o.started_at)
+              : undefined,
+        finishedAt:
+          o.finishedAt != null
+            ? String(o.finishedAt)
+            : o.finished_at != null
+              ? String(o.finished_at)
+              : undefined,
       }
     })
   }
@@ -297,6 +338,33 @@ export function mapNote(raw: RawNote): Note {
     id: raw.id,
     title: raw.title,
     body: raw.content,
+    updatedAt: raw.updated_at,
+  }
+}
+
+export function mapKnowledgeBase(raw: RawKnowledgeBase): KnowledgeBase {
+  return {
+    id: raw.id,
+    name: raw.name,
+    description: raw.description ?? undefined,
+    documentCount: raw.document_count,
+    chunkCount: raw.chunk_count,
+    createdAt: raw.created_at,
+    updatedAt: raw.updated_at,
+  }
+}
+
+export function mapKnowledgeDocument(raw: RawKnowledgeDocument): KnowledgeDocument {
+  return {
+    id: raw.id,
+    kbaseId: raw.kbase_id,
+    name: raw.name,
+    kind: raw.kind as KnowledgeKind,
+    sizeBytes: raw.size_bytes,
+    status: raw.status as KnowledgeStatus,
+    chunkCount: raw.chunk_count,
+    error: raw.error ?? undefined,
+    addedAt: raw.created_at,
     updatedAt: raw.updated_at,
   }
 }

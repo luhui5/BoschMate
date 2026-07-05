@@ -148,6 +148,21 @@ export function AppProvider({ children }: { children: ReactNode }) {
     load()
   }, [])
 
+  useEffect(() => {
+    if (!isDesktop) return
+    let unlisten: (() => void) | undefined
+    void import("@tauri-apps/api/window").then(({ getCurrentWindow }) =>
+      getCurrentWindow().onCloseRequested(() => {
+        // Recovery cleared in Rust on CloseRequested / ExitRequested
+      }).then((fn) => {
+        unlisten = fn
+      }),
+    )
+    return () => {
+      unlisten?.()
+    }
+  }, [isDesktop])
+
   // Health probe every 30s (Full / Degraded / Offline)
   useEffect(() => {
     if (!isDesktop) return

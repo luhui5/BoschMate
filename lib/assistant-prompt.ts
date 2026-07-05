@@ -7,15 +7,27 @@ import { DEFAULT_AGENT_MODE } from "@/lib/constants"
 
 const TOOL_LIST = `read_file, write_file, edit_file, grep, glob, list_directory,
   bash, git_status, git_diff, git_log, git_commit, web_fetch, outlook_read, outlook_send,
-  list_symbols, find_references, file_deps, blast_radius, open, open_vscode, ask_user`
+  list_symbols, find_references, file_deps, blast_radius, open, open_vscode, ask_user,
+  list_knowledge_bases, search_knowledge, read_knowledge_document`
 
 const ASK_TOOL_LIST = `read_file, grep, glob, list_directory,
   git_status, git_diff, git_log, web_fetch, outlook_read,
-  list_symbols, find_references, file_deps, ask_user`
+  list_symbols, find_references, file_deps, ask_user,
+  list_knowledge_bases, search_knowledge, read_knowledge_document`
 
 const PLAN_TOOL_LIST = `read_file, grep, glob, list_directory,
   git_status, git_diff, git_log, web_fetch, outlook_read,
-  list_symbols, find_references, file_deps, blast_radius, ask_user`
+  list_symbols, find_references, file_deps, blast_radius, ask_user,
+  list_knowledge_bases, search_knowledge, read_knowledge_document`
+
+const KNOWLEDGE_ONLY_TOOL_LIST = `list_knowledge_bases, search_knowledge, read_knowledge_document, web_fetch, ask_user`
+
+function knowledgeBaseGuidanceBlock(): string {
+  return `## Knowledge base (on-demand)
+- When the user asks about uploaded documents, call **search_knowledge** first, then **read_knowledge_document** for details.
+- Do not assume document content is already in context.
+- Use **list_knowledge_bases** to see which knowledge bases and documents are available.`
+}
 
 function modeGuidance(mode: AgentMode): string {
   switch (mode) {
@@ -120,8 +132,19 @@ ${sideEffectToolsBlock("auto")}
 - After multi-step execution (file edits, shell commands, or plan execution), end your final reply with a **执行汇总** section (3–6 bullets): what was done, files changed, verification results (build/test), and any remaining items or follow-ups. Keep it concise.`
 }
 
-function buildWorkspaceBlock(mode: AgentMode, folder: string | null): string {
+function buildWorkspaceBlock(mode: AgentMode, folder: string | null, knowledgeEnabled?: boolean): string {
   if (!folder) {
+    if (knowledgeEnabled) {
+      return `## Local workspace (NOT bound)
+- No workspace folder is bound yet.
+- You cannot read local project files or run shell commands until a workspace folder is available.
+- **Knowledge base tools are available**: ${KNOWLEDGE_ONLY_TOOL_LIST}.
+- Ask the user to bind a folder via **工作文件夹** in the + menu if they need codebase tools.
+
+${knowledgeBaseGuidanceBlock()}
+
+${modeGuidance(mode)}`
+    }
     return `## Local workspace (NOT bound)
 - No workspace folder is bound yet.
 - You cannot read local files or run shell commands until a workspace folder is available.
@@ -135,7 +158,7 @@ function buildWorkspaceBlock(mode: AgentMode, folder: string | null): string {
   if (mode === "edit") {
     return `## Local workspace (ACTIVE)
 ${common}
-- **Read-only tools**: read_file, grep, glob, list_directory, git_status, git_diff, git_log, list_symbols, find_references, file_deps, blast_radius, web_fetch, outlook_read.
+- **Read-only tools**: read_file, grep, glob, list_directory, git_status, git_diff, git_log, list_symbols, find_references, file_deps, blast_radius, web_fetch, outlook_read, list_knowledge_bases, search_knowledge, read_knowledge_document.
 - **File changes (diff preview)**: write_file, edit_file — each change must be **accepted in the UI** before it applies.
 - **Side-effect tools (no preview)**: bash, git_commit, open, open_vscode, outlook_send — **must** complete ask_user confirmation before calling.
 - Use **ask_user** for structured clarification and for side-effect confirmation.
@@ -144,7 +167,11 @@ ${modeGuidance(mode)}
 
 ${editModeBehaviorBlock()}
 
-${sideEffectToolsBlock("edit")}`
+${thinkingFormatBlock()}
+
+${sideEffectToolsBlock("edit")}
+
+${knowledgeBaseGuidanceBlock()}`
   }
 
   if (mode === "plan") {
@@ -155,7 +182,9 @@ ${common}
 
 ${modeGuidance(mode)}
 
-${planModeBehaviorBlock()}`
+${planModeBehaviorBlock()}
+
+${knowledgeBaseGuidanceBlock()}`
   }
 
   if (mode === "ask") {
@@ -166,7 +195,9 @@ ${common}
 
 ${modeGuidance(mode)}
 
-${askModeBehaviorBlock()}`
+${askModeBehaviorBlock()}
+
+${knowledgeBaseGuidanceBlock()}`
   }
 
   // auto
@@ -180,7 +211,11 @@ ${common}
 
 ${modeGuidance(mode)}
 
-${autoModeBehaviorBlock()}`
+${autoModeBehaviorBlock()}
+
+${thinkingFormatBlock()}
+
+${knowledgeBaseGuidanceBlock()}`
 }
 
 function capabilitiesBlock(mode: AgentMode): string {
@@ -190,6 +225,20 @@ function capabilitiesBlock(mode: AgentMode): string {
   }
   return `- Writing, translation, planning, analysis, coding help, document summaries
 - When a workspace is bound: inspect, edit, run commands, and automate tasks using tools`
+}
+
+function thinkingFormatBlock(): string {
+  return `## Extended thinking (before tool calls — mandatory in edit/auto)
+
+When you will call tools in this turn, structure **all text before the first tool call** exactly as:
+
+1. **Line 1**: One-sentence summary of what you will investigate or do (current goal).
+2. Blank line.
+3. \`<!-- plan -->\` on its own line, then planned steps (shown muted in UI), then \`<!-- /plan -->\` on its own line.
+4. Blank line.
+5. Reasoning, hypotheses, and context (normal text).
+
+Do **NOT** use this structure for the final user-facing reply when no tools are called in that turn (e.g. execution summary after all tools complete).`
 }
 
 function styleBlock(mode: AgentMode): string {
@@ -210,12 +259,13 @@ export function buildAssistantSystemPrompt(options: {
   toolsEnabled: boolean
   mode?: AgentMode
   memoryContext?: string
+  knowledgeEnabled?: boolean
 }): string {
-  const { folder, toolsEnabled, mode = DEFAULT_AGENT_MODE, memoryContext } = options
+  const { folder, toolsEnabled, mode = DEFAULT_AGENT_MODE, memoryContext, knowledgeEnabled } = options
 
   const workspaceBlock = toolsEnabled
-    ? buildWorkspaceBlock(mode, folder)
-    : buildWorkspaceBlock(mode, null)
+    ? buildWorkspaceBlock(mode, folder, knowledgeEnabled)
+    : buildWorkspaceBlock(mode, null, knowledgeEnabled)
 
   const memoryBlock =
     memoryContext && memoryContext.trim()

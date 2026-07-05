@@ -1,6 +1,6 @@
 "use client"
 
-import { memo, useLayoutEffect, useRef, useState, useCallback } from "react"
+import { memo, useLayoutEffect, useRef, useState, useCallback, useEffect } from "react"
 import {
   CheckCircle2,
   Loader2,
@@ -14,6 +14,11 @@ import { BoschGradientText } from "@/components/bosch-gradient-text"
 import { cn } from "@/lib/utils"
 import { isNearBottom, scrollContainerToBottom } from "@/lib/scroll-to-bottom"
 import type { ActivityStep, ChatMessage } from "@/lib/types"
+import {
+  formatThoughtDuration,
+  pickLiveThought,
+  splitThoughtDetail,
+} from "@/lib/thought-display"
 
 function parseArgs(args?: string): Record<string, unknown> {
   if (!args) return {}
@@ -217,19 +222,31 @@ function CompactToolRow({ step }: { step: ActivityStep }) {
 
 function ExploringLivePanel({
   steps,
+  liveThought,
   thinkingOnly = false,
 }: {
   steps: ActivityStep[]
+  liveThought?: ActivityStep
   thinkingOnly?: boolean
 }) {
   const scrollRef = useRef<HTMLDivElement>(null)
   const contentRef = useRef<HTMLDivElement>(null)
   const stickToBottomRef = useRef(true)
+  const [now, setNow] = useState(() => Date.now())
 
   const toolSteps = steps.filter((s) => s.kind === "tool")
   const hasRunningTool = toolSteps.some((s) => s.status === "running")
+  const thoughtRunning = liveThought?.status === "running"
 
   const phaseTitle = thinkingOnly || !hasRunningTool ? "Exploring" : "Executing"
+  const durationLabel = liveThought ? formatThoughtDuration(liveThought, now) : null
+  const { summary, plan, body } = splitThoughtDetail(liveThought?.detail)
+
+  useEffect(() => {
+    if (!thoughtRunning) return
+    const id = window.setInterval(() => setNow(Date.now()), 500)
+    return () => window.clearInterval(id)
+  }, [thoughtRunning])
 
   const scrollInnerToBottom = useCallback(() => {
     const el = scrollRef.current
@@ -239,7 +256,7 @@ function ExploringLivePanel({
 
   useLayoutEffect(() => {
     scrollInnerToBottom()
-  }, [toolSteps.length, scrollInnerToBottom])
+  }, [toolSteps.length, liveThought?.detail, scrollInnerToBottom])
 
   useLayoutEffect(() => {
     const content = contentRef.current
@@ -258,11 +275,21 @@ function ExploringLivePanel({
     stickToBottomRef.current = isNearBottom(el, 16)
   }
 
+  const hasThoughtText = Boolean(summary || plan || body)
+
   return (
     <div className="w-full min-w-0">
+      {durationLabel && (
+        <p className="mb-1 text-xs text-muted-foreground">{durationLabel}</p>
+      )}
+
+      {summary && (
+        <p className="mb-2 text-sm text-foreground/90">{summary}</p>
+      )}
+
       <div className="mb-2 flex items-center gap-2">
         <span className="text-sm font-medium text-foreground/90">{phaseTitle}</span>
-        {(thinkingOnly || hasRunningTool) && (
+        {(thinkingOnly || thoughtRunning || hasRunningTool) && (
           <Loader2 className="size-3.5 animate-spin text-muted-foreground" />
         )}
       </div>
@@ -273,7 +300,19 @@ function ExploringLivePanel({
         className="scrollbar-hover-y max-h-[min(420px,50vh)] min-w-0 space-y-3 overflow-y-auto pr-1"
       >
         <div ref={contentRef} className="space-y-3">
-          {toolSteps.length === 0 && (
+          {plan && (
+            <p className="whitespace-pre-wrap text-sm leading-relaxed text-muted-foreground/60">
+              {plan}
+            </p>
+          )}
+
+          {body && (
+            <p className="whitespace-pre-wrap text-sm leading-relaxed text-foreground/90">
+              {body}
+            </p>
+          )}
+
+          {!hasThoughtText && toolSteps.length === 0 && (
             <p className="text-sm leading-relaxed text-muted-foreground/60">正在分析…</p>
           )}
 
@@ -299,6 +338,7 @@ function ToolActivityPanelInner({
   explorePhase?: boolean
 }) {
   const steps = message.activitySteps ?? []
+  const liveThought = pickLiveThought(steps)
   const hasRunningTool = steps.some((s) => s.kind === "tool" && s.status === "running")
   const isLive =
     explorePhase ??
@@ -308,12 +348,14 @@ function ToolActivityPanelInner({
 
   if (!showThinking && steps.length === 0) return null
 
-  if (showThinking) {
-    return <ExploringLivePanel steps={[]} thinkingOnly />
-  }
-
   if (isLive) {
-    return <ExploringLivePanel steps={steps} />
+    return (
+      <ExploringLivePanel
+        steps={steps}
+        liveThought={liveThought}
+        thinkingOnly={showThinking}
+      />
+    )
   }
 
   const hasRunning =

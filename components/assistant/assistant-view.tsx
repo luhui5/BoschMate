@@ -90,6 +90,7 @@ import { useProjectWorkspace } from "@/components/workspace/use-project-workspac
 import { RightSidebar } from "@/components/workspace/right-sidebar"
 import { FilePreviewPanel } from "@/components/file-preview-panel"
 import { BulkWriteDialog } from "@/components/bulk-write-dialog"
+import { getEnabledKbaseIds } from "@/lib/knowledge"
 import type { ActivityStep, AgentMode, ChatMessage, DiffHunk, QuestionAnswer } from "@/lib/types"
 
 interface Suggestion {
@@ -301,6 +302,13 @@ export function AssistantView({
   const followScrollRafRef = useRef<number | null>(null)
   const tokenFlushTimerRef = useRef<number | null>(null)
   const pendingTokenRef = useRef<{ messageId: string; content: string } | null>(null)
+  const thoughtFlushTimerRef = useRef<number | null>(null)
+  const pendingThoughtDetailRef = useRef<{
+    messageId: string
+    thoughtId: string
+    detail: string
+  } | null>(null)
+  const activeThoughtIdRef = useRef<string | null>(null)
   const activityFlushTimerRef = useRef<number | null>(null)
   const pendingActivityStepsRef = useRef<ActivityStep[]>([])
   const chatMessagesCacheRef = useRef(new Map<string, ChatMessage>())
@@ -653,6 +661,84 @@ export function AssistantView({
     [flushPendingToken],
   )
 
+  const flushPendingThoughtDetail = useCallback(() => {
+    thoughtFlushTimerRef.current = null
+    const pending = pendingThoughtDetailRef.current
+    if (!pending) return
+    pendingThoughtDetailRef.current = null
+    const sessionId = generatingSessionRef.current
+    if (!sessionId) return
+    startTransition(() => {
+      setSessions((prev) =>
+        prev.map((s) =>
+          s.id === sessionId
+            ? {
+                ...s,
+                messages: s.messages.map((m) => {
+                  if (m.id !== pending.messageId) return m
+                  const activitySteps = (m.activitySteps ?? []).map((step) =>
+                    step.id === pending.thoughtId
+                      ? { ...step, detail: pending.detail }
+                      : step,
+                  )
+                  return { ...m, activitySteps }
+                }),
+                updatedAt: new Date().toISOString(),
+              }
+            : s,
+        ),
+      )
+    })
+    scheduleFollowScroll()
+  }, [scheduleFollowScroll])
+
+  const queueThoughtDetail = useCallback(
+    (messageId: string, thoughtId: string, detail: string) => {
+      pendingThoughtDetailRef.current = { messageId, thoughtId, detail }
+      if (thoughtFlushTimerRef.current != null) return
+      thoughtFlushTimerRef.current = window.setTimeout(flushPendingThoughtDetail, 150)
+    },
+    [flushPendingThoughtDetail],
+  )
+
+  const flushPendingThoughtDetailSync = useCallback(() => {
+    if (thoughtFlushTimerRef.current != null) {
+      window.clearTimeout(thoughtFlushTimerRef.current)
+      thoughtFlushTimerRef.current = null
+    }
+    flushPendingThoughtDetail()
+  }, [flushPendingThoughtDetail])
+
+  const handleLoopActivity = useCallback(
+    (step: ActivityStep) => {
+      if (step.kind === "thought") {
+        if (step.status === "running") {
+          activeThoughtIdRef.current = step.id
+        } else if (
+          activeThoughtIdRef.current === step.id &&
+          (step.status === "success" || step.status === "error")
+        ) {
+          flushPendingThoughtDetailSync()
+          activeThoughtIdRef.current = null
+        }
+      }
+      queueActivityUpdate(step)
+    },
+    [queueActivityUpdate, flushPendingThoughtDetailSync],
+  )
+
+  const routeChatToken = useCallback(
+    (messageId: string, content: string) => {
+      const thoughtId = activeThoughtIdRef.current
+      if (thoughtId) {
+        queueThoughtDetail(messageId, thoughtId, content)
+      } else {
+        queueStreamingToken(messageId, content)
+      }
+    },
+    [queueThoughtDetail, queueStreamingToken],
+  )
+
   const flushStreamingTokenSync = useCallback(() => {
     if (tokenFlushTimerRef.current != null) {
       window.clearTimeout(tokenFlushTimerRef.current)
@@ -944,7 +1030,11 @@ export function AssistantView({
     setLlmError(null)
 
     const folder = await resolveWorkspaceFolder(activeWorkspace)
-    const toolsEnabled = Boolean(folder)
+    const hasWorkspace = Boolean(folder && workspaceProjectId)
+    const enabledKbaseIds = isTauri() ? getEnabledKbaseIds() : []
+    const hasKnowledge = isTauri() && enabledKbaseIds.length > 0
+    const knowledgeOnlyMode = !hasWorkspace && hasKnowledge
+    const toolsEnabled = hasWorkspace || hasKnowledge
 
     updateActiveMessages((msgs) => [
       ...finalizeProcessingMessages(msgs),
@@ -961,14 +1051,14 @@ export function AssistantView({
     const unlistenToken = onChatToken((e) => {
       if (e.session_id !== activeId || e.message_id !== assistantMsgId) return
       if (stopRequestedRef.current) return
-      queueStreamingToken(assistantMsgId, e.content)
+      routeChatToken(assistantMsgId, e.content)
     })
 
     const unlistenActivity = toolsEnabled
       ? onLoopActivity((e) => {
           if (e.session_id !== activeId || e.message_id !== assistantMsgId) return
           if (stopRequestedRef.current) return
-          queueActivityUpdate(mapActivityStep(e.step))
+          handleLoopActivity(mapActivityStep(e.step))
         })
       : () => {}
 
@@ -990,6 +1080,7 @@ export function AssistantView({
       toolsEnabled,
       mode: agentMode,
       memoryContext,
+      knowledgeEnabled: hasKnowledge,
     })
 
     try {
@@ -1000,7 +1091,7 @@ export function AssistantView({
       })
 
       let response
-      if (toolsEnabled && folder && workspaceProjectId) {
+      if (hasWorkspace) {
         response = await aiLoopChat(
           {
             provider: modelCfg.provider,
@@ -1013,9 +1104,29 @@ export function AssistantView({
             agent_mode: agentMode,
             edit_dry_run: agentMode === "edit",
             bulk_write_confirmed: opts?.bulkWriteConfirmed,
+            enabled_kbase_ids: enabledKbaseIds.length > 0 ? enabledKbaseIds : undefined,
           },
           activeId,
-          workspaceProjectId,
+          workspaceProjectId!,
+          assistantMsgId,
+        )
+      } else if (knowledgeOnlyMode) {
+        response = await aiLoopChat(
+          {
+            provider: modelCfg.provider,
+            model: modelCfg.name,
+            messages: llmMessages,
+            system_prompt: system,
+            api_key: apiKey,
+            base_url: modelCfg.endpoint ?? undefined,
+            assistant_mode: true,
+            agent_mode: agentMode,
+            edit_dry_run: agentMode === "edit",
+            bulk_write_confirmed: opts?.bulkWriteConfirmed,
+            enabled_kbase_ids: enabledKbaseIds,
+          },
+          activeId,
+          "__assistant__",
           assistantMsgId,
         )
       } else {
@@ -1076,9 +1187,11 @@ export function AssistantView({
       updateActiveMessages((msgs) => msgs.filter((m) => m.id !== assistantMsgId))
     } finally {
       flushPendingActivitySync()
+      flushPendingThoughtDetailSync()
       flushStreamingTokenSync()
       unlistenToken()
       unlistenActivity()
+      activeThoughtIdRef.current = null
       setGenerating(false)
       generatingSessionRef.current = null
       activeAssistantMsgRef.current = null
@@ -1151,14 +1264,14 @@ export function AssistantView({
     const unlistenToken = onChatToken((e) => {
       if (e.session_id !== activeId || e.message_id !== messageId) return
       if (stopRequestedRef.current) return
-      queueStreamingToken(messageId, e.content)
+      routeChatToken(messageId, e.content)
     })
 
     const unlistenActivity = workspaceProjectId
       ? onLoopActivity((e) => {
           if (e.session_id !== activeId || e.message_id !== messageId) return
           if (stopRequestedRef.current) return
-          queueActivityUpdate(mapActivityStep(e.step))
+          handleLoopActivity(mapActivityStep(e.step))
         })
       : () => {}
 
@@ -1215,9 +1328,11 @@ export function AssistantView({
       )
     } finally {
       flushPendingActivitySync()
+      flushPendingThoughtDetailSync()
       flushStreamingTokenSync()
       unlistenToken()
       unlistenActivity()
+      activeThoughtIdRef.current = null
       setGenerating(false)
       generatingSessionRef.current = null
       activeAssistantMsgRef.current = null

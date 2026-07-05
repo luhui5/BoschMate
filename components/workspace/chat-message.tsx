@@ -78,24 +78,14 @@ function ChatMessageViewInner({
   const stepCount = message.activitySteps?.length ?? 0
   const toolSteps =
     message.activitySteps?.filter((s) => s.kind === "tool") ?? []
-  const toolStepCount = toolSteps.length
   const toolStepsStillRunning = toolSteps.some((s) => s.status === "running")
-  const thoughtRunning =
-    message.activitySteps?.some(
-      (s) => s.kind === "thought" && s.status === "running",
-    ) ?? false
-  // Hide preamble streamed before first tool call (cheap plain phase, not markdown)
-  const hideStreamingOutput =
-    Boolean(message.streaming) &&
-    toolStepCount === 0 &&
-    thoughtRunning &&
-    hasOutput
-  const showOutput =
-    hasOutput &&
-    (!message.streaming || !toolStepsStillRunning || thoughtRunning)
   const explorePhase =
     Boolean(message.streaming) &&
-    (stepCount === 0 || toolStepsStillRunning || !hasOutput || hideStreamingOutput)
+    (stepCount === 0 || toolStepsStillRunning || !hasOutput)
+  const showOutput =
+    hasOutput &&
+    !explorePhase &&
+    (!message.streaming || !toolStepsStillRunning)
 
   const showQuestionCard = Boolean(
     message.pendingQuestions?.status === "pending" && !message.streaming,

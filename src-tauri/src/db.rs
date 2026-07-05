@@ -1,9 +1,9 @@
 use rusqlite::{Connection, Result, params};
 use std::path::PathBuf;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 pub struct Database {
-    pub conn: Mutex<Connection>,
+    pub conn: Arc<Mutex<Connection>>,
 }
 
 impl Database {
@@ -20,7 +20,9 @@ impl Database {
             PRAGMA cache_size = -64000;
         ")?;
 
-        let db = Database { conn: Mutex::new(conn) };
+        let db = Database {
+            conn: Arc::new(Mutex::new(conn)),
+        };
         db.run_migrations()?;
         db.seed_assistant_project(app_dir)?;
         Ok(db)
@@ -171,6 +173,49 @@ impl Database {
                 sandboxed INTEGER NOT NULL DEFAULT 1,
                 created_at TEXT NOT NULL
             );
+
+            CREATE TABLE IF NOT EXISTS knowledge_bases (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                description TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS knowledge_documents (
+                id TEXT PRIMARY KEY,
+                kbase_id TEXT NOT NULL REFERENCES knowledge_bases(id) ON DELETE CASCADE,
+                name TEXT NOT NULL,
+                kind TEXT NOT NULL,
+                size_bytes INTEGER NOT NULL DEFAULT 0,
+                status TEXT NOT NULL DEFAULT 'pending',
+                chunk_count INTEGER NOT NULL DEFAULT 0,
+                storage_path TEXT NOT NULL,
+                error TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_knowledge_documents_kbase ON knowledge_documents(kbase_id, updated_at DESC);
+
+            CREATE TABLE IF NOT EXISTS knowledge_chunks (
+                id TEXT PRIMARY KEY,
+                document_id TEXT NOT NULL REFERENCES knowledge_documents(id) ON DELETE CASCADE,
+                kbase_id TEXT NOT NULL REFERENCES knowledge_bases(id) ON DELETE CASCADE,
+                chunk_index INTEGER NOT NULL,
+                content TEXT NOT NULL,
+                embedding BLOB,
+                created_at TEXT NOT NULL
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_knowledge_chunks_kbase ON knowledge_chunks(kbase_id);
+            CREATE INDEX IF NOT EXISTS idx_knowledge_chunks_doc ON knowledge_chunks(document_id, chunk_index);
+
+            CREATE VIRTUAL TABLE IF NOT EXISTS knowledge_chunks_fts USING fts5(
+                content,
+                content='knowledge_chunks',
+                content_rowid='rowid'
+            );
         ")?;
 
         // Migrate legacy DBs missing edit_meta column
@@ -187,6 +232,17 @@ impl Database {
             CREATE TRIGGER IF NOT EXISTS memories_au AFTER UPDATE ON memories BEGIN
               INSERT INTO memories_fts(memories_fts, rowid, content) VALUES('delete', old.rowid, old.content);
               INSERT INTO memories_fts(rowid, content) VALUES (new.rowid, new.content);
+            END;
+
+            CREATE TRIGGER IF NOT EXISTS knowledge_chunks_ai AFTER INSERT ON knowledge_chunks BEGIN
+              INSERT INTO knowledge_chunks_fts(rowid, content) VALUES (new.rowid, new.content);
+            END;
+            CREATE TRIGGER IF NOT EXISTS knowledge_chunks_ad AFTER DELETE ON knowledge_chunks BEGIN
+              INSERT INTO knowledge_chunks_fts(knowledge_chunks_fts, rowid, content) VALUES('delete', old.rowid, old.content);
+            END;
+            CREATE TRIGGER IF NOT EXISTS knowledge_chunks_au AFTER UPDATE ON knowledge_chunks BEGIN
+              INSERT INTO knowledge_chunks_fts(knowledge_chunks_fts, rowid, content) VALUES('delete', old.rowid, old.content);
+              INSERT INTO knowledge_chunks_fts(rowid, content) VALUES (new.rowid, new.content);
             END;
         ");
 

@@ -200,6 +200,79 @@ pub struct Skill {
     pub command: Option<String>,
 }
 
+// ── Knowledge Base ──
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct KnowledgeBase {
+    pub id: String,
+    pub name: String,
+    pub description: Option<String>,
+    pub document_count: i64,
+    pub chunk_count: i64,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct KnowledgeDocument {
+    pub id: String,
+    pub kbase_id: String,
+    pub name: String,
+    pub kind: String,
+    pub size_bytes: i64,
+    pub status: String,
+    pub chunk_count: i64,
+    pub error: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct KnowledgeChunkHit {
+    pub id: String,
+    pub document_id: String,
+    pub kbase_id: String,
+    pub kbase_name: String,
+    pub document_name: String,
+    pub chunk_index: i64,
+    pub content: String,
+    pub score: f64,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct CreateKnowledgeBaseInput {
+    pub name: String,
+    #[serde(default)]
+    pub description: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct UpdateKnowledgeBaseInput {
+    pub id: String,
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub description: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct IngestKnowledgeDocumentInput {
+    pub kbase_id: String,
+    pub name: String,
+    pub kind: String,
+    pub data_base64: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct RetrieveKnowledgeContextInput {
+    pub kbase_ids: Vec<String>,
+    pub query: String,
+    #[serde(default)]
+    pub top_k: Option<usize>,
+    #[serde(default)]
+    pub ollama_url: Option<String>,
+}
+
 // ── Update ──
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

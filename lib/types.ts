@@ -41,6 +41,8 @@ export interface ActivityStep {
   args?: string
   status: "running" | "success" | "error"
   result?: string
+  startedAt?: string
+  finishedAt?: string
 }
 
 export interface DiffHunk {

@@ -1,26 +1,44 @@
-export type KnowledgeKind = "pdf" | "word" | "ppt" | "excel" | "text" | "other"
+export type KnowledgeKind = "pdf" | "word" | "excel" | "text" | "other"
 
-export type KnowledgeStatus = "indexing" | "ready" | "failed"
+export type KnowledgeStatus = "pending" | "indexing" | "ready" | "failed"
 
-export interface KnowledgeFile {
+export interface KnowledgeBase {
   id: string
+  name: string
+  description?: string
+  documentCount: number
+  chunkCount: number
+  createdAt: string
+  updatedAt: string
+}
+
+export interface KnowledgeDocument {
+  id: string
+  kbaseId: string
   name: string
   kind: KnowledgeKind
   sizeBytes: number
   status: KnowledgeStatus
-  chunks: number
+  chunkCount: number
+  error?: string
   addedAt: string
+  updatedAt: string
+}
+
+export interface KnowledgeIndexProgressEvent {
+  documentId: string
+  kbaseId: string
+  status: KnowledgeStatus
+  chunkCount: number
+  error?: string
 }
 
 export const ACCEPTED_EXTENSIONS =
-  ".pdf,.doc,.docx,.ppt,.pptx,.xls,.xlsx,.csv,.txt,.md"
+  ".pdf,.docx,.xls,.xlsx,.csv,.txt,.md"
 
 const EXT_TO_KIND: Record<string, KnowledgeKind> = {
   pdf: "pdf",
-  doc: "word",
   docx: "word",
-  ppt: "ppt",
-  pptx: "ppt",
   xls: "excel",
   xlsx: "excel",
   csv: "excel",
@@ -39,32 +57,29 @@ export function formatBytes(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
 }
 
-export const SEED_KNOWLEDGE: KnowledgeFile[] = [
-  {
-    id: "k1",
-    name: "架构设计规范 v3.pdf",
-    kind: "pdf",
-    sizeBytes: 2_340_000,
-    status: "ready",
-    chunks: 128,
-    addedAt: new Date(Date.now() - 1000 * 60 * 60 * 26).toISOString(),
-  },
-  {
-    id: "k2",
-    name: "季度产品路线图.pptx",
-    kind: "ppt",
-    sizeBytes: 5_120_000,
-    status: "ready",
-    chunks: 64,
-    addedAt: new Date(Date.now() - 1000 * 60 * 60 * 3).toISOString(),
-  },
-  {
-    id: "k3",
-    name: "接口成本核算.xlsx",
-    kind: "excel",
-    sizeBytes: 810_000,
-    status: "ready",
-    chunks: 22,
-    addedAt: new Date(Date.now() - 1000 * 60 * 40).toISOString(),
-  },
-]
+export const ENABLED_KBASES_KEY = "bc-enabled-kbases"
+
+export function getEnabledKbaseIds(): string[] {
+  if (typeof window === "undefined") return []
+  try {
+    const raw = localStorage.getItem(ENABLED_KBASES_KEY)
+    if (!raw) return []
+    return JSON.parse(raw) as string[]
+  } catch {
+    return []
+  }
+}
+
+export function loadEnabledKbases(allIds: string[]): string[] {
+  const saved = getEnabledKbaseIds()
+  if (saved.length === 0) return allIds
+  return saved.filter((id) => allIds.includes(id))
+}
+
+export function saveEnabledKbases(ids: string[]): void {
+  try {
+    localStorage.setItem(ENABLED_KBASES_KEY, JSON.stringify(ids))
+  } catch {
+    /* ignore */
+  }
+}
