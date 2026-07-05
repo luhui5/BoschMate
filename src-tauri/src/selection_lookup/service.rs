@@ -153,32 +153,11 @@ pub async fn trigger_lookup(
     preset_text: Option<String>,
 ) -> Result<(), String> {
     let settings = service.current_settings();
-    // #region agent log
-    super::debug_log::agent_log(
-        "H1",
-        "service.rs:trigger_lookup",
-        "enter",
-        serde_json::json!({
-            "source": source,
-            "enabled": settings.enabled,
-            "triggerMode": settings.trigger_mode,
-            "autoMode": settings.auto_mode
-        }),
-    );
-    // #endregion
     if !settings.enabled {
         return Ok(());
     }
 
     if should_skip_auto_trigger(app, service, source) {
-        // #region agent log
-        super::debug_log::agent_log(
-            "H8",
-            "service.rs:trigger_lookup",
-            "exit auto suppressed",
-            serde_json::json!({ "source": source }),
-        );
-        // #endregion
         return Ok(());
     }
 
@@ -188,14 +167,6 @@ pub async fn trigger_lookup(
     drop(conn);
 
     let Some(kbase_id) = kbase_id else {
-        // #region agent log
-        super::debug_log::agent_log(
-            "H3",
-            "service.rs:trigger_lookup",
-            "exit no_kbase",
-            serde_json::json!({ "source": source }),
-        );
-        // #endregion
         emit_error(app, "no_kbase", "请先在设置中选择默认知识库");
         return Ok(());
     };
@@ -216,14 +187,6 @@ pub async fn trigger_lookup(
         match capture_selection_text() {
             Ok(t) => t,
             Err(e) => {
-                // #region agent log
-                super::debug_log::agent_log(
-                    "H5",
-                    "service.rs:trigger_lookup",
-                    "exit capture_failed",
-                    serde_json::json!({ "source": source, "error": e }),
-                );
-                // #endregion
                 emit_error(
                     app,
                     "no_selection",
@@ -235,43 +198,16 @@ pub async fn trigger_lookup(
     };
 
     if text.chars().count() < settings.min_selection_chars {
-        // #region agent log
-        super::debug_log::agent_log(
-            "H5",
-            "service.rs:trigger_lookup",
-            "exit too_short",
-            serde_json::json!({ "source": source, "textLen": text.chars().count() }),
-        );
-        // #endregion
         return Ok(());
     }
 
     if should_skip_cooldown(service, &text) {
-        // #region agent log
-        super::debug_log::agent_log(
-            "H5",
-            "service.rs:trigger_lookup",
-            "exit cooldown",
-            serde_json::json!({ "source": source }),
-        );
-        // #endregion
         return Ok(());
     }
 
-    let popup = app.get_webview_window("selection-popup");
-    // #region agent log
-    super::debug_log::agent_log(
-        "H4",
-        "service.rs:trigger_lookup",
-        "popup lookup",
-        serde_json::json!({
-            "source": source,
-            "popupFound": popup.is_some(),
-            "labels": app.webview_windows().keys().collect::<Vec<_>>()
-        }),
-    );
-    // #endregion
-    let popup = popup.ok_or_else(|| "selection-popup window not found".to_string())?;
+    let popup = app
+        .get_webview_window("selection-popup")
+        .ok_or_else(|| "selection-popup window not found".to_string())?;
 
     position_popup_window(&popup);
     popup.show().map_err(|e| e.to_string())?;
@@ -287,29 +223,10 @@ pub async fn trigger_lookup(
         .emit("selection-lookup:start", &payload)
         .map_err(|e| e.to_string())?;
 
-    // #region agent log
-    super::debug_log::agent_log(
-        "H4",
-        "service.rs:trigger_lookup",
-        "success emit start",
-        serde_json::json!({ "source": source, "textLen": payload.text.chars().count() }),
-    );
-    // #endregion
-
     Ok(())
 }
 
 pub async fn trigger_from_shortcut(app: AppHandle) {
-    // #region agent log
-    super::debug_log::agent_log(
-        "H2",
-        "service.rs:trigger_from_shortcut",
-        "shortcut handler fired",
-        serde_json::json!({
-            "hasService": app.try_state::<Arc<SelectionLookupService>>().is_some()
-        }),
-    );
-    // #endregion
     let Some(service) = app.try_state::<Arc<SelectionLookupService>>() else {
         return;
     };
@@ -327,20 +244,9 @@ pub fn register_shortcut(app: &AppHandle, service: &SelectionLookupService) -> R
     }
 
     let shortcut = settings::normalize_shortcut(&settings.shortcut);
-    let register_result = app.global_shortcut().register(shortcut.as_str());
-    // #region agent log
-    super::debug_log::agent_log(
-        "H2",
-        "service.rs:register_shortcut",
-        "register result",
-        serde_json::json!({
-            "shortcut": shortcut,
-            "ok": register_result.is_ok(),
-            "error": register_result.as_ref().err().map(|e| e.to_string())
-        }),
-    );
-    // #endregion
-    register_result.map_err(|e| e.to_string())?;
+    app.global_shortcut()
+        .register(shortcut.as_str())
+        .map_err(|e| e.to_string())?;
 
     *service.registered_shortcut.lock().unwrap() = Some(shortcut);
     Ok(())
@@ -365,45 +271,13 @@ pub fn restart_auto_listeners(app: &AppHandle, service: &Arc<SelectionLookupServ
     }
 
     if settings.auto_mode == "mouse_up" {
-        // #region agent log
-        super::debug_log::agent_log(
-            "H6",
-            "service.rs:restart_auto_listeners",
-            "start mouse listener",
-            serde_json::json!({}),
-        );
-        // #endregion
         super::mouse_listener::start_mouse_listener(app.clone(), service.clone());
     } else if settings.auto_mode == "clipboard" {
-        // #region agent log
-        super::debug_log::agent_log(
-            "H6",
-            "service.rs:restart_auto_listeners",
-            "start clipboard listener",
-            serde_json::json!({}),
-        );
-        // #endregion
         super::clipboard_listener::start_clipboard_listener(app.clone(), service.clone());
     }
 }
 
 pub fn apply_runtime_config(app: &AppHandle, service: &Arc<SelectionLookupService>) {
-    let settings = service.current_settings();
-    // #region agent log
-    super::debug_log::agent_log(
-        "H1",
-        "service.rs:apply_runtime_config",
-        "apply",
-        serde_json::json!({
-            "enabled": settings.enabled,
-            "triggerMode": settings.trigger_mode,
-            "autoMode": settings.auto_mode,
-            "shortcut": settings.shortcut,
-            "usesShortcut": settings::trigger_uses_shortcut(&settings),
-            "usesAuto": settings::trigger_uses_auto(&settings)
-        }),
-    );
-    // #endregion
     let _ = register_shortcut(app, service);
     restart_auto_listeners(app, service);
 }
@@ -411,21 +285,7 @@ pub fn apply_runtime_config(app: &AppHandle, service: &Arc<SelectionLookupServic
 pub fn init(app: &AppHandle, state: &AppState) -> Result<Arc<SelectionLookupService>, String> {
     let conn = state.db.conn.lock().unwrap();
     let initial = settings::load_settings(&conn);
-    let kbase_id = settings::load_kbase_id(&conn);
     drop(conn);
-
-    // #region agent log
-    super::debug_log::agent_log(
-        "H1",
-        "service.rs:init",
-        "loaded from db",
-        serde_json::json!({
-            "enabled": initial.enabled,
-            "triggerMode": initial.trigger_mode,
-            "kbaseIdPresent": kbase_id.is_some()
-        }),
-    );
-    // #endregion
 
     let service = SelectionLookupService::new(initial);
     app.manage(service.clone());
@@ -444,79 +304,14 @@ pub async fn selection_lookup_apply_settings(
     mut settings: SelectionLookupSettings,
 ) -> Result<(), String> {
     settings.shortcut = settings::normalize_shortcut(&settings.shortcut);
-    // #region agent log
-    super::debug_log::agent_log(
-        "H1",
-        "service.rs:selection_lookup_apply_settings",
-        "apply from frontend",
-        serde_json::json!({
-            "enabled": settings.enabled,
-            "triggerMode": settings.trigger_mode,
-            "autoMode": settings.auto_mode,
-            "shortcut": settings.shortcut
-        }),
-    );
-    // #endregion
     {
         let conn = app_state.db.conn.lock().unwrap();
-        match settings::save_settings(&conn, &settings) {
-            Ok(()) => {
-                // #region agent log
-                super::debug_log::agent_log(
-                    "H7",
-                    "service.rs:selection_lookup_apply_settings",
-                    "save ok",
-                    serde_json::json!({}),
-                );
-                // #endregion
-            }
-            Err(e) => {
-                // #region agent log
-                super::debug_log::agent_log(
-                    "H7",
-                    "service.rs:selection_lookup_apply_settings",
-                    "save failed",
-                    serde_json::json!({ "error": e }),
-                );
-                // #endregion
-                return Err(e);
-            }
-        }
+        settings::save_settings(&conn, &settings)?;
     }
 
-    service.update_settings(settings.clone());
-    // #region agent log
-    super::debug_log::agent_log(
-        "H7",
-        "service.rs:selection_lookup_apply_settings",
-        "before apply_runtime_config",
-        serde_json::json!({ "enabled": settings.enabled }),
-    );
-    // #endregion
+    service.update_settings(settings);
     apply_runtime_config(&app, &service);
-    if let Err(e) = super::tray::refresh_tray_menu(&app, &service) {
-        // #region agent log
-        super::debug_log::agent_log(
-            "H7",
-            "service.rs:selection_lookup_apply_settings",
-            "tray refresh failed",
-            serde_json::json!({ "error": e }),
-        );
-        // #endregion
-    }
-    // #region agent log
-    super::debug_log::agent_log(
-        "H1",
-        "service.rs:selection_lookup_apply_settings",
-        "completed",
-        serde_json::json!({
-            "enabled": settings.enabled,
-            "triggerMode": settings.trigger_mode,
-            "usesAuto": settings::trigger_uses_auto(&settings),
-            "usesShortcut": settings::trigger_uses_shortcut(&settings)
-        }),
-    );
-    // #endregion
+    let _ = super::tray::refresh_tray_menu(&app, &service);
     Ok(())
 }
 
@@ -524,17 +319,8 @@ pub async fn selection_lookup_apply_settings(
 pub async fn hide_selection_popup(app: AppHandle) -> Result<(), String> {
     if let Some(service) = app.try_state::<Arc<SelectionLookupService>>() {
         let delay = service.current_settings().auto_delay_ms;
-        // Close button mouse-up would re-trigger lookup after debounce.
         service.suppress_auto_triggers(Duration::from_millis(delay + 800));
         service.clear_last_trigger();
-        // #region agent log
-        super::debug_log::agent_log(
-            "H9",
-            "service.rs:hide_selection_popup",
-            "cleared last_trigger",
-            serde_json::json!({}),
-        );
-        // #endregion
     }
     if let Some(popup) = app.get_webview_window("selection-popup") {
         popup.hide().map_err(|e| e.to_string())?;

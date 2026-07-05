@@ -1,6 +1,5 @@
 mod capture;
 mod clipboard_listener;
-mod debug_log;
 mod mouse_listener;
 pub mod service;
 mod settings;

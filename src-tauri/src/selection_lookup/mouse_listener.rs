@@ -13,7 +13,7 @@ pub fn start_mouse_listener(app: AppHandle, service: Arc<SelectionLookupService>
     let service_for_thread = service.clone();
     let handle = thread::spawn(move || {
         let generation = Arc::new(AtomicU64::new(0));
-        let listen_result = rdev::listen(move |event| {
+        let _ = rdev::listen(move |event| {
             if stop.load(Ordering::Relaxed) {
                 return;
             }
@@ -42,14 +42,6 @@ pub fn start_mouse_listener(app: AppHandle, service: Arc<SelectionLookupService>
                     return;
                 }
                 tauri::async_runtime::spawn(async move {
-                    // #region agent log
-                    super::debug_log::agent_log(
-                        "H6",
-                        "mouse_listener.rs",
-                        "mouse_up debounced trigger",
-                        serde_json::json!({}),
-                    );
-                    // #endregion
                     let _ = super::service::trigger_lookup(
                         &app_trigger,
                         &service_trigger,
@@ -60,16 +52,6 @@ pub fn start_mouse_listener(app: AppHandle, service: Arc<SelectionLookupService>
                 });
             });
         });
-        if let Err(e) = listen_result {
-            // #region agent log
-            super::debug_log::agent_log(
-                "H6",
-                "mouse_listener.rs",
-                "rdev listen failed",
-                serde_json::json!({ "error": format!("{:?}", e) }),
-            );
-            // #endregion
-        }
     });
     if let Ok(mut guard) = service.mouse_thread.lock() {
         *guard = Some(handle);

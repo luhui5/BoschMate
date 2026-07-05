@@ -35,9 +35,7 @@ export function SelectionLookupSection() {
     (next: SelectionLookupSettings) => {
       setSettings(next)
       if (isTauri()) {
-        selectionLookupApplySettings(next).catch((err) => {
-          console.error("[selection-lookup] apply settings failed:", err)
-        })
+        selectionLookupApplySettings(next).catch(() => {})
       }
     },
     [setSettings],
