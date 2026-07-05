@@ -33,6 +33,7 @@ export const dict = {
     "settings.privacy": "隐私与安全",
     "settings.integrations": "集成与技能",
     "settings.notifications": "通知",
+    "settings.selectionLookup": "划词查询",
     "settings.about": "关于与更新",
     "settings.language": "语言",
     "settings.language.desc": "切换后界面即时生效，无需重启。",
@@ -80,12 +81,6 @@ export const dict = {
     "update.feedback": "提交反馈",
     "update.toast.title": "有可用更新",
     "update.toast.view": "查看",
-    // Onboarding
-    "onboarding.welcome.title": "欢迎使用 BoschCode",
-    "onboarding.welcome.subtitle": "你的本地 AI 编程助手",
-    "onboarding.model.title": "选择 AI 模型",
-    "onboarding.project.title": "打开第一个项目",
-    "onboarding.tour.title": "快速导览",
   },
   en: {
     "common.cancel": "Cancel",
@@ -116,6 +111,7 @@ export const dict = {
     "settings.privacy": "Privacy & Security",
     "settings.integrations": "Integrations & Skills",
     "settings.notifications": "Notifications",
+    "settings.selectionLookup": "Selection Lookup",
     "settings.about": "About & Updates",
     "settings.language": "Language",
     "settings.language.desc": "Changes apply instantly, no restart required.",
@@ -162,11 +158,6 @@ export const dict = {
     "update.feedback": "Send feedback",
     "update.toast.title": "Update available",
     "update.toast.view": "View",
-    "onboarding.welcome.title": "Welcome to BoschCode",
-    "onboarding.welcome.subtitle": "Your Local AI Coding Assistant",
-    "onboarding.model.title": "Choose AI Model",
-    "onboarding.project.title": "Open Your First Project",
-    "onboarding.tour.title": "Quick Tour",
   },
 } as const
 

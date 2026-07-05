@@ -13,6 +13,7 @@
     "withGlobalTauri": false,
     "windows": [
       {
+        "label": "main",
         "title": "BoschCode",
         "width": 1400,
         "height": 900,
@@ -22,6 +23,19 @@
         "fullscreen": false,
         "center": true,
         "decorations": false
+      },
+      {
+        "label": "selection-popup",
+        "title": "BoschCode Lookup",
+        "url": "/selection-popup",
+        "width": 440,
+        "height": 360,
+        "visible": false,
+        "alwaysOnTop": true,
+        "decorations": false,
+        "skipTaskbar": true,
+        "resizable": true,
+        "center": false
       }
     ],
     "security": {

@@ -56,7 +56,6 @@ import {
   type ModelConfig,
 } from "@/lib/models"
 import {
-  streamChat,
   aiLoopChat,
   continueAiLoop,
   sendMessage as tauriSendMessage,
@@ -71,11 +70,13 @@ import {
   watchProjectDir,
   saveRecoverySnapshot,
   retrieveMemories,
+  listKnowledgeBases,
   isTauri,
   onChatToken,
+  onChatToolDelta,
   onLoopActivity,
   mapActivityStep,
-  type AiChatRequest,
+  onAssistantPrefillQuery,
 } from "@/lib/tauri-api"
 import { isChatCancelled } from "@/lib/chat-cancel"
 import { sidebarFeatures } from "@/lib/ui-features"
@@ -90,7 +91,7 @@ import { useProjectWorkspace } from "@/components/workspace/use-project-workspac
 import { RightSidebar } from "@/components/workspace/right-sidebar"
 import { FilePreviewPanel } from "@/components/file-preview-panel"
 import { BulkWriteDialog } from "@/components/bulk-write-dialog"
-import { getEnabledKbaseIds } from "@/lib/knowledge"
+import { saveSelectedKbaseId, loadSelectedKbaseId } from "@/lib/knowledge"
 import type { ActivityStep, AgentMode, ChatMessage, DiffHunk, QuestionAnswer } from "@/lib/types"
 
 interface Suggestion {
@@ -236,6 +237,12 @@ export function AssistantView({
   const [activeWorkspaceId, setActiveWorkspaceId] = useState<string>("")
   const [activeId, setActiveId] = useState<string>("")
   const didInit = useRef(false)
+  const [selectedKbaseId, setSelectedKbaseId] = useState<string | null>(null)
+  const [kbaseOptions, setKbaseOptions] = useState<{ id: string; name: string }[]>([])
+  const [prefillText, setPrefillText] = useState<string | null>(null)
+  const [mode, setMode] = useState<AgentMode>(DEFAULT_AGENT_MODE)
+  const modeBeforeKbaseRef = useRef<AgentMode | null>(null)
+  const [isDesktopApp, setIsDesktopApp] = useState(false)
 
   const refreshWorkspaces = useCallback(async () => {
     const list = await listAssistantWorkspaces()
@@ -277,13 +284,68 @@ export function AssistantView({
     }
   }, [refreshWorkspaces])
 
+  useEffect(() => {
+    if (!isTauri()) return
+    setIsDesktopApp(true)
+    void loadSelectedKbaseId().then((saved) => {
+      if (saved) {
+        setSelectedKbaseId(saved)
+        setMode("ask")
+      }
+    })
+  }, [])
+
+  useEffect(() => {
+    if (!isTauri()) return
+    return onAssistantPrefillQuery(({ text, kbaseId: kbId }) => {
+      if (kbId) {
+        setSelectedKbaseId(kbId)
+        void saveSelectedKbaseId(kbId)
+        setMode("ask")
+      }
+      setPrefillText(text)
+    })
+  }, [])
+
+  const handleKbaseChange = useCallback((id: string | null) => {
+    if (id) {
+      if (!selectedKbaseId) modeBeforeKbaseRef.current = mode
+      setMode("ask")
+    } else if (modeBeforeKbaseRef.current) {
+      setMode(modeBeforeKbaseRef.current)
+      modeBeforeKbaseRef.current = null
+    }
+    setSelectedKbaseId(id)
+    void saveSelectedKbaseId(id)
+  }, [mode, selectedKbaseId])
+
+  const refreshKbaseOptions = useCallback(async () => {
+    if (!isTauri()) return
+    const bases = await listKnowledgeBases()
+    setKbaseOptions(bases.map((b) => ({ id: b.id, name: b.name })))
+    setSelectedKbaseId((prev) => {
+      if (prev && !bases.some((b) => b.id === prev)) {
+        void saveSelectedKbaseId(null)
+        if (modeBeforeKbaseRef.current) {
+          setMode(modeBeforeKbaseRef.current)
+          modeBeforeKbaseRef.current = null
+        }
+        return null
+      }
+      return prev
+    })
+  }, [])
+
+  useEffect(() => {
+    void refreshKbaseOptions()
+  }, [refreshKbaseOptions, knowledgeCount])
+
   const [generating, setGenerating] = useState(false)
   const generatingSessionRef = useRef<string | null>(null)
   const sendInFlightRef = useRef(false)
   const stopRequestedRef = useRef(false)
   const activeAssistantMsgRef = useRef<string | null>(null)
   const [llmError, setLlmError] = useState<ReturnType<typeof parseLlmError> | null>(null)
-  const [mode, setMode] = useState<AgentMode>(DEFAULT_AGENT_MODE)
   const prevModeRef = useRef<AgentMode>(mode)
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
   const [rightOpen, setRightOpen] = useState(true)
@@ -309,6 +371,9 @@ export function AssistantView({
     detail: string
   } | null>(null)
   const activeThoughtIdRef = useRef<string | null>(null)
+  const roundHasToolDeltaRef = useRef(false)
+  const hasCompletedToolStepsRef = useRef(false)
+  const latestStreamContentRef = useRef("")
   const activityFlushTimerRef = useRef<number | null>(null)
   const pendingActivityStepsRef = useRef<ActivityStep[]>([])
   const chatMessagesCacheRef = useRef(new Map<string, ChatMessage>())
@@ -709,36 +774,6 @@ export function AssistantView({
     flushPendingThoughtDetail()
   }, [flushPendingThoughtDetail])
 
-  const handleLoopActivity = useCallback(
-    (step: ActivityStep) => {
-      if (step.kind === "thought") {
-        if (step.status === "running") {
-          activeThoughtIdRef.current = step.id
-        } else if (
-          activeThoughtIdRef.current === step.id &&
-          (step.status === "success" || step.status === "error")
-        ) {
-          flushPendingThoughtDetailSync()
-          activeThoughtIdRef.current = null
-        }
-      }
-      queueActivityUpdate(step)
-    },
-    [queueActivityUpdate, flushPendingThoughtDetailSync],
-  )
-
-  const routeChatToken = useCallback(
-    (messageId: string, content: string) => {
-      const thoughtId = activeThoughtIdRef.current
-      if (thoughtId) {
-        queueThoughtDetail(messageId, thoughtId, content)
-      } else {
-        queueStreamingToken(messageId, content)
-      }
-    },
-    [queueThoughtDetail, queueStreamingToken],
-  )
-
   const flushStreamingTokenSync = useCallback(() => {
     if (tokenFlushTimerRef.current != null) {
       window.clearTimeout(tokenFlushTimerRef.current)
@@ -752,6 +787,99 @@ export function AssistantView({
       streaming: true,
     })
   }, [patchGeneratingMessage])
+
+  const migrateStreamContentToThought = useCallback(
+    (messageId: string, thoughtId: string, streamContent: string) => {
+      if (!streamContent.trim()) return
+      flushStreamingTokenSync()
+      flushPendingThoughtDetailSync()
+      const sessionId = generatingSessionRef.current
+      if (!sessionId) return
+      startTransition(() => {
+        setSessions((prev) =>
+          prev.map((s) =>
+            s.id === sessionId
+              ? {
+                  ...s,
+                  messages: s.messages.map((m) => {
+                    if (m.id !== messageId) return m
+                    const activitySteps = (m.activitySteps ?? []).map((step) =>
+                      step.id === thoughtId
+                        ? { ...step, detail: streamContent }
+                        : step,
+                    )
+                    return { ...m, content: "", activitySteps }
+                  }),
+                  updatedAt: new Date().toISOString(),
+                }
+              : s,
+          ),
+        )
+      })
+      pendingTokenRef.current = null
+    },
+    [flushPendingThoughtDetailSync, flushStreamingTokenSync],
+  )
+
+  const handleLoopActivity = useCallback(
+    (step: ActivityStep) => {
+      if (step.kind === "thought") {
+        if (step.status === "running") {
+          activeThoughtIdRef.current = step.id
+          roundHasToolDeltaRef.current = false
+        } else if (
+          activeThoughtIdRef.current === step.id &&
+          (step.status === "success" || step.status === "error")
+        ) {
+          flushPendingThoughtDetailSync()
+          activeThoughtIdRef.current = null
+          if (
+            step.status === "success" &&
+            !roundHasToolDeltaRef.current &&
+            hasCompletedToolStepsRef.current
+          ) {
+            step = { ...step, detail: undefined }
+          }
+        }
+      }
+      if (step.kind === "tool" && step.status === "success") {
+        hasCompletedToolStepsRef.current = true
+      }
+      queueActivityUpdate(step)
+    },
+    [queueActivityUpdate, flushPendingThoughtDetailSync],
+  )
+
+  const routeChatToken = useCallback(
+    (messageId: string, content: string) => {
+      latestStreamContentRef.current = content
+      const thoughtId = activeThoughtIdRef.current
+      if (!thoughtId) {
+        queueStreamingToken(messageId, content)
+        return
+      }
+      if (roundHasToolDeltaRef.current || !hasCompletedToolStepsRef.current) {
+        queueThoughtDetail(messageId, thoughtId, content)
+        return
+      }
+      queueStreamingToken(messageId, content)
+    },
+    [queueThoughtDetail, queueStreamingToken],
+  )
+
+  const handleChatToolDelta = useCallback(
+    (messageId: string) => {
+      if (!activeThoughtIdRef.current) return
+      if (roundHasToolDeltaRef.current) return
+      roundHasToolDeltaRef.current = true
+      migrateStreamContentToThought(
+        messageId,
+        activeThoughtIdRef.current,
+        latestStreamContentRef.current,
+      )
+    },
+    [migrateStreamContentToThought],
+  )
 
   const lastAssistant = useMemo(() => {
     for (let i = chatMessages.length - 1; i >= 0; i--) {
@@ -958,6 +1086,10 @@ export function AssistantView({
     setGenerating(true)
     generatingSessionRef.current = activeId
     stopRequestedRef.current = false
+    activeThoughtIdRef.current = null
+    roundHasToolDeltaRef.current = false
+    hasCompletedToolStepsRef.current = false
+    latestStreamContentRef.current = ""
 
     const isFirst = active.messages.length === 0
     const derivedTitle = isFirst ? deriveTitle(content) : active.title
@@ -1030,11 +1162,16 @@ export function AssistantView({
     setLlmError(null)
 
     const folder = await resolveWorkspaceFolder(activeWorkspace)
-    const hasWorkspace = Boolean(folder && workspaceProjectId)
-    const enabledKbaseIds = isTauri() ? getEnabledKbaseIds() : []
-    const hasKnowledge = isTauri() && enabledKbaseIds.length > 0
-    const knowledgeOnlyMode = !hasWorkspace && hasKnowledge
-    const toolsEnabled = hasWorkspace || hasKnowledge
+    let kbaseId = selectedKbaseId
+    let selectedKbaseName = kbaseOptions.find((b) => b.id === kbaseId)?.name
+    if (kbaseId && !selectedKbaseName) {
+      handleKbaseChange(null)
+      setToast("所选知识库已不存在，已自动取消选择")
+      kbaseId = null
+      selectedKbaseName = undefined
+    }
+    const hasKnowledge = Boolean(kbaseId)
+    const sessionAgentMode: AgentMode = hasKnowledge ? "ask" : agentMode
 
     updateActiveMessages((msgs) => [
       ...finalizeProcessingMessages(msgs),
@@ -1043,7 +1180,7 @@ export function AssistantView({
         role: "assistant",
         content: "",
         streaming: true,
-        mode: agentMode,
+        mode: sessionAgentMode,
         createdAt: new Date().toISOString(),
       },
     ])
@@ -1054,18 +1191,22 @@ export function AssistantView({
       routeChatToken(assistantMsgId, e.content)
     })
 
-    const unlistenActivity = toolsEnabled
-      ? onLoopActivity((e) => {
+    const unlistenToolDelta = onChatToolDelta((e) => {
+      if (e.session_id !== activeId || e.message_id !== assistantMsgId) return
+      if (stopRequestedRef.current) return
+      handleChatToolDelta(assistantMsgId)
+    })
+
+    const unlistenActivity = onLoopActivity((e) => {
           if (e.session_id !== activeId || e.message_id !== assistantMsgId) return
           if (stopRequestedRef.current) return
           handleLoopActivity(mapActivityStep(e.step))
         })
-      : () => {}
 
     const apiKey = (await loadApiKey(modelCfg.id)) ?? undefined
 
     let memoryContext = ""
-    if (workspaceProjectId && isTauri()) {
+    if (!hasKnowledge && workspaceProjectId && isTauri()) {
       try {
         const { context } = await retrieveMemories(workspaceProjectId, content, 5)
         memoryContext = context
@@ -1077,71 +1218,38 @@ export function AssistantView({
     const llmMessages = buildLlmMessages(active.messages, content)
     const system = buildAssistantSystemPrompt({
       folder,
-      toolsEnabled,
-      mode: agentMode,
+      toolsEnabled: true,
+      mode: sessionAgentMode,
       memoryContext,
-      knowledgeEnabled: hasKnowledge,
+      knowledgeSession: hasKnowledge,
+      selectedKbaseName,
     })
 
     try {
       await tauriSendMessage({
         session_id: activeId,
         content,
-        mode: agentMode,
+        mode: sessionAgentMode,
       })
 
-      let response
-      if (hasWorkspace) {
-        response = await aiLoopChat(
-          {
-            provider: modelCfg.provider,
-            model: modelCfg.name,
-            messages: llmMessages,
-            system_prompt: system,
-            api_key: apiKey,
-            base_url: modelCfg.endpoint ?? undefined,
-            assistant_mode: true,
-            agent_mode: agentMode,
-            edit_dry_run: agentMode === "edit",
-            bulk_write_confirmed: opts?.bulkWriteConfirmed,
-            enabled_kbase_ids: enabledKbaseIds.length > 0 ? enabledKbaseIds : undefined,
-          },
-          activeId,
-          workspaceProjectId!,
-          assistantMsgId,
-        )
-      } else if (knowledgeOnlyMode) {
-        response = await aiLoopChat(
-          {
-            provider: modelCfg.provider,
-            model: modelCfg.name,
-            messages: llmMessages,
-            system_prompt: system,
-            api_key: apiKey,
-            base_url: modelCfg.endpoint ?? undefined,
-            assistant_mode: true,
-            agent_mode: agentMode,
-            edit_dry_run: agentMode === "edit",
-            bulk_write_confirmed: opts?.bulkWriteConfirmed,
-            enabled_kbase_ids: enabledKbaseIds,
-          },
-          activeId,
-          "__assistant__",
-          assistantMsgId,
-        )
-      } else {
-        const request: AiChatRequest = {
+      const response = await aiLoopChat(
+        {
           provider: modelCfg.provider,
           model: modelCfg.name,
           messages: llmMessages,
-          temperature: modelCfg.temperature,
-          max_tokens: modelCfg.contextWindow >= 4096 ? 4096 : undefined,
+          system_prompt: system,
           api_key: apiKey,
           base_url: modelCfg.endpoint ?? undefined,
-          system,
-        }
-        response = await streamChat(request, activeId, assistantMsgId)
-      }
+          assistant_mode: true,
+          agent_mode: sessionAgentMode,
+          edit_dry_run: hasKnowledge ? false : agentMode === "edit",
+          bulk_write_confirmed: opts?.bulkWriteConfirmed,
+          enabled_kbase_ids: kbaseId ? [kbaseId] : undefined,
+        },
+        activeId,
+        workspaceProjectId!,
+        assistantMsgId,
+      )
 
       await recordModelUsage(modelCfg.id)
       if (stopRequestedRef.current) return
@@ -1190,8 +1298,12 @@ export function AssistantView({
       flushPendingThoughtDetailSync()
       flushStreamingTokenSync()
       unlistenToken()
+      unlistenToolDelta()
       unlistenActivity()
       activeThoughtIdRef.current = null
+      roundHasToolDeltaRef.current = false
+      hasCompletedToolStepsRef.current = false
+      latestStreamContentRef.current = ""
       setGenerating(false)
       generatingSessionRef.current = null
       activeAssistantMsgRef.current = null
@@ -1244,6 +1356,9 @@ export function AssistantView({
     setGenerating(true)
     generatingSessionRef.current = activeId
     stopRequestedRef.current = false
+    activeThoughtIdRef.current = null
+    roundHasToolDeltaRef.current = false
+    latestStreamContentRef.current = ""
     activeAssistantMsgRef.current = messageId
     setLlmError(null)
 
@@ -1253,6 +1368,7 @@ export function AssistantView({
           ? {
               ...m,
               streaming: true,
+              content: "",
               pendingQuestions: m.pendingQuestions
                 ? { ...m.pendingQuestions, status: "answered" as const, answers }
                 : undefined,
@@ -1265,6 +1381,12 @@ export function AssistantView({
       if (e.session_id !== activeId || e.message_id !== messageId) return
       if (stopRequestedRef.current) return
       routeChatToken(messageId, e.content)
+    })
+
+    const unlistenToolDelta = onChatToolDelta((e) => {
+      if (e.session_id !== activeId || e.message_id !== messageId) return
+      if (stopRequestedRef.current) return
+      handleChatToolDelta(messageId)
     })
 
     const unlistenActivity = workspaceProjectId
@@ -1331,8 +1453,11 @@ export function AssistantView({
       flushPendingThoughtDetailSync()
       flushStreamingTokenSync()
       unlistenToken()
+      unlistenToolDelta()
       unlistenActivity()
       activeThoughtIdRef.current = null
+      roundHasToolDeltaRef.current = false
+      latestStreamContentRef.current = ""
       setGenerating(false)
       generatingSessionRef.current = null
       activeAssistantMsgRef.current = null
@@ -1595,6 +1720,13 @@ export function AssistantView({
           onStop={stopGeneration}
           onValidationError={setToast}
           enableSlashCommands={false}
+          knowledgeBases={kbaseOptions}
+          selectedKbaseId={selectedKbaseId}
+          onKbaseChange={handleKbaseChange}
+          lockAgentMode={Boolean(selectedKbaseId)}
+          hideKnowledgeSelector={!isDesktopApp}
+          prefillText={prefillText}
+          onPrefillConsumed={() => setPrefillText(null)}
           placeholder={
             hasPendingQuestions
               ? "请先回答上方问题…"

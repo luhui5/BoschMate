@@ -36,6 +36,7 @@ mod tools;
 mod tracing_log;
 mod vector_store;
 mod web_fetch;
+mod selection_lookup;
 
 use ai_client::{stream_chat as ai_stream_chat, list_ollama_models as ai_list_ollama_models};
 use db::Database;
@@ -46,6 +47,7 @@ use rusqlite::params;
 use std::path::PathBuf;
 use std::sync::Mutex;
 use tauri::{AppHandle, Manager, State};
+use tauri_plugin_global_shortcut::ShortcutState;
 
 pub struct AppState {
     db: Database,
@@ -1361,11 +1363,19 @@ fn get_setting(state: State<AppState>, key: String) -> Result<Option<String>, St
 #[tauri::command]
 fn set_setting(state: State<AppState>, key: String, value: String) -> Result<(), String> {
     let conn = state.db.conn.lock().unwrap();
-    conn.execute(
-        "INSERT INTO settings (scope, key, value) VALUES ('global', ?1, ?2) ON CONFLICT(scope, key) DO UPDATE SET value = ?2",
-        params![key, value],
-    )
-    .map_err(|e| e.to_string())?;
+    let updated = conn
+        .execute(
+            "UPDATE settings SET value = ?1 WHERE scope = 'global' AND project_id IS NULL AND key = ?2",
+            params![value, key],
+        )
+        .map_err(|e| e.to_string())?;
+    if updated == 0 {
+        conn.execute(
+            "INSERT INTO settings (scope, project_id, key, value) VALUES ('global', NULL, ?1, ?2)",
+            params![key, value],
+        )
+        .map_err(|e| e.to_string())?;
+    }
     Ok(())
 }
 
@@ -1851,29 +1861,31 @@ async fn ai_loop_chat_inner(
 
     let agent_mode = input.agent_mode.as_deref().unwrap_or("edit");
     let auto_mode = agent_mode == "auto";
-    let assistant_mode = input.assistant_mode.unwrap_or(false);
-    let knowledge_only = assistant_mode && project_id == "__assistant__";
     let enabled_kbase_ids = input.enabled_kbase_ids.unwrap_or_default();
 
-    // Run AI Loop — ask/plan get read-only tool subsets; edit/auto get the full set.
-    let tools = if knowledge_only {
-        ai_loop::get_knowledge_only_tools()
-    } else {
-        match agent_mode {
+    let tools = if enabled_kbase_ids.is_empty() {
+        let t = match agent_mode {
             "plan" => ai_loop::get_plan_tools(),
             "ask" => ai_loop::get_ask_tools(),
             _ => ai_loop::get_tools(),
-        }
+        };
+        ai_loop::without_knowledge_tools(t)
+    } else {
+        ai_loop::get_knowledge_only_tools()
     };
 
     let system_prompt = input.system_prompt.clone();
 
     let write_count = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
 
-    let knowledge_ctx = Some(std::sync::Arc::new(KnowledgeToolCtx {
-        db: state.db.conn.clone(),
-        enabled_kbase_ids: enabled_kbase_ids.clone(),
-    }));
+    let knowledge_ctx = if enabled_kbase_ids.is_empty() {
+        None
+    } else {
+        Some(std::sync::Arc::new(KnowledgeToolCtx {
+            db: state.db.conn.clone(),
+            enabled_kbase_ids: enabled_kbase_ids.clone(),
+        }))
+    };
 
     let cancel = state.chat_cancel.register(&session_id);
     let outcome = ai_loop::run_loop(
@@ -2318,9 +2330,37 @@ fn main() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_process::init())
+        .plugin(
+            tauri_plugin_global_shortcut::Builder::new()
+                .with_handler(|app, _shortcut, event| {
+                    if event.state == ShortcutState::Pressed {
+                        let app = app.clone();
+                        tauri::async_runtime::spawn(async move {
+                            selection_lookup::trigger_from_shortcut(app).await;
+                        });
+                    }
+                })
+                .build(),
+        )
         .manage(state)
+        .setup(|app| {
+            let handle = app.handle().clone();
+            let db_state = app.state::<AppState>();
+            selection_lookup::init(&handle, db_state.inner())?;
+            Ok(())
+        })
         .on_window_event(|window, event| {
-            if let tauri::WindowEvent::CloseRequested { .. } = event {
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                if window.label() == "main" {
+                    if let Some(state) = window.app_handle().try_state::<AppState>() {
+                        let conn = state.db.conn.lock().unwrap();
+                        if selection_lookup::should_close_to_tray(&conn) {
+                            api.prevent_close();
+                            let _ = window.hide();
+                            return;
+                        }
+                    }
+                }
                 if let Some(state) = window.app_handle().try_state::<AppState>() {
                     let _ = recovery::clear_all(&state.data_dir);
                 }
@@ -2440,6 +2480,11 @@ fn main() {
             clear_all_recovery_snapshots,
             watch_project_dir,
             get_update_info,
+            // Selection lookup
+            selection_lookup::service::selection_lookup_apply_settings,
+            selection_lookup::service::hide_selection_popup,
+            selection_lookup::service::continue_selection_in_assistant,
+            selection_lookup::service::get_selection_lookup_settings,
         ])
         .build(tauri::generate_context!())
         .expect("error while running tauri application")

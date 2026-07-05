@@ -79,13 +79,18 @@ function ChatMessageViewInner({
   const toolSteps =
     message.activitySteps?.filter((s) => s.kind === "tool") ?? []
   const toolStepsStillRunning = toolSteps.some((s) => s.status === "running")
-  const explorePhase =
+  const liveThought = message.activitySteps?.find(
+    (s) => s.kind === "thought" && s.status === "running",
+  )
+  const thoughtRunning = Boolean(liveThought)
+  const thoughtHasDetail = Boolean(liveThought?.detail?.trim())
+  const finalReplyPhase =
     Boolean(message.streaming) &&
-    (stepCount === 0 || toolStepsStillRunning || !hasOutput)
-  const showOutput =
     hasOutput &&
-    !explorePhase &&
-    (!message.streaming || !toolStepsStillRunning)
+    !toolStepsStillRunning &&
+    (!thoughtRunning || !thoughtHasDetail)
+  const explorePhase = Boolean(message.streaming) && !finalReplyPhase
+  const showOutput = hasOutput && !explorePhase
 
   const showQuestionCard = Boolean(
     message.pendingQuestions?.status === "pending" && !message.streaming,

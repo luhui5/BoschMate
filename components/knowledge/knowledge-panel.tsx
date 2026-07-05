@@ -13,14 +13,7 @@ import {
   listKnowledgeDocuments,
   onKnowledgeIndexProgress,
 } from "@/lib/tauri-api"
-import {
-  getEnabledKbaseIds,
-  kindFromName,
-  loadEnabledKbases,
-  saveEnabledKbases,
-  type KnowledgeBase,
-  type KnowledgeDocument,
-} from "@/lib/knowledge"
+import { kindFromName, type KnowledgeBase, type KnowledgeDocument } from "@/lib/knowledge"
 import { KnowledgeBaseList } from "./knowledge-base-list"
 import { KnowledgeBaseDetail, fileToBase64 } from "./knowledge-base-detail"
 import { CreateKnowledgeBaseDialog } from "./create-knowledge-base-dialog"
@@ -35,7 +28,6 @@ export function KnowledgePanel({ open, onClose, onDocumentCountChange }: Knowled
   const [bases, setBases] = useState<KnowledgeBase[]>([])
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [documents, setDocuments] = useState<KnowledgeDocument[]>([])
-  const [enabledIds, setEnabledIds] = useState<string[]>([])
   const [createOpen, setCreateOpen] = useState(false)
   const [uploading, setUploading] = useState(false)
   const [loading, setLoading] = useState(false)
@@ -49,15 +41,6 @@ export function KnowledgePanel({ open, onClose, onDocumentCountChange }: Knowled
     if (!isTauri()) return
     const list = await listKnowledgeBases()
     setBases(list)
-    setEnabledIds((prev) => {
-      const allIds = list.map((b) => b.id)
-      const saved = loadEnabledKbases(allIds)
-      const next = prev.length === 0 ? (saved.length > 0 ? saved : allIds) : prev.filter((id) => allIds.includes(id))
-      if (getEnabledKbaseIds().length === 0 && next.length > 0) {
-        saveEnabledKbases(next)
-      }
-      return next
-    })
     const totalDocs = list.reduce((sum, b) => sum + b.documentCount, 0)
     onDocumentCountChange?.(totalDocs)
   }, [onDocumentCountChange])
@@ -146,11 +129,6 @@ export function KnowledgePanel({ open, onClose, onDocumentCountChange }: Knowled
     const base = await createKnowledgeBase({ name, description })
     await refreshBases()
     setSelectedId(base.id)
-    setEnabledIds((prev) => {
-      const next = [...prev, base.id]
-      saveEnabledKbases(next)
-      return next
-    })
   }
 
   const handleDeleteBase = async (id: string) => {
@@ -160,22 +138,7 @@ export function KnowledgePanel({ open, onClose, onDocumentCountChange }: Knowled
       setSelectedId(null)
       setDocuments([])
     }
-    setEnabledIds((prev) => {
-      const next = prev.filter((x) => x !== id)
-      saveEnabledKbases(next)
-      return next
-    })
     await refreshBases()
-  }
-
-  const handleToggleEnabled = (id: string, enabled: boolean) => {
-    setEnabledIds((prev) => {
-      const next = enabled
-        ? [...new Set([...prev, id])]
-        : prev.filter((x) => x !== id)
-      saveEnabledKbases(next)
-      return next
-    })
   }
 
   const handleUpload = async (fileList: FileList) => {
@@ -215,7 +178,7 @@ export function KnowledgePanel({ open, onClose, onDocumentCountChange }: Knowled
         open={open}
         onClose={onClose}
         title="知识库"
-        description="管理全局知识库与文档，勾选左侧复选框以在对话中启用检索。"
+        description="管理全局知识库与文档；在发送栏选择知识库以用于对话。"
         className="max-w-3xl"
       >
         <div className="flex h-[28rem] overflow-hidden rounded-lg border border-border">
@@ -223,11 +186,9 @@ export function KnowledgePanel({ open, onClose, onDocumentCountChange }: Knowled
             <KnowledgeBaseList
               bases={bases}
               selectedId={selectedId}
-              enabledIds={enabledIds}
               onSelect={setSelectedId}
               onCreate={() => setCreateOpen(true)}
               onDelete={(id) => void handleDeleteBase(id)}
-              onToggleEnabled={handleToggleEnabled}
             />
           </div>
           <div className="flex min-w-0 flex-1 flex-col">

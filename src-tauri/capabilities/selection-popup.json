@@ -1,0 +1,16 @@
+{
+  "identifier": "selection-popup",
+  "description": "Capability for the selection lookup popup window",
+  "windows": ["selection-popup"],
+  "permissions": [
+    "core:default",
+    "core:window:allow-close",
+    "core:window:allow-hide",
+    "core:window:allow-show",
+    "core:window:allow-set-focus",
+    "core:window:allow-set-position",
+    "core:window:allow-set-size",
+    "core:window:allow-start-dragging",
+    "core:event:default"
+  ]
+}

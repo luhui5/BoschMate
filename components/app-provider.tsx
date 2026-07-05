@@ -11,7 +11,6 @@ import {
 } from "@/lib/update"
 import { projectPath } from "@/lib/project-route"
 import { UpdateManager } from "@/components/update/update-manager"
-import { OnboardingWizard } from "@/components/onboarding"
 import { RecoveryDialog, type RecoverySnapshotItem } from "@/components/recovery-dialog"
 import { isTauri, getSetting, setSetting as tauriSetSetting, loadRecoverySnapshots, clearRecoverySnapshot, healthCheck } from "@/lib/tauri-api"
 
@@ -60,8 +59,6 @@ interface AppState {
   skipVersion: () => void
   installNow: () => void
   dismissUpdate: () => void
-  showOnboarding: boolean
-  openOnboarding: () => void
 }
 
 const AppContext = createContext<AppState | null>(null)
@@ -79,7 +76,6 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [editorFont, setEditorFontState] = useState<EditorFont>("geist-mono")
   const [runMode, setRunMode] = useState<RunMode>("full")
   const [isDesktop, setIsDesktop] = useState(false)
-  const [showOnboarding, setShowOnboarding] = useState(false)
   const [recoverySnapshots, setRecoverySnapshots] = useState<RecoverySnapshotItem[]>([])
 
   const [update, setUpdate] = useState<UpdateState>({
@@ -129,10 +125,6 @@ export function AppProvider({ children }: { children: ReactNode }) {
       await loadPref("editor_font", "bc-editor-font", "geist-mono" as EditorFont, setEditorFontState)
 
       if (desktop) {
-        try {
-          const done = await getSetting("onboarding_completed")
-          if (done !== "true") setShowOnboarding(true)
-        } catch { /* ignore */ }
         try {
           const snaps = await loadRecoverySnapshots()
           if (snaps.length) setRecoverySnapshots(snaps)
@@ -293,14 +285,6 @@ export function AppProvider({ children }: { children: ReactNode }) {
     }))
   }
 
-  const completeOnboarding = async () => {
-    setShowOnboarding(false)
-    try { localStorage.setItem("onboarding_completed", "true") } catch { /* ignore */ }
-    if (isDesktop) await tauriSetSetting("onboarding_completed", "true").catch(() => {})
-  }
-
-  const openOnboarding = () => setShowOnboarding(true)
-
   const discardRecovery = async (sessionId: string) => {
     if (isDesktop) await clearRecoverySnapshot(sessionId).catch(() => {})
     setRecoverySnapshots((prev) => prev.filter((s) => s.sessionId !== sessionId))
@@ -339,8 +323,6 @@ export function AppProvider({ children }: { children: ReactNode }) {
         skipVersion,
         installNow,
         dismissUpdate,
-        showOnboarding,
-        openOnboarding,
       }}
     >
       {children}
@@ -357,9 +339,6 @@ export function AppProvider({ children }: { children: ReactNode }) {
           onDiscard={(id) => void discardRecovery(id)}
           onDiscardAll={() => void discardAllRecovery()}
         />
-      )}
-      {showOnboarding && (
-        <OnboardingWizard onComplete={() => void completeOnboarding()} onSkip={() => void completeOnboarding()} />
       )}
     </AppContext.Provider>
   )

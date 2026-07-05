@@ -16,7 +16,6 @@ import { isNearBottom, scrollContainerToBottom } from "@/lib/scroll-to-bottom"
 import type { ActivityStep, ChatMessage } from "@/lib/types"
 import {
   formatThoughtDuration,
-  pickLiveThought,
   splitThoughtDetail,
 } from "@/lib/thought-display"
 
@@ -98,6 +97,68 @@ function activitySummary(steps: ActivityStep[]): string {
   return parts.join(" · ")
 }
 
+const ACTIVITY_SCROLL_MAX_H = "max-h-[min(420px,50vh)]"
+
+function ActivityScrollContainer({
+  children,
+  stickToBottom,
+  scrollDeps,
+  className,
+}: {
+  children: React.ReactNode
+  stickToBottom?: boolean
+  scrollDeps?: unknown
+  className?: string
+}) {
+  const scrollRef = useRef<HTMLDivElement>(null)
+  const contentRef = useRef<HTMLDivElement>(null)
+  const stickToBottomRef = useRef(true)
+
+  const scrollInnerToBottom = useCallback(() => {
+    if (!stickToBottom) return
+    const el = scrollRef.current
+    if (!el || !stickToBottomRef.current) return
+    scrollContainerToBottom(el, "instant")
+  }, [stickToBottom])
+
+  useLayoutEffect(() => {
+    scrollInnerToBottom()
+  }, [scrollDeps, scrollInnerToBottom])
+
+  useLayoutEffect(() => {
+    if (!stickToBottom) return
+    const content = contentRef.current
+    if (!content) return
+
+    const ro = new ResizeObserver(() => {
+      scrollInnerToBottom()
+    })
+    ro.observe(content)
+    return () => ro.disconnect()
+  }, [stickToBottom, scrollInnerToBottom])
+
+  const onScroll = () => {
+    if (!stickToBottom) return
+    const el = scrollRef.current
+    if (!el) return
+    stickToBottomRef.current = isNearBottom(el, 16)
+  }
+
+  return (
+    <div
+      ref={scrollRef}
+      onScroll={onScroll}
+      className={cn(
+        "scrollbar-hover-y min-w-0 overflow-y-auto pr-1",
+        ACTIVITY_SCROLL_MAX_H,
+        className,
+      )}
+    >
+      <div ref={contentRef}>{children}</div>
+    </div>
+  )
+}
+
 function CollapseBlock({
   icon: Icon,
   title,
@@ -132,7 +193,7 @@ function CollapseBlock({
       </button>
       {open && children && (
         <div className="group/activity-scroll ml-5 min-w-0 border-l border-border/60 pb-1 pl-3">
-          <div className="scrollbar-hover-y max-h-48 min-w-0 pt-0.5">{children}</div>
+          <ActivityScrollContainer className="pt-0.5">{children}</ActivityScrollContainer>
         </div>
       )}
     </div>
@@ -220,27 +281,72 @@ function CompactToolRow({ step }: { step: ActivityStep }) {
   )
 }
 
-function ExploringLivePanel({
+function CompactThoughtRow({ step, now }: { step: ActivityStep; now: number }) {
+  const duration = formatThoughtDuration(step, now)
+  const { summary } = splitThoughtDetail(step.detail)
+
+  return (
+    <div
+      className={cn(
+        "flex min-w-0 items-center gap-2 py-0.5",
+        step.status === "success" && "text-muted-foreground/70",
+      )}
+    >
+      <Brain className="size-3 shrink-0 text-muted-foreground/70" />
+      <span className="shrink-0 text-[11px]">{duration ?? "思考"}</span>
+      {summary && (
+        <span className="min-w-0 flex-1 truncate text-[11px]">{summary}</span>
+      )}
+      <StepStatus status={step.status} />
+    </div>
+  )
+}
+
+function LiveThoughtBlock({ step, now }: { step: ActivityStep; now: number }) {
+  const durationLabel = formatThoughtDuration(step, now)
+  const { summary, plan, body } = splitThoughtDetail(step.detail)
+  const hasDetail = Boolean(summary || plan || body)
+
+  return (
+    <div className="space-y-2">
+      <div className="flex items-center gap-2">
+        <span className="text-xs text-muted-foreground">
+          {durationLabel ?? "Thinking"}
+        </span>
+        <Loader2 className="size-3.5 animate-spin text-muted-foreground" />
+      </div>
+      {summary && (
+        <p className="text-sm text-foreground/90">{summary}</p>
+      )}
+      {plan && (
+        <p className="whitespace-pre-wrap text-sm leading-relaxed text-muted-foreground/60">
+          {plan}
+        </p>
+      )}
+      {body && (
+        <p className="whitespace-pre-wrap text-sm leading-relaxed text-foreground/90">
+          {body}
+        </p>
+      )}
+      {!hasDetail && (
+        <p className="text-sm leading-relaxed text-muted-foreground/60">正在思考…</p>
+      )}
+    </div>
+  )
+}
+
+function ActivityTimeline({
   steps,
-  liveThought,
-  thinkingOnly = false,
+  mode,
 }: {
   steps: ActivityStep[]
-  liveThought?: ActivityStep
-  thinkingOnly?: boolean
+  mode: "live" | "compact"
 }) {
-  const scrollRef = useRef<HTMLDivElement>(null)
-  const contentRef = useRef<HTMLDivElement>(null)
-  const stickToBottomRef = useRef(true)
   const [now, setNow] = useState(() => Date.now())
 
-  const toolSteps = steps.filter((s) => s.kind === "tool")
-  const hasRunningTool = toolSteps.some((s) => s.status === "running")
-  const thoughtRunning = liveThought?.status === "running"
-
-  const phaseTitle = thinkingOnly || !hasRunningTool ? "Exploring" : "Executing"
-  const durationLabel = liveThought ? formatThoughtDuration(liveThought, now) : null
-  const { summary, plan, body } = splitThoughtDetail(liveThought?.detail)
+  const thoughtRunning = steps.some(
+    (s) => s.kind === "thought" && s.status === "running",
+  )
 
   useEffect(() => {
     if (!thoughtRunning) return
@@ -248,83 +354,47 @@ function ExploringLivePanel({
     return () => window.clearInterval(id)
   }, [thoughtRunning])
 
-  const scrollInnerToBottom = useCallback(() => {
-    const el = scrollRef.current
-    if (!el || !stickToBottomRef.current) return
-    scrollContainerToBottom(el, "instant")
-  }, [])
-
-  useLayoutEffect(() => {
-    scrollInnerToBottom()
-  }, [toolSteps.length, liveThought?.detail, scrollInnerToBottom])
-
-  useLayoutEffect(() => {
-    const content = contentRef.current
-    if (!content) return
-
-    const ro = new ResizeObserver(() => {
-      scrollInnerToBottom()
-    })
-    ro.observe(content)
-    return () => ro.disconnect()
-  }, [scrollInnerToBottom])
-
-  const onScroll = () => {
-    const el = scrollRef.current
-    if (!el) return
-    stickToBottomRef.current = isNearBottom(el, 16)
+  if (steps.length === 0) {
+    return (
+      <p className="text-sm leading-relaxed text-muted-foreground/60">正在分析…</p>
+    )
   }
 
-  const hasThoughtText = Boolean(summary || plan || body)
+  return (
+    <div className="space-y-2">
+      {steps.map((step) => {
+        if (step.kind === "thought") {
+          if (mode === "live" && step.status === "running") {
+            return <LiveThoughtBlock key={step.id} step={step} now={now} />
+          }
+          return <CompactThoughtRow key={step.id} step={step} now={now} />
+        }
+        return <CompactToolRow key={step.id} step={step} />
+      })}
+    </div>
+  )
+}
+
+function activityScrollSignature(steps: ActivityStep[]): string {
+  return `${steps.length}:${steps.map((s) => s.detail?.length ?? 0).join(",")}`
+}
+
+function StreamingActivityPanel({
+  steps,
+  mode,
+  stickToBottom,
+}: {
+  steps: ActivityStep[]
+  mode: "live" | "compact"
+  stickToBottom: boolean
+}) {
+  const scrollDeps = activityScrollSignature(steps)
 
   return (
     <div className="w-full min-w-0">
-      {durationLabel && (
-        <p className="mb-1 text-xs text-muted-foreground">{durationLabel}</p>
-      )}
-
-      {summary && (
-        <p className="mb-2 text-sm text-foreground/90">{summary}</p>
-      )}
-
-      <div className="mb-2 flex items-center gap-2">
-        <span className="text-sm font-medium text-foreground/90">{phaseTitle}</span>
-        {(thinkingOnly || thoughtRunning || hasRunningTool) && (
-          <Loader2 className="size-3.5 animate-spin text-muted-foreground" />
-        )}
-      </div>
-
-      <div
-        ref={scrollRef}
-        onScroll={onScroll}
-        className="scrollbar-hover-y max-h-[min(420px,50vh)] min-w-0 space-y-3 overflow-y-auto pr-1"
-      >
-        <div ref={contentRef} className="space-y-3">
-          {plan && (
-            <p className="whitespace-pre-wrap text-sm leading-relaxed text-muted-foreground/60">
-              {plan}
-            </p>
-          )}
-
-          {body && (
-            <p className="whitespace-pre-wrap text-sm leading-relaxed text-foreground/90">
-              {body}
-            </p>
-          )}
-
-          {!hasThoughtText && toolSteps.length === 0 && (
-            <p className="text-sm leading-relaxed text-muted-foreground/60">正在分析…</p>
-          )}
-
-          {toolSteps.length > 0 && (
-            <div className="space-y-0.5">
-              {toolSteps.map((step) => (
-                <CompactToolRow key={step.id} step={step} />
-              ))}
-            </div>
-          )}
-        </div>
-      </div>
+      <ActivityScrollContainer stickToBottom={stickToBottom} scrollDeps={scrollDeps}>
+        <ActivityTimeline steps={steps} mode={mode} />
+      </ActivityScrollContainer>
     </div>
   )
 }
@@ -338,29 +408,30 @@ function ToolActivityPanelInner({
   explorePhase?: boolean
 }) {
   const steps = message.activitySteps ?? []
-  const liveThought = pickLiveThought(steps)
+  const isStreaming = Boolean(message.streaming)
   const hasRunningTool = steps.some((s) => s.kind === "tool" && s.status === "running")
+  const hasRunningThought = steps.some(
+    (s) => s.kind === "thought" && s.status === "running",
+  )
   const isLive =
     explorePhase ??
-    (Boolean(message.streaming) && (steps.length === 0 || hasRunningTool))
+    (isStreaming && (steps.length === 0 || hasRunningTool || hasRunningThought))
 
   const showThinking = isLive && steps.length === 0
 
   if (!showThinking && steps.length === 0) return null
 
-  if (isLive) {
+  if (isLive || (isStreaming && steps.length > 0)) {
     return (
-      <ExploringLivePanel
+      <StreamingActivityPanel
         steps={steps}
-        liveThought={liveThought}
-        thinkingOnly={showThinking}
+        mode={isLive ? "live" : "compact"}
+        stickToBottom={isStreaming}
       />
     )
   }
 
-  const hasRunning =
-    steps.some((s) => s.kind === "tool" && s.status === "running") ||
-    steps.some((s) => s.kind === "thought" && s.status === "running" && explorePhase)
+  const hasRunning = hasRunningTool || hasRunningThought
 
   return (
     <div className="flex w-full flex-col gap-0.5">

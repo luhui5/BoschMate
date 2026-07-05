@@ -9,12 +9,14 @@ import { BOSCH_GRADIENT } from "@/lib/bosch-brand"
 export function TitleBar() {
   const { resolvedTheme } = useApp()
   const [isMaximized, setIsMaximized] = useState(false)
+  const [isPopupWindow, setIsPopupWindow] = useState(false)
 
   useEffect(() => {
     let unlisten: (() => void) | null = null
     import("@tauri-apps/api/window")
       .then(({ getCurrentWindow }) => {
         const win = getCurrentWindow()
+        setIsPopupWindow(win.label === "selection-popup")
         win.isMaximized().then(setIsMaximized)
 
         import("@tauri-apps/api/event").then(({ listen }) => {
@@ -48,6 +50,10 @@ export function TitleBar() {
   const textColor = resolvedTheme === "dark" ? "text-zinc-300" : "text-zinc-700"
   const hoverBg = resolvedTheme === "dark" ? "hover:bg-zinc-800" : "hover:bg-zinc-100"
   const closeHover = "hover:bg-red-500 hover:text-white"
+
+  if (isPopupWindow) {
+    return null
+  }
 
   return (
     <div className="fixed top-0 left-0 right-0 z-50 select-none">

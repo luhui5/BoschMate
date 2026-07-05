@@ -12,6 +12,7 @@ import {
   Plug,
   Bell,
   Info,
+  ScanSearch,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { Wordmark } from "@/components/brand"
@@ -24,6 +25,7 @@ import { AppearanceSection } from "./appearance-section"
 import { IntegrationsSection } from "./integrations-section"
 import { NotificationsSection } from "./notifications-section"
 import { AboutSection } from "./about-section"
+import { SelectionLookupSection } from "./selection-lookup-section"
 
 type SectionId =
   | "appearance"
@@ -33,6 +35,7 @@ type SectionId =
   | "privacy"
   | "integrations"
   | "notifications"
+  | "selectionLookup"
   | "about"
 
 export function SettingsView() {
@@ -47,6 +50,7 @@ export function SettingsView() {
     { id: "privacy", label: t("settings.privacy"), icon: ShieldCheck, desc: "数据与权限" },
     { id: "integrations", label: t("settings.integrations"), icon: Plug, desc: "Git、终端、MCP" },
     { id: "notifications", label: t("settings.notifications"), icon: Bell, desc: "提醒与声音" },
+    { id: "selectionLookup", label: t("settings.selectionLookup"), icon: ScanSearch, desc: "桌面划词知识库查询" },
     { id: "about", label: t("settings.about"), icon: Info, desc: "版本与自动更新" },
   ]
 
@@ -117,6 +121,7 @@ export function SettingsView() {
             {active === "appearance" && <AppearanceSection />}
             {active === "integrations" && <IntegrationsSection />}
             {active === "notifications" && <NotificationsSection />}
+            {active === "selectionLookup" && <SelectionLookupSection />}
             {active === "about" && <AboutSection />}
           </div>
         </div>

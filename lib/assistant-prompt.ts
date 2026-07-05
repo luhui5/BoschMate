@@ -20,13 +20,29 @@ const PLAN_TOOL_LIST = `read_file, grep, glob, list_directory,
   list_symbols, find_references, file_deps, blast_radius, ask_user,
   list_knowledge_bases, search_knowledge, read_knowledge_document`
 
-const KNOWLEDGE_ONLY_TOOL_LIST = `list_knowledge_bases, search_knowledge, read_knowledge_document, web_fetch, ask_user`
+function knowledgeSessionBlock(selectedKbaseName?: string): string {
+  const nameLine = selectedKbaseName
+    ? `- **Active knowledge base**: "${selectedKbaseName}" — always pass \`kbase_id\` when calling search_knowledge.`
+    : "- A knowledge base is selected in the UI — scope all answers to uploaded documents only."
+  return `## Knowledge base session (mandatory)
 
-function knowledgeBaseGuidanceBlock(): string {
+Mode: **Ask** — knowledge-base only. Workspace tools are **disabled** for this session.
+
+- **Allowed tools**: list_knowledge_bases, search_knowledge, read_knowledge_document, web_fetch, ask_user.
+- **Forbidden**: read_file, grep, glob, list_directory, git_*, list_symbols, find_references, file_deps, blast_radius, write_file, edit_file, bash, open, outlook_* — do NOT inspect or modify the workspace.
+- Call **search_knowledge** first, then **read_knowledge_document** for details. Do not assume document content is in context.
+${nameLine}`
+}
+
+function knowledgeBaseGuidanceBlock(selectedKbaseName?: string): string {
+  const scopeLine = selectedKbaseName
+    ? `- **Active knowledge base**: "${selectedKbaseName}" — always pass \`kbase_id\` when calling search_knowledge.`
+    : ""
   return `## Knowledge base (on-demand)
 - When the user asks about uploaded documents, call **search_knowledge** first, then **read_knowledge_document** for details.
 - Do not assume document content is already in context.
-- Use **list_knowledge_bases** to see which knowledge bases and documents are available.`
+- Use **list_knowledge_bases** to see which knowledge bases and documents are available.
+${scopeLine}`
 }
 
 function modeGuidance(mode: AgentMode): string {
@@ -132,19 +148,13 @@ ${sideEffectToolsBlock("auto")}
 - After multi-step execution (file edits, shell commands, or plan execution), end your final reply with a **执行汇总** section (3–6 bullets): what was done, files changed, verification results (build/test), and any remaining items or follow-ups. Keep it concise.`
 }
 
-function buildWorkspaceBlock(mode: AgentMode, folder: string | null, knowledgeEnabled?: boolean): string {
+function buildWorkspaceBlock(
+  mode: AgentMode,
+  folder: string | null,
+  knowledgeEnabled?: boolean,
+  selectedKbaseName?: string,
+): string {
   if (!folder) {
-    if (knowledgeEnabled) {
-      return `## Local workspace (NOT bound)
-- No workspace folder is bound yet.
-- You cannot read local project files or run shell commands until a workspace folder is available.
-- **Knowledge base tools are available**: ${KNOWLEDGE_ONLY_TOOL_LIST}.
-- Ask the user to bind a folder via **工作文件夹** in the + menu if they need codebase tools.
-
-${knowledgeBaseGuidanceBlock()}
-
-${modeGuidance(mode)}`
-    }
     return `## Local workspace (NOT bound)
 - No workspace folder is bound yet.
 - You cannot read local files or run shell commands until a workspace folder is available.
@@ -171,7 +181,7 @@ ${thinkingFormatBlock()}
 
 ${sideEffectToolsBlock("edit")}
 
-${knowledgeBaseGuidanceBlock()}`
+${knowledgeEnabled ? knowledgeBaseGuidanceBlock(selectedKbaseName) : ""}`
   }
 
   if (mode === "plan") {
@@ -184,7 +194,7 @@ ${modeGuidance(mode)}
 
 ${planModeBehaviorBlock()}
 
-${knowledgeBaseGuidanceBlock()}`
+${knowledgeEnabled ? knowledgeBaseGuidanceBlock(selectedKbaseName) : ""}`
   }
 
   if (mode === "ask") {
@@ -197,7 +207,7 @@ ${modeGuidance(mode)}
 
 ${askModeBehaviorBlock()}
 
-${knowledgeBaseGuidanceBlock()}`
+${knowledgeEnabled ? knowledgeBaseGuidanceBlock(selectedKbaseName) : ""}`
   }
 
   // auto
@@ -215,7 +225,7 @@ ${autoModeBehaviorBlock()}
 
 ${thinkingFormatBlock()}
 
-${knowledgeBaseGuidanceBlock()}`
+${knowledgeEnabled ? knowledgeBaseGuidanceBlock(selectedKbaseName) : ""}`
 }
 
 function capabilitiesBlock(mode: AgentMode): string {
@@ -260,17 +270,29 @@ export function buildAssistantSystemPrompt(options: {
   mode?: AgentMode
   memoryContext?: string
   knowledgeEnabled?: boolean
+  knowledgeSession?: boolean
+  selectedKbaseName?: string
 }): string {
-  const { folder, toolsEnabled, mode = DEFAULT_AGENT_MODE, memoryContext, knowledgeEnabled } = options
+  const {
+    folder,
+    toolsEnabled,
+    mode = DEFAULT_AGENT_MODE,
+    memoryContext,
+    knowledgeEnabled,
+    knowledgeSession,
+    selectedKbaseName,
+  } = options
 
-  const workspaceBlock = toolsEnabled
-    ? buildWorkspaceBlock(mode, folder, knowledgeEnabled)
-    : buildWorkspaceBlock(mode, null, knowledgeEnabled)
+  const workspaceBlock = knowledgeSession
+    ? knowledgeSessionBlock(selectedKbaseName)
+    : toolsEnabled
+      ? buildWorkspaceBlock(mode, folder, knowledgeEnabled, selectedKbaseName)
+      : buildWorkspaceBlock(mode, null, knowledgeEnabled, selectedKbaseName)
 
   const memoryBlock =
-    memoryContext && memoryContext.trim()
-      ? `\n\n${memoryContext.trim()}`
-      : ""
+    knowledgeSession || !memoryContext?.trim()
+      ? ""
+      : `\n\n${memoryContext.trim()}`
 
   return `You are **Bosch Assistant**, the local AI agent built into **BoschCode** (similar in spirit to OpenClaw / a personal local agent).
 

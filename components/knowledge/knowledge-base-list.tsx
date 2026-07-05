@@ -8,21 +8,17 @@ import type { KnowledgeBase } from "@/lib/knowledge"
 interface KnowledgeBaseListProps {
   bases: KnowledgeBase[]
   selectedId: string | null
-  enabledIds: string[]
   onSelect: (id: string) => void
   onCreate: () => void
   onDelete: (id: string) => void
-  onToggleEnabled: (id: string, enabled: boolean) => void
 }
 
 export function KnowledgeBaseList({
   bases,
   selectedId,
-  enabledIds,
   onSelect,
   onCreate,
   onDelete,
-  onToggleEnabled,
 }: KnowledgeBaseListProps) {
   return (
     <div className="flex h-full flex-col border-r border-border">
@@ -47,7 +43,6 @@ export function KnowledgeBaseList({
         <ul className="flex-1 space-y-0.5 overflow-y-auto p-2">
           {bases.map((base) => {
             const selected = base.id === selectedId
-            const enabled = enabledIds.includes(base.id)
             return (
               <li key={base.id}>
                 <div
@@ -66,14 +61,6 @@ export function KnowledgeBaseList({
                       {base.documentCount} 文档 · {base.chunkCount} 块
                     </p>
                   </button>
-                  <label className="flex shrink-0 items-center gap-1 pt-0.5" title="启用检索">
-                    <input
-                      type="checkbox"
-                      checked={enabled}
-                      onChange={(e) => onToggleEnabled(base.id, e.target.checked)}
-                      className="size-3.5 rounded border-border"
-                    />
-                  </label>
                   <Button
                     variant="ghost"
                     size="icon-sm"

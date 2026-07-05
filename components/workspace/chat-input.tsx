@@ -1,6 +1,6 @@
 "use client"
 
-import { useMemo, useRef, useState } from "react"
+import { useMemo, useRef, useState, useEffect } from "react"
 import type { LucideIcon } from "lucide-react"
 import {
   Plus,
@@ -67,6 +67,13 @@ export function ChatInput({
   extraMenuItems,
   placeholder = "描述需求，粘贴截图，或输入 / 使用命令…",
   enableSlashCommands = true,
+  knowledgeBases,
+  selectedKbaseId,
+  onKbaseChange,
+  hideKnowledgeSelector,
+  lockAgentMode,
+  prefillText,
+  onPrefillConsumed,
 }: {
   mode: AgentMode
   onModeChange: (m: AgentMode) => void
@@ -84,10 +91,18 @@ export function ChatInput({
   extraMenuItems?: ChatInputExtraMenuItem[]
   placeholder?: string
   enableSlashCommands?: boolean
+  knowledgeBases?: { id: string; name: string }[]
+  selectedKbaseId?: string | null
+  onKbaseChange?: (id: string | null) => void
+  hideKnowledgeSelector?: boolean
+  lockAgentMode?: boolean
+  prefillText?: string | null
+  onPrefillConsumed?: () => void
 }) {
   const [value, setValue] = useState("")
   const [showAddMenu, setShowAddMenu] = useState(false)
   const [showAgentModes, setShowAgentModes] = useState(false)
+  const [showKbaseMenu, setShowKbaseMenu] = useState(false)
   const [showModels, setShowModels] = useState(false)
   const [showSlash, setShowSlash] = useState(false)
   const [pastedImage, setPastedImage] = useState<string | null>(null)
@@ -96,10 +111,21 @@ export function ChatInput({
   const taRef = useRef<HTMLTextAreaElement>(null)
   const imageInputRef = useRef<HTMLInputElement>(null)
 
+  useEffect(() => {
+    if (prefillText) {
+      setValue(prefillText)
+      onPrefillConsumed?.()
+      taRef.current?.focus()
+    }
+  }, [prefillText, onPrefillConsumed])
+
   const currentModel = models.find((m) => m.id === selectedModelId)
   const currentAgentMode = agentModes.find((m) => m.id === mode)
   const CurrentModeIcon = currentAgentMode?.icon
   const activeDepth = getThinkingDepth(depth)
+  const kbaseList = knowledgeBases ?? []
+  const selectedKbase = kbaseList.find((b) => b.id === selectedKbaseId) ?? null
+  const kbaseSelectorDisabled = kbaseList.length === 0
 
   const filteredModels = useMemo(() => {
     const q = modelSearch.trim().toLowerCase()
@@ -319,12 +345,19 @@ export function ChatInput({
                   type="button"
                   aria-haspopup="listbox"
                   aria-expanded={showAgentModes}
+                  title={lockAgentMode ? "已选知识库，锁定 Ask 模式" : undefined}
+                  disabled={lockAgentMode}
                   onClick={() => {
+                    if (lockAgentMode) return
                     setShowAgentModes((s) => !s)
                     setShowAddMenu(false)
                     setShowModels(false)
+                    setShowKbaseMenu(false)
                   }}
-                  className="flex max-w-[200px] items-center gap-1 rounded-full border border-border bg-muted/30 px-2.5 py-1 text-xs font-medium transition-colors hover:bg-muted/50"
+                  className={cn(
+                    "flex max-w-[200px] items-center gap-1 rounded-full border border-border bg-muted/30 px-2.5 py-1 text-xs font-medium transition-colors hover:bg-muted/50",
+                    lockAgentMode && "cursor-not-allowed opacity-70",
+                  )}
                 >
                   {CurrentModeIcon && (
                     <CurrentModeIcon className="size-3.5 shrink-0 text-foreground/80" />
@@ -372,6 +405,87 @@ export function ChatInput({
                 )}
               </div>
             )}
+
+            {!hideKnowledgeSelector && onKbaseChange && (
+              <div className="relative min-w-0">
+                <button
+                  type="button"
+                  aria-haspopup="listbox"
+                  aria-expanded={showKbaseMenu}
+                  title={
+                    kbaseSelectorDisabled
+                      ? "请先在知识库面板创建知识库"
+                      : selectedKbase
+                        ? `已选知识库：${selectedKbase.name}`
+                        : "选择知识库（可选）"
+                  }
+                  disabled={kbaseSelectorDisabled}
+                  onClick={() => {
+                    if (kbaseSelectorDisabled) return
+                    setShowKbaseMenu((s) => !s)
+                    setShowAddMenu(false)
+                    setShowModels(false)
+                    setShowAgentModes(false)
+                  }}
+                  className={cn(
+                    "flex max-w-[160px] items-center gap-1 rounded-full border border-border bg-muted/30 px-2.5 py-1 text-xs font-medium transition-colors hover:bg-muted/50",
+                    kbaseSelectorDisabled && "cursor-not-allowed opacity-50",
+                    selectedKbase && "border-primary/40",
+                  )}
+                >
+                  <BookOpen className="size-3.5 shrink-0 text-foreground/80" />
+                  <span className="truncate">
+                    {selectedKbase ? selectedKbase.name : "知识库"}
+                  </span>
+                  <ChevronDown className="size-3 shrink-0 text-muted-foreground" />
+                </button>
+
+                {showKbaseMenu && (
+                  <>
+                    <MenuBackdrop onClose={() => setShowKbaseMenu(false)} />
+                    <div className="absolute bottom-full left-0 z-20 mb-2 w-[220px] overflow-hidden rounded-xl border border-border bg-popover shadow-xl">
+                      <div className="p-1">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            onKbaseChange(null)
+                            setShowKbaseMenu(false)
+                          }}
+                          className={cn(
+                            "flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-sm transition-colors hover:bg-accent",
+                            !selectedKbaseId && "bg-accent",
+                          )}
+                        >
+                          <span className="flex-1 text-muted-foreground">不启用</span>
+                          {!selectedKbaseId && (
+                            <Check className="size-3.5 shrink-0 text-primary" />
+                          )}
+                        </button>
+                        {kbaseList.map((base) => (
+                          <button
+                            key={base.id}
+                            type="button"
+                            onClick={() => {
+                              onKbaseChange(base.id)
+                              setShowKbaseMenu(false)
+                            }}
+                            className={cn(
+                              "flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-sm transition-colors hover:bg-accent",
+                              base.id === selectedKbaseId && "bg-accent",
+                            )}
+                          >
+                            <span className="flex-1 truncate font-medium">{base.name}</span>
+                            {base.id === selectedKbaseId && (
+                              <Check className="size-3.5 shrink-0 text-primary" />
+                            )}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  </>
+                )}
+              </div>
+            )}
           </div>
 
           {/* Model + send */}
@@ -385,6 +499,7 @@ export function ChatInput({
                   setShowModels((s) => !s)
                   setShowAddMenu(false)
                   setShowAgentModes(false)
+                  setShowKbaseMenu(false)
                 }}
                 className="flex max-w-[180px] items-center gap-1 rounded-full border border-border bg-muted/30 px-2.5 py-1 text-xs font-medium transition-colors hover:bg-muted/50"
               >

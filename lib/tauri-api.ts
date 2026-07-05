@@ -27,6 +27,14 @@ import type {
   KnowledgeIndexProgressEvent,
   KnowledgeKind,
 } from './knowledge';
+import type {
+  SelectionLookupSettings,
+  SelectionLookupStartEvent,
+  SelectionLookupErrorEvent,
+  KnowledgeChunkHit,
+} from './selection-lookup';
+
+export type { KnowledgeChunkHit };
 import {
   mapProject,
   mapSession,
@@ -436,6 +444,31 @@ export function onChatToken(callback: (event: ChatTokenEvent) => void): () => vo
   let unlisten: (() => void) | null = null;
 
   listen('chat-token', (event: { payload: ChatTokenEvent }) => {
+    callback(event.payload);
+  }).then((fn: () => void) => {
+    unlisten = fn;
+  });
+
+  return () => {
+    if (unlisten) unlisten();
+  };
+}
+
+export interface ChatToolDeltaEvent {
+  session_id: string;
+  message_id: string;
+  index: number;
+  name: string;
+  arguments_delta: string;
+}
+
+export function onChatToolDelta(callback: (event: ChatToolDeltaEvent) => void): () => void {
+  if (!isTauri()) return () => {};
+
+  const { listen } = require('@tauri-apps/api/event');
+  let unlisten: (() => void) | null = null;
+
+  listen('chat-tool-delta', (event: { payload: ChatToolDeltaEvent }) => {
     callback(event.payload);
   }).then((fn: () => void) => {
     unlisten = fn;
@@ -928,15 +961,102 @@ export async function retrieveKnowledgeContext(
   kbaseIds: string[],
   query: string,
   topK?: number,
-): Promise<{ context: string }> {
-  const raw = await invoke<{ context: string }>('retrieve_knowledge_context', {
+): Promise<{ context: string; chunks: KnowledgeChunkHit[] }> {
+  const raw = await invoke<{
+    context: string
+    chunks: Array<{
+      id: string
+      document_id: string
+      kbase_id: string
+      chunk_index: number
+      content: string
+      kbase_name: string
+      document_name: string
+      score: number
+    }>
+  }>('retrieve_knowledge_context', {
     input: {
       kbase_ids: kbaseIds,
       query,
       top_k: topK,
     },
   });
-  return { context: raw.context };
+  return {
+    context: raw.context,
+    chunks: (raw.chunks ?? []).map((c) => ({
+      id: c.id,
+      documentId: c.document_id,
+      kbaseId: c.kbase_id,
+      chunkIndex: c.chunk_index,
+      content: c.content,
+      kbaseName: c.kbase_name,
+      documentName: c.document_name,
+      score: c.score,
+    })),
+  };
+}
+
+export async function selectionLookupApplySettings(
+  settings: SelectionLookupSettings,
+): Promise<void> {
+  return invoke('selection_lookup_apply_settings', { settings });
+}
+
+export async function hideSelectionPopup(): Promise<void> {
+  return invoke('hide_selection_popup');
+}
+
+export async function continueSelectionInAssistant(
+  text: string,
+  kbaseId?: string | null,
+): Promise<void> {
+  return invoke('continue_selection_in_assistant', { text, kbaseId: kbaseId ?? null });
+}
+
+export async function getSelectionLookupSettings(): Promise<SelectionLookupSettings> {
+  return invoke('get_selection_lookup_settings');
+}
+
+export function onSelectionLookupStart(
+  callback: (event: SelectionLookupStartEvent) => void,
+): () => void {
+  if (!isTauri()) return () => {};
+  const { listen } = require('@tauri-apps/api/event');
+  let unlisten: (() => void) | null = null;
+  listen('selection-lookup:start', (event: { payload: SelectionLookupStartEvent }) => {
+    callback(event.payload);
+  }).then((fn: () => void) => {
+    unlisten = fn;
+  });
+  return () => { if (unlisten) unlisten(); };
+}
+
+export function onSelectionLookupError(
+  callback: (event: SelectionLookupErrorEvent) => void,
+): () => void {
+  if (!isTauri()) return () => {};
+  const { listen } = require('@tauri-apps/api/event');
+  let unlisten: (() => void) | null = null;
+  listen('selection-lookup:error', (event: { payload: SelectionLookupErrorEvent }) => {
+    callback(event.payload);
+  }).then((fn: () => void) => {
+    unlisten = fn;
+  });
+  return () => { if (unlisten) unlisten(); };
+}
+
+export function onAssistantPrefillQuery(
+  callback: (payload: { text: string; kbaseId?: string | null }) => void,
+): () => void {
+  if (!isTauri()) return () => {};
+  const { listen } = require('@tauri-apps/api/event');
+  let unlisten: (() => void) | null = null;
+  listen('assistant-prefill-query', (event: { payload: { text: string; kbaseId?: string | null } }) => {
+    callback(event.payload);
+  }).then((fn: () => void) => {
+    unlisten = fn;
+  });
+  return () => { if (unlisten) unlisten(); };
 }
 
 export function onKnowledgeIndexProgress(

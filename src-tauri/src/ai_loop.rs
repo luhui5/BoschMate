@@ -573,7 +573,15 @@ pub fn get_plan_tools() -> Vec<AiToolDef> {
         .collect()
 }
 
-/// Knowledge + minimal read-only tools when no workspace is bound.
+/// Strip knowledge base tools when no kbase is selected in the UI.
+pub fn without_knowledge_tools(tools: Vec<AiToolDef>) -> Vec<AiToolDef> {
+    tools
+        .into_iter()
+        .filter(|t| !KNOWLEDGE_TOOL_NAMES.contains(&t.name.as_str()))
+        .collect()
+}
+
+/// Knowledge-only session tools when a kbase is selected in the UI.
 pub fn get_knowledge_only_tools() -> Vec<AiToolDef> {
     get_tools()
         .into_iter()

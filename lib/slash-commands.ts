@@ -12,7 +12,6 @@ import {
 
 export interface SlashContext {
   projectId?: string
-  onOpenOnboarding?: () => void
 }
 
 export interface SlashCommand {
@@ -81,15 +80,6 @@ const builtinCommands: SlashCommand[] = [
     description: "Initialize a new project from template",
     takesArgs: true,
     handler: async (args) => `Use 主页 → 新建项目 to initialize${args ? `: ${args}` : ""}.`,
-  },
-  {
-    name: "onboarding",
-    description: "Re-run the onboarding wizard",
-    takesArgs: false,
-    handler: async (_args, ctx) => {
-      ctx.onOpenOnboarding?.()
-      return "Opening onboarding wizard…"
-    },
   },
   {
     name: "compress-memory",
