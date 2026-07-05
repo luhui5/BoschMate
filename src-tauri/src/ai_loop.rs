@@ -189,6 +189,10 @@ fn check_bulk_write_limit(config: &LoopConfig) -> Result<(), String> {
 
 pub type EditCollector = Arc<Mutex<Vec<PendingEditMeta>>>;
 
+/// Path parameter description shared by file tools.
+const WORKSPACE_PATH_DESC: &str =
+    "Path relative to workspace root, or absolute path if under the bound workspace folder";
+
 /// Available tools registered with the AI
 pub fn get_tools() -> Vec<AiToolDef> {
     vec![
@@ -198,7 +202,7 @@ pub fn get_tools() -> Vec<AiToolDef> {
             parameters: serde_json::json!({
                 "type": "object",
                 "properties": {
-                    "path": {"type": "string", "description": "File path relative to project root"},
+                    "path": {"type": "string", "description": WORKSPACE_PATH_DESC},
                     "offset": {"type": "integer", "description": "Start line (0-indexed)"},
                     "limit": {"type": "integer", "description": "Max lines to read"}
                 },
@@ -211,7 +215,7 @@ pub fn get_tools() -> Vec<AiToolDef> {
             parameters: serde_json::json!({
                 "type": "object",
                 "properties": {
-                    "path": {"type": "string"},
+                    "path": {"type": "string", "description": WORKSPACE_PATH_DESC},
                     "content": {"type": "string"}
                 },
                 "required": ["path", "content"]
@@ -223,7 +227,7 @@ pub fn get_tools() -> Vec<AiToolDef> {
             parameters: serde_json::json!({
                 "type": "object",
                 "properties": {
-                    "path": {"type": "string"},
+                    "path": {"type": "string", "description": WORKSPACE_PATH_DESC},
                     "old_string": {"type": "string"},
                     "new_string": {"type": "string"},
                     "replace_all": {"type": "boolean", "default": false}
@@ -238,7 +242,7 @@ pub fn get_tools() -> Vec<AiToolDef> {
                 "type": "object",
                 "properties": {
                     "pattern": {"type": "string"},
-                    "path": {"type": "string"},
+                    "path": {"type": "string", "description": WORKSPACE_PATH_DESC},
                     "glob": {"type": "string"},
                     "head_limit": {"type": "integer"}
                 },
@@ -252,7 +256,7 @@ pub fn get_tools() -> Vec<AiToolDef> {
                 "type": "object",
                 "properties": {
                     "pattern": {"type": "string"},
-                    "path": {"type": "string"}
+                    "path": {"type": "string", "description": WORKSPACE_PATH_DESC}
                 },
                 "required": ["pattern"]
             }),
@@ -263,7 +267,7 @@ pub fn get_tools() -> Vec<AiToolDef> {
             parameters: serde_json::json!({
                 "type": "object",
                 "properties": {
-                    "path": {"type": "string"}
+                    "path": {"type": "string", "description": WORKSPACE_PATH_DESC}
                 }
             }),
         },
@@ -291,7 +295,7 @@ pub fn get_tools() -> Vec<AiToolDef> {
                 "type": "object",
                 "properties": {
                     "staged": {"type": "boolean"},
-                    "path": {"type": "string"}
+                    "path": {"type": "string", "description": WORKSPACE_PATH_DESC}
                 }
             }),
         },
@@ -320,22 +324,22 @@ pub fn get_tools() -> Vec<AiToolDef> {
         AiToolDef {
             name: "list_symbols".into(),
             description: "List all symbols in a source file. Use to understand code structure.".into(),
-            parameters: serde_json::json!({"type":"object","properties":{"file_path":{"type":"string"},"kind_filter":{"type":"string"}},"required":["file_path"]}),
+            parameters: serde_json::json!({"type":"object","properties":{"file_path":{"type":"string","description":WORKSPACE_PATH_DESC},"kind_filter":{"type":"string"}},"required":["file_path"]}),
         },
         AiToolDef {
             name: "find_references".into(),
             description: "Find all references to a symbol across the codebase.".into(),
-            parameters: serde_json::json!({"type":"object","properties":{"symbol_name":{"type":"string"},"file_path":{"type":"string"}},"required":["symbol_name","file_path"]}),
+            parameters: serde_json::json!({"type":"object","properties":{"symbol_name":{"type":"string"},"file_path":{"type":"string","description":WORKSPACE_PATH_DESC}},"required":["symbol_name","file_path"]}),
         },
         AiToolDef {
             name: "file_deps".into(),
             description: "Analyze import/dependency relationships for a file.".into(),
-            parameters: serde_json::json!({"type":"object","properties":{"file_path":{"type":"string"},"direction":{"type":"string"}},"required":["file_path"]}),
+            parameters: serde_json::json!({"type":"object","properties":{"file_path":{"type":"string","description":WORKSPACE_PATH_DESC},"direction":{"type":"string"}},"required":["file_path"]}),
         },
         AiToolDef {
             name: "blast_radius".into(),
             description: "Analyze what files would be affected by changing a symbol or file.".into(),
-            parameters: serde_json::json!({"type":"object","properties":{"file_path":{"type":"string"},"symbol_name":{"type":"string"}},"required":["file_path"]}),
+            parameters: serde_json::json!({"type":"object","properties":{"file_path":{"type":"string","description":WORKSPACE_PATH_DESC},"symbol_name":{"type":"string"}},"required":["file_path"]}),
         },
         AiToolDef {
             name: "open".into(),
@@ -356,7 +360,7 @@ pub fn get_tools() -> Vec<AiToolDef> {
             parameters: serde_json::json!({
                 "type": "object",
                 "properties": {
-                    "path": {"type": "string", "description": "Relative path under workspace (default: workspace root)"}
+                    "path": {"type": "string", "description": WORKSPACE_PATH_DESC}
                 }
             }),
         },

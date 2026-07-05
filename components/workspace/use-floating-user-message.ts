@@ -17,17 +17,22 @@ export function useFloatingUserMessage(
     else messageRefs.current.delete(id)
   }, [])
 
-  const userMessages = useMemo(
-    () => messages.filter((m) => m.role === "user"),
-    [messages],
-  )
+  const userMessageIds = useMemo(() => {
+    const ids: string[] = []
+    for (const m of messages) {
+      if (m.role === "user") ids.push(m.id)
+    }
+    return ids.join("\0")
+  }, [messages])
 
   useEffect(() => {
     const container = scrollRef.current
-    if (!container || userMessages.length === 0) {
+    if (!container || userMessageIds.length === 0) {
       setFloatingId(null)
       return
     }
+
+    const userMessages = messages.filter((m) => m.role === "user")
 
     const update = () => {
       const containerRect = container.getBoundingClientRect()
@@ -69,7 +74,7 @@ export function useFloatingUserMessage(
       container.removeEventListener("scroll", update)
       ro.disconnect()
     }
-  }, [scrollRef, userMessages])
+  }, [scrollRef, userMessageIds])
 
   const floatingMessage =
     floatingId != null ? (messages.find((m) => m.id === floatingId) ?? null) : null

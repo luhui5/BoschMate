@@ -10,4 +10,6 @@ export const BOSCH_COLORS = [
 
 export const BOSCH_GRADIENT = `linear-gradient(to right, ${BOSCH_COLORS.join(", ")})`
 
+export const BOSCH_GRADIENT_LOOP = `linear-gradient(to right, ${[...BOSCH_COLORS, ...BOSCH_COLORS].join(", ")})`
+
 export const BOSCH_CONIC_GRADIENT = `conic-gradient(from 0deg, ${[...BOSCH_COLORS, BOSCH_COLORS[0]].join(", ")})`

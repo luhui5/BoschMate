@@ -371,9 +371,10 @@ export interface ChatTokenEvent {
 
 export async function streamChat(
   request: AiChatRequest,
-  sessionId: string
+  sessionId: string,
+  messageId: string,
 ): Promise<ChatMessage> {
-  const raw = await invoke<RawChatMessage>('stream_chat', { request, sessionId });
+  const raw = await invoke<RawChatMessage>('stream_chat', { request, sessionId, messageId });
   return mapChatMessage(raw);
 }
 

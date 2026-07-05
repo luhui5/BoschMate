@@ -1,4 +1,5 @@
 import type { ThinkingDepth } from "@/lib/thinking-depth"
+import type { ChatMessage } from "@/lib/types"
 import type { ActivityStep, AgentMode, DiffHunk, PendingQuestions } from "@/lib/types"
 import { DEFAULT_MODELS, resolveActiveModelId, resolveDefaultModelForNewSession } from "@/lib/models"
 import { ASSISTANT_PROJECT_ID, DEFAULT_AGENT_MODE } from "@/lib/constants"
@@ -138,14 +139,24 @@ function toAssistantSession(
   }
 }
 
-async function loadSessionMessages(sessionId: string): Promise<AssistantMessage[]> {
-  const msgs = await tauriListMessages(sessionId)
-  return msgs.map((m) => ({
+export function toAssistantMessage(m: ChatMessage): AssistantMessage {
+  return {
     id: m.id,
     role: m.role as "user" | "assistant",
     content: m.content,
     createdAt: m.createdAt,
-  }))
+    activitySteps: m.activitySteps,
+    diffs: m.diffs,
+    pendingQuestions: m.pendingQuestions,
+    mode: m.mode,
+  }
+}
+
+async function loadSessionMessages(sessionId: string): Promise<AssistantMessage[]> {
+  const msgs = await tauriListMessages(sessionId)
+  return msgs
+    .filter((m) => m.role === "user" || m.role === "assistant")
+    .map(toAssistantMessage)
 }
 
 /** 在 Tauri 下创建并持久化到 SQLite；浏览器模式仅本地内存。 */

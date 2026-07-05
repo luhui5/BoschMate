@@ -2126,9 +2126,12 @@ async fn stream_chat(
     state: State<'_, AppState>,
     request: ai_client::ChatRequest,
     session_id: String,
+    message_id: Option<String>,
 ) -> Result<ChatMessage, String> {
     // Save user message first
-    let msg_id = uuid::Uuid::new_v4().to_string();
+    let msg_id = message_id
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
     let now = chrono::Utc::now().to_rfc3339();
     {
         let conn = state.db.conn.lock().unwrap();

@@ -1,9 +1,16 @@
 "use client"
 
+import { memo } from "react"
 import { FileCode2 } from "lucide-react"
 import { DiffCard } from "@/components/workspace/diff-card"
 import { QuestionCard } from "@/components/workspace/question-card"
+import { PlanExecuteBar } from "@/components/workspace/plan-execute-bar"
+import { TaskFileChangesPanel } from "@/components/workspace/task-summary-bar"
 import { ToolActivityPanel } from "@/components/workspace/tool-activity-panel"
+import {
+  shouldShowFileChanges,
+  splitExecutionSummary,
+} from "@/lib/task-summary"
 import { MarkdownContent, MarkdownInline } from "@/components/markdown-content"
 import { cn } from "@/lib/utils"
 import type { ChatMessage as TMessage, DiffHunk, QuestionAnswer } from "@/lib/types"
@@ -35,22 +42,31 @@ export function getReplyLayoutState(
   return { lastUserIdx, awaitingReply, afterUser }
 }
 
-export function ChatMessageView({
+function ChatMessageViewInner({
   message,
   onDiffAction,
   onQuestionSubmit,
   onOpenFile,
+  showPlanExecute,
+  onExecutePlan,
+  planExecuteDisabled,
+  planExecuteDisabledReason,
   variant = "default",
 }: {
   message: TMessage
   onDiffAction: (messageId: string, diffIndex: number, action: "accept" | "reject" | "revert") => void
   onQuestionSubmit?: (messageId: string, answers: QuestionAnswer[]) => void
   onOpenFile: (path: string) => void
+  showPlanExecute?: boolean
+  onExecutePlan?: () => void
+  planExecuteDisabled?: boolean
+  planExecuteDisabledReason?: string
   variant?: "default" | "pinned" | "user-query" | "float"
 }) {
   const isUser = message.role === "user"
   const isFloat = variant === "float"
-  const detectedRefs = extractFileRefs(message.content)
+  const detectedRefs =
+    isUser || !message.streaming ? extractFileRefs(message.content) : []
   const allFileRefs = [...new Set([...(message.fileRefs ?? []), ...detectedRefs])]
 
   const hasActivity =
@@ -76,8 +92,7 @@ export function ChatMessageView({
     hasOutput
   const showOutput =
     hasOutput &&
-    !hideStreamingOutput &&
-    (!message.streaming || !toolStepsStillRunning)
+    (!message.streaming || !toolStepsStillRunning || thoughtRunning)
   const explorePhase =
     Boolean(message.streaming) &&
     (stepCount === 0 || toolStepsStillRunning || !hasOutput || hideStreamingOutput)
@@ -85,6 +100,12 @@ export function ChatMessageView({
   const showQuestionCard = Boolean(
     message.pendingQuestions?.status === "pending" && !message.streaming,
   )
+  const isStreaming = Boolean(message.streaming)
+  const { before, summary } = isStreaming
+    ? { before: message.content, summary: "" }
+    : splitExecutionSummary(message.content)
+  const showFileChanges = shouldShowFileChanges(message)
+  const hasSummarySection = !isStreaming && summary.trim().length > 0
 
   return (
     <div className="flex w-full flex-col gap-2 items-start text-left">
@@ -116,19 +137,53 @@ export function ChatMessageView({
             />
           )}
 
-          {showOutput && (
+          {showOutput && isStreaming && (
             <div className="w-full text-left">
-              {message.streaming ? (
-                <p className="whitespace-pre-wrap text-sm leading-relaxed text-foreground/90">
-                  {message.content}
-                  <span className="ml-0.5 inline-block h-3.5 w-1.5 animate-pulse bg-primary align-middle" />
-                </p>
-              ) : (
-                <MarkdownContent content={message.content} onOpenFile={onOpenFile} />
+              <MarkdownContent
+                content={message.content}
+                streaming
+                onOpenFile={onOpenFile}
+              />
+            </div>
+          )}
+
+          {showOutput && !isStreaming && hasSummarySection && (
+            <div className="flex w-full flex-col gap-2 text-left">
+              {before.trim().length > 0 && (
+                <MarkdownContent content={before} onOpenFile={onOpenFile} />
               )}
+              {showFileChanges && (
+                <TaskFileChangesPanel
+                  activitySteps={message.activitySteps}
+                  diffs={message.diffs}
+                  onOpenFile={onOpenFile}
+                />
+              )}
+              <MarkdownContent content={summary} onOpenFile={onOpenFile} />
+            </div>
+          )}
+
+          {showOutput && !isStreaming && !hasSummarySection && (
+            <div className="flex w-full flex-col gap-2 text-left">
+              {showFileChanges && (
+                <TaskFileChangesPanel
+                  activitySteps={message.activitySteps}
+                  diffs={message.diffs}
+                  onOpenFile={onOpenFile}
+                />
+              )}
+              <MarkdownContent content={message.content} onOpenFile={onOpenFile} />
             </div>
           )}
         </>
+      )}
+
+      {showPlanExecute && onExecutePlan && (
+        <PlanExecuteBar
+          onExecute={onExecutePlan}
+          disabled={planExecuteDisabled}
+          disabledReason={planExecuteDisabledReason}
+        />
       )}
 
       {showQuestionCard && (
@@ -170,3 +225,24 @@ export function ChatMessageView({
     </div>
   )
 }
+
+function chatMessagePropsEqual(a: TMessage, b: TMessage): boolean {
+  return (
+    a.id === b.id &&
+    a.content === b.content &&
+    a.streaming === b.streaming &&
+    a.mode === b.mode &&
+    a.role === b.role &&
+    a.activitySteps === b.activitySteps &&
+    a.diffs === b.diffs &&
+    a.pendingQuestions === b.pendingQuestions
+  )
+}
+
+export const ChatMessageView = memo(ChatMessageViewInner, (prev, next) =>
+  chatMessagePropsEqual(prev.message, next.message) &&
+  prev.showPlanExecute === next.showPlanExecute &&
+  prev.planExecuteDisabled === next.planExecuteDisabled &&
+  prev.planExecuteDisabledReason === next.planExecuteDisabledReason &&
+  prev.variant === next.variant,
+)

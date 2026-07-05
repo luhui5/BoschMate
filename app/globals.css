@@ -249,3 +249,17 @@
 .bosch-border-spin-group-active .bosch-border-spin-layer {
   animation-play-state: running;
 }
+
+@keyframes bosch-text-flow {
+  to {
+    background-position: 200% center;
+  }
+}
+
+.bosch-gradient-text {
+  background-size: 200% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  animation: bosch-text-flow 3s linear infinite;
+}

@@ -126,7 +126,7 @@ export function WorkspaceSidebar({
   onToggleCollapse?: () => void
 }) {
   const { resolvedTheme, toggleTheme } = useApp()
-  const [expanded, setExpanded] = useState<Set<string>>(() => new Set(workspaces.map((w) => w.projectId)))
+  const [foldedWorkspaceIds, setFoldedWorkspaceIds] = useState<Set<string>>(() => new Set())
   const [addMenuOpen, setAddMenuOpen] = useState(false)
   const [sshOpen, setSshOpen] = useState(false)
   const [query, setQuery] = useState("")
@@ -150,8 +150,8 @@ export function WorkspaceSidebar({
       .filter(Boolean) as { ws: AssistantWorkspace; sessions: AssistantSession[] }[]
   }, [workspaces, sessionsByWorkspace, query])
 
-  const toggleExpanded = (id: string) => {
-    setExpanded((prev) => {
+  const toggleFolded = (id: string) => {
+    setFoldedWorkspaceIds((prev) => {
       const next = new Set(prev)
       if (next.has(id)) next.delete(id)
       else next.add(id)
@@ -309,7 +309,7 @@ export function WorkspaceSidebar({
             <p className="px-2 py-6 text-center text-xs text-muted-foreground">没有匹配的工作区或对话</p>
           ) : (
             filteredTree.map(({ ws, sessions }) => {
-              const isExpanded = expanded.has(ws.projectId)
+              const isExpanded = !foldedWorkspaceIds.has(ws.projectId)
               const isActiveWs = ws.projectId === activeWorkspaceId
               const wsProcessing = sessions.some((s) => processingSessionIds.has(s.id))
               return (
@@ -327,7 +327,7 @@ export function WorkspaceSidebar({
                     <button
                       type="button"
                       onClick={() => {
-                        toggleExpanded(ws.projectId)
+                        toggleFolded(ws.projectId)
                         onSelectWorkspace(ws.projectId)
                       }}
                       className="flex min-w-0 flex-1 items-center gap-1 text-left"

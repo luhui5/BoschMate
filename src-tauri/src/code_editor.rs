@@ -251,18 +251,7 @@ pub struct EditResult {
 // ── Helpers ──
 
 fn sanitize_path(root: &Path, rel_path: &str) -> Result<PathBuf, String> {
-    let resolved = root.join(rel_path);
-    // For files that don't exist yet, just verify parent dir is in scope
-    if let Some(parent) = resolved.parent() {
-        if parent.exists() {
-            let canonical = parent.canonicalize().map_err(|_| format!("Path not accessible: {}", rel_path))?;
-            let canonical_root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
-            if !canonical.starts_with(&canonical_root) {
-                return Err(format!("Access denied: path is outside project directory"));
-            }
-        }
-    }
-    Ok(resolved)
+    crate::path_guard::resolve_under_root(root, rel_path)
 }
 
 fn generate_unified_diff(filename: &str, original: &str, modified: &str) -> String {

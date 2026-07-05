@@ -1,6 +1,6 @@
 "use client"
 
-import { useLayoutEffect, useRef, useState, useCallback } from "react"
+import { memo, useLayoutEffect, useRef, useState, useCallback } from "react"
 import {
   CheckCircle2,
   Loader2,
@@ -10,6 +10,7 @@ import {
   ListTree,
   Wrench,
 } from "lucide-react"
+import { BoschGradientText } from "@/components/bosch-gradient-text"
 import { cn } from "@/lib/utils"
 import { isNearBottom, scrollContainerToBottom } from "@/lib/scroll-to-bottom"
 import type { ActivityStep, ChatMessage } from "@/lib/types"
@@ -200,7 +201,15 @@ function CompactToolRow({ step }: { step: ActivityStep }) {
       )}
     >
       <Wrench className="size-3 shrink-0 text-muted-foreground/70" />
-      <span className="min-w-0 flex-1 truncate font-mono text-[11px]">{toolStepLabel(step)}</span>
+      {step.status === "running" ? (
+        <BoschGradientText className="min-w-0 flex-1 truncate font-mono text-[11px]">
+          {toolStepLabel(step)}
+        </BoschGradientText>
+      ) : (
+        <span className="min-w-0 flex-1 truncate font-mono text-[11px]">
+          {toolStepLabel(step)}
+        </span>
+      )}
       <StepStatus status={step.status} />
     </div>
   )
@@ -281,7 +290,7 @@ function ExploringLivePanel({
   )
 }
 
-export function ToolActivityPanel({
+function ToolActivityPanelInner({
   message,
   explorePhase,
 }: {
@@ -338,3 +347,11 @@ export function ToolActivityPanel({
     </div>
   )
 }
+
+export const ToolActivityPanel = memo(
+  ToolActivityPanelInner,
+  (prev, next) =>
+    prev.explorePhase === next.explorePhase &&
+    prev.message.streaming === next.message.streaming &&
+    prev.message.activitySteps === next.message.activitySteps,
+)

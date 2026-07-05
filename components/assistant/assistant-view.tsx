@@ -1,6 +1,6 @@
 "use client"
 
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react"
+import { startTransition, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react"
 import { useSearchParams } from "next/navigation"
 import {
   BookUp,
@@ -30,6 +30,11 @@ import {
   type AssistantMessage,
 } from "@/lib/assistant-sessions"
 import { buildAssistantSystemPrompt } from "@/lib/assistant-prompt"
+import { buildLlmMessages } from "@/lib/chat-history"
+import {
+  EXECUTE_PLAN_MESSAGE,
+  findLatestExecutablePlanMessageId,
+} from "@/lib/plan-execute"
 import { isAssistantSessionProcessing } from "@/lib/session-processing"
 import { DEFAULT_AGENT_MODE } from "@/lib/constants"
 import { debounce } from "@/lib/debounce"
@@ -65,6 +70,7 @@ import {
   revealInExplorer,
   watchProjectDir,
   saveRecoverySnapshot,
+  retrieveMemories,
   isTauri,
   onChatToken,
   onLoopActivity,
@@ -154,6 +160,41 @@ function toChatMessage(m: AssistantMessage): ChatMessage {
     diffs: m.diffs,
     pendingQuestions: m.pendingQuestions,
   }
+}
+
+function chatMessageVisualEqual(a: ChatMessage, b: ChatMessage): boolean {
+  return (
+    a.content === b.content &&
+    a.streaming === b.streaming &&
+    a.mode === b.mode &&
+    a.role === b.role &&
+    a.activitySteps === b.activitySteps &&
+    a.diffs === b.diffs &&
+    a.pendingQuestions === b.pendingQuestions
+  )
+}
+
+function stableChatMessages(
+  raw: AssistantMessage[],
+  cache: Map<string, ChatMessage>,
+): { messages: ChatMessage[]; reused: number } {
+  const usedIds = new Set<string>()
+  let reused = 0
+  const result = raw.map((m) => {
+    const next = toChatMessage(m)
+    usedIds.add(m.id)
+    const prev = cache.get(m.id)
+    if (prev && !next.streaming && chatMessageVisualEqual(prev, next)) {
+      reused += 1
+      return prev
+    }
+    cache.set(m.id, next)
+    return next
+  })
+  for (const id of cache.keys()) {
+    if (!usedIds.has(id)) cache.delete(id)
+  }
+  return { messages: result, reused }
 }
 
 function finalizeCancelledMessage(m: AssistantMessage): AssistantMessage {
@@ -257,6 +298,24 @@ export function AssistantView({
   const userScrolledUpRef = useRef(false)
   const prevPinnedRef = useRef(false)
   const prevMsgCountRef = useRef(0)
+  const followScrollRafRef = useRef<number | null>(null)
+  const tokenFlushTimerRef = useRef<number | null>(null)
+  const pendingTokenRef = useRef<{ messageId: string; content: string } | null>(null)
+  const activityFlushTimerRef = useRef<number | null>(null)
+  const pendingActivityStepsRef = useRef<ActivityStep[]>([])
+  const chatMessagesCacheRef = useRef(new Map<string, ChatMessage>())
+  const streamingActiveRef = useRef(false)
+
+  const scheduleFollowScroll = useCallback(() => {
+    const container = scrollRef.current
+    if (!container || userScrolledUpRef.current) return
+    if (followScrollRafRef.current != null) return
+    followScrollRafRef.current = requestAnimationFrame(() => {
+      followScrollRafRef.current = null
+      scrollContainerToBottom(container, "instant")
+    })
+  }, [])
+
   const [showJumpToBottom, setShowJumpToBottom] = useState(false)
 
   const [availableModels, setAvailableModels] = useState<ModelConfig[]>([])
@@ -411,7 +470,7 @@ export function AssistantView({
   }, [workspaceProjectId, refreshFileTree, refreshGit])
 
   useEffect(() => {
-    if (!active || !workspaceProjectId || !isTauri()) return
+    if (!active || !workspaceProjectId || !isTauri() || generating) return
     const timer = setInterval(() => {
       void saveRecoverySnapshot({
         session_id: active.id,
@@ -422,7 +481,7 @@ export function AssistantView({
       })
     }, 30_000)
     return () => clearInterval(timer)
-  }, [active, workspaceProjectId])
+  }, [active, workspaceProjectId, generating])
 
   const changes = useMemo(() => {
     if (!active) return []
@@ -437,10 +496,13 @@ export function AssistantView({
     setActiveFile(path)
     setRightOpen(true)
   }, [])
-  const chatMessages = useMemo(
-    () => (active?.messages ?? []).map(toChatMessage),
-    [active?.messages],
-  )
+  const chatMessages = useMemo(() => {
+    const { messages } = stableChatMessages(
+      active?.messages ?? [],
+      chatMessagesCacheRef.current,
+    )
+    return messages
+  }, [active?.messages])
   const hasChat = chatMessages.length > 0
 
   const hasPendingQuestions = useMemo(
@@ -450,6 +512,11 @@ export function AssistantView({
       ),
     [active?.messages],
   )
+
+  const latestExecutablePlanId = useMemo(() => {
+    if (!active || generating || hasPendingQuestions) return null
+    return findLatestExecutablePlanMessageId(active.messages)
+  }, [active, generating, hasPendingQuestions])
 
   const chatLayout = useMemo(() => {
     const msgs = chatMessages
@@ -495,12 +562,119 @@ export function AssistantView({
     )
   }
 
+  const patchGeneratingMessage = useCallback(
+    (messageId: string, patch: Partial<AssistantMessage>) => {
+      const sessionId = generatingSessionRef.current
+      if (!sessionId) return
+      startTransition(() => {
+        setSessions((prev) =>
+          prev.map((s) =>
+            s.id === sessionId
+              ? {
+                  ...s,
+                  messages: s.messages.map((m) =>
+                    m.id === messageId ? { ...m, ...patch } : m,
+                  ),
+                  updatedAt: new Date().toISOString(),
+                }
+              : s,
+          ),
+        )
+      })
+    },
+    [],
+  )
+
+  const flushPendingActivity = useCallback(() => {
+    activityFlushTimerRef.current = null
+    const steps = pendingActivityStepsRef.current
+    if (steps.length === 0) return
+    pendingActivityStepsRef.current = []
+    const messageId = activeAssistantMsgRef.current
+    const sessionId = generatingSessionRef.current
+    if (!messageId || !sessionId) return
+    startTransition(() => {
+      setSessions((prev) =>
+        prev.map((s) =>
+          s.id === sessionId
+            ? {
+                ...s,
+                messages: s.messages.map((m) => {
+                  if (m.id !== messageId) return m
+                  let activitySteps = m.activitySteps ?? []
+                  for (const step of steps) {
+                    activitySteps = upsertActivityStep(activitySteps, step)
+                  }
+                  return { ...m, activitySteps }
+                }),
+                updatedAt: new Date().toISOString(),
+              }
+            : s,
+        ),
+      )
+    })
+  }, [])
+
+  const queueActivityUpdate = useCallback(
+    (step: ActivityStep) => {
+      pendingActivityStepsRef.current.push(step)
+      if (activityFlushTimerRef.current != null) return
+      activityFlushTimerRef.current = window.setTimeout(flushPendingActivity, 150)
+    },
+    [flushPendingActivity],
+  )
+
+  const flushPendingActivitySync = useCallback(() => {
+    if (activityFlushTimerRef.current != null) {
+      window.clearTimeout(activityFlushTimerRef.current)
+      activityFlushTimerRef.current = null
+    }
+    flushPendingActivity()
+  }, [flushPendingActivity])
+
+  const flushPendingToken = useCallback(() => {
+    tokenFlushTimerRef.current = null
+    const pending = pendingTokenRef.current
+    if (!pending) return
+    pendingTokenRef.current = null
+    patchGeneratingMessage(pending.messageId, {
+      content: pending.content,
+      streaming: true,
+    })
+    scheduleFollowScroll()
+  }, [patchGeneratingMessage, scheduleFollowScroll])
+
+  const queueStreamingToken = useCallback(
+    (messageId: string, content: string) => {
+      pendingTokenRef.current = { messageId, content }
+      if (tokenFlushTimerRef.current != null) return
+      tokenFlushTimerRef.current = window.setTimeout(flushPendingToken, 150)
+    },
+    [flushPendingToken],
+  )
+
+  const flushStreamingTokenSync = useCallback(() => {
+    if (tokenFlushTimerRef.current != null) {
+      window.clearTimeout(tokenFlushTimerRef.current)
+      tokenFlushTimerRef.current = null
+    }
+    const pending = pendingTokenRef.current
+    if (!pending) return
+    pendingTokenRef.current = null
+    patchGeneratingMessage(pending.messageId, {
+      content: pending.content,
+      streaming: true,
+    })
+  }, [patchGeneratingMessage])
+
   const lastAssistant = useMemo(() => {
     for (let i = chatMessages.length - 1; i >= 0; i--) {
       if (chatMessages[i].role === "assistant") return chatMessages[i]
     }
     return undefined
   }, [chatMessages])
+
+  streamingActiveRef.current = generating || Boolean(lastAssistant?.streaming)
 
 
   const jumpToBottom = useCallback(() => {
@@ -545,11 +719,13 @@ export function AssistantView({
     const isStreaming =
       generating || Boolean(lastAssistant?.streaming)
 
+    if (isStreaming) return
+
     const scrollOnce = () => {
       if (userScrolledUpRef.current && !justPinned) return
       scrollContainerToBottom(
         container,
-        justPinned || isStreaming ? "instant" : "smooth",
+        justPinned ? "instant" : "smooth",
       )
     }
 
@@ -558,10 +734,10 @@ export function AssistantView({
       requestAnimationFrame(scrollOnce)
     })
   }, [
-    active?.messages,
+    active?.messages.length,
     generating,
     chatLayout.usePinned,
-    active,
+    active?.id,
     lastAssistant?.streaming,
   ])
 
@@ -571,16 +747,16 @@ export function AssistantView({
     if (!container || !content) return
 
     const ro = new ResizeObserver(() => {
+      if (streamingActiveRef.current) return
       if (userScrolledUpRef.current) {
         syncScrollFollowState()
         return
       }
-      scrollContainerToBottom(container, "instant")
-      setShowJumpToBottom(false)
+      scheduleFollowScroll()
     })
     ro.observe(content)
     return () => ro.disconnect()
-  }, [syncScrollFollowState, hasChat, scrollMessages.length])
+  }, [syncScrollFollowState, hasChat, scrollMessages.length, scheduleFollowScroll])
 
   const newSessionInWorkspace = (workspaceId: string) => {
     void (async () => {
@@ -680,10 +856,17 @@ export function AssistantView({
   const send = async (
     text: string,
     _imageDataUrl?: string,
-    opts?: { bulkWriteConfirmed?: boolean; skipUserMessage?: boolean },
+    opts?: {
+      bulkWriteConfirmed?: boolean
+      skipUserMessage?: boolean
+      agentMode?: AgentMode
+    },
   ) => {
     const content = text.trim()
     if (!content || generating || sendInFlightRef.current || !active) return
+
+    const agentMode = opts?.agentMode ?? mode
+    if (opts?.agentMode) setMode(opts.agentMode)
 
     sendInFlightRef.current = true
     setGenerating(true)
@@ -698,7 +881,7 @@ export function AssistantView({
         id: `u-${Date.now()}`,
         role: "user",
         content,
-        mode,
+        mode: agentMode,
         createdAt: new Date().toISOString(),
       }
 
@@ -770,6 +953,7 @@ export function AssistantView({
         role: "assistant",
         content: "",
         streaming: true,
+        mode: agentMode,
         createdAt: new Date().toISOString(),
       },
     ])
@@ -777,40 +961,42 @@ export function AssistantView({
     const unlistenToken = onChatToken((e) => {
       if (e.session_id !== activeId || e.message_id !== assistantMsgId) return
       if (stopRequestedRef.current) return
-      updateActiveMessages((msgs) =>
-        msgs.map((m) =>
-          m.id === assistantMsgId ? { ...m, content: e.content, streaming: true } : m,
-        ),
-      )
+      queueStreamingToken(assistantMsgId, e.content)
     })
 
     const unlistenActivity = toolsEnabled
       ? onLoopActivity((e) => {
           if (e.session_id !== activeId || e.message_id !== assistantMsgId) return
           if (stopRequestedRef.current) return
-          const step = mapActivityStep(e.step)
-          updateActiveMessages((msgs) =>
-            msgs.map((m) =>
-              m.id === assistantMsgId
-                ? {
-                    ...m,
-                    activitySteps: upsertActivityStep(m.activitySteps ?? [], step),
-                  }
-                : m,
-            ),
-          )
+          queueActivityUpdate(mapActivityStep(e.step))
         })
       : () => {}
 
     const apiKey = (await loadApiKey(modelCfg.id)) ?? undefined
-    const history = active.messages.map((m) => ({ role: m.role, content: m.content }))
-    const system = buildAssistantSystemPrompt({ folder, toolsEnabled, mode })
+
+    let memoryContext = ""
+    if (workspaceProjectId && isTauri()) {
+      try {
+        const { context } = await retrieveMemories(workspaceProjectId, content, 5)
+        memoryContext = context
+      } catch {
+        /* degrade silently */
+      }
+    }
+
+    const llmMessages = buildLlmMessages(active.messages, content)
+    const system = buildAssistantSystemPrompt({
+      folder,
+      toolsEnabled,
+      mode: agentMode,
+      memoryContext,
+    })
 
     try {
       await tauriSendMessage({
         session_id: activeId,
         content,
-        mode,
+        mode: agentMode,
       })
 
       let response
@@ -819,13 +1005,13 @@ export function AssistantView({
           {
             provider: modelCfg.provider,
             model: modelCfg.name,
-            messages: [...history, { role: "user", content }],
+            messages: llmMessages,
             system_prompt: system,
             api_key: apiKey,
             base_url: modelCfg.endpoint ?? undefined,
             assistant_mode: true,
-            agent_mode: mode,
-            edit_dry_run: mode === "edit",
+            agent_mode: agentMode,
+            edit_dry_run: agentMode === "edit",
             bulk_write_confirmed: opts?.bulkWriteConfirmed,
           },
           activeId,
@@ -836,14 +1022,14 @@ export function AssistantView({
         const request: AiChatRequest = {
           provider: modelCfg.provider,
           model: modelCfg.name,
-          messages: [...history, { role: "user", content }],
+          messages: llmMessages,
           temperature: modelCfg.temperature,
           max_tokens: modelCfg.contextWindow >= 4096 ? 4096 : undefined,
           api_key: apiKey,
           base_url: modelCfg.endpoint ?? undefined,
           system,
         }
-        response = await streamChat(request, activeId)
+        response = await streamChat(request, activeId, assistantMsgId)
       }
 
       await recordModelUsage(modelCfg.id)
@@ -857,7 +1043,7 @@ export function AssistantView({
             role: "assistant" as const,
             content: response.content || m.content,
             streaming: false,
-            mode: response.mode ?? mode,
+            mode: response.mode ?? agentMode,
             diffs: response.diffs,
             pendingQuestions: response.pendingQuestions,
             activitySteps:
@@ -889,6 +1075,8 @@ export function AssistantView({
       setLlmError(parsed)
       updateActiveMessages((msgs) => msgs.filter((m) => m.id !== assistantMsgId))
     } finally {
+      flushPendingActivitySync()
+      flushStreamingTokenSync()
       unlistenToken()
       unlistenActivity()
       setGenerating(false)
@@ -916,6 +1104,15 @@ export function AssistantView({
     )
     setGenerating(false)
     generatingSessionRef.current = null
+  }
+
+  const executePlan = () => {
+    if (!latestExecutablePlanId || generating || hasPendingQuestions) return
+    if (!workspaceLocalPath) {
+      setToast("请先绑定本地工作区目录后再执行计划")
+      return
+    }
+    void send(EXECUTE_PLAN_MESSAGE, undefined, { agentMode: "auto" })
   }
 
   const onQuickAction = (action: string) => {
@@ -954,28 +1151,14 @@ export function AssistantView({
     const unlistenToken = onChatToken((e) => {
       if (e.session_id !== activeId || e.message_id !== messageId) return
       if (stopRequestedRef.current) return
-      updateActiveMessages((msgs) =>
-        msgs.map((m) =>
-          m.id === messageId ? { ...m, content: e.content, streaming: true } : m,
-        ),
-      )
+      queueStreamingToken(messageId, e.content)
     })
 
     const unlistenActivity = workspaceProjectId
       ? onLoopActivity((e) => {
           if (e.session_id !== activeId || e.message_id !== messageId) return
           if (stopRequestedRef.current) return
-          const step = mapActivityStep(e.step)
-          updateActiveMessages((msgs) =>
-            msgs.map((m) =>
-              m.id === messageId
-                ? {
-                    ...m,
-                    activitySteps: upsertActivityStep(m.activitySteps ?? [], step),
-                  }
-                : m,
-            ),
-          )
+          queueActivityUpdate(mapActivityStep(e.step))
         })
       : () => {}
 
@@ -1031,6 +1214,8 @@ export function AssistantView({
         ),
       )
     } finally {
+      flushPendingActivitySync()
+      flushStreamingTokenSync()
       unlistenToken()
       unlistenActivity()
       setGenerating(false)
@@ -1250,6 +1435,18 @@ export function AssistantView({
                       onDiffAction={onDiffAction}
                       onQuestionSubmit={onQuestionSubmit}
                       onOpenFile={openFile}
+                      showPlanExecute={m.id === latestExecutablePlanId}
+                      onExecutePlan={executePlan}
+                      planExecuteDisabled={generating || hasPendingQuestions || !workspaceLocalPath}
+                      planExecuteDisabledReason={
+                        !workspaceLocalPath
+                          ? "需要绑定本地工作区"
+                          : generating
+                            ? "任务进行中"
+                            : hasPendingQuestions
+                              ? "请先回答上方问题"
+                              : undefined
+                      }
                     />
                   )
                   if (m.role === "user") {

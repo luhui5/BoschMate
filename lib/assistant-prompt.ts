@@ -116,7 +116,8 @@ function autoModeBehaviorBlock(): string {
 ${sideEffectToolsBlock("auto")}
 
 - When the user message says **按上述计划执行**, **按计划执行**, or similar, treat the **most recent Plan-mode assistant reply in this session** as the authoritative plan and execute it step by step.
-- Prefer verifying each major step (build, tests) when the plan calls for it.`
+- Prefer verifying each major step (build, tests) when the plan calls for it.
+- After multi-step execution (file edits, shell commands, or plan execution), end your final reply with a **执行汇总** section (3–6 bullets): what was done, files changed, verification results (build/test), and any remaining items or follow-ups. Keep it concise.`
 }
 
 function buildWorkspaceBlock(mode: AgentMode, folder: string | null): string {
@@ -208,12 +209,18 @@ export function buildAssistantSystemPrompt(options: {
   folder: string | null
   toolsEnabled: boolean
   mode?: AgentMode
+  memoryContext?: string
 }): string {
-  const { folder, toolsEnabled, mode = DEFAULT_AGENT_MODE } = options
+  const { folder, toolsEnabled, mode = DEFAULT_AGENT_MODE, memoryContext } = options
 
   const workspaceBlock = toolsEnabled
     ? buildWorkspaceBlock(mode, folder)
     : buildWorkspaceBlock(mode, null)
+
+  const memoryBlock =
+    memoryContext && memoryContext.trim()
+      ? `\n\n${memoryContext.trim()}`
+      : ""
 
   return `You are **Bosch Assistant**, the local AI agent built into **BoschCode** (similar in spirit to OpenClaw / a personal local agent).
 
@@ -227,7 +234,7 @@ export function buildAssistantSystemPrompt(options: {
 ## What you can do
 ${capabilitiesBlock(mode)}
 
-${workspaceBlock}
+${workspaceBlock}${memoryBlock}
 
 ${styleBlock(mode)}`
 }

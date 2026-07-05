@@ -1,137 +1,16 @@
 "use client"
 
-import { useMemo } from "react"
+import { memo, useEffect, useMemo, useRef, useState } from "react"
 import { cn } from "@/lib/utils"
 import { isLikelyFileRef } from "@/lib/workspace-utils"
+import { splitStreamingMarkdown } from "@/lib/markdown-streaming"
+import { parseBlocks } from "@/lib/markdown-blocks"
+import type { MarkdownBlock } from "@/lib/markdown-blocks"
 
-type Block =
-  | { type: "heading"; level: number; text: string }
-  | { type: "paragraph"; text: string }
-  | { type: "code"; lang?: string; code: string }
-  | { type: "ul"; items: string[] }
-  | { type: "ol"; items: string[] }
-  | { type: "hr" }
-  | { type: "table"; headers: string[]; rows: string[][] }
-
-function parseTableRow(line: string): string[] {
-  return line
-    .trim()
-    .replace(/^\|/, "")
-    .replace(/\|$/, "")
-    .split("|")
-    .map((cell) => cell.trim())
-}
-
-function isTableRow(line: string): boolean {
-  const t = line.trim()
-  return t.includes("|") && !isTableSeparator(t)
-}
-
-function isTableSeparator(line: string): boolean {
-  const cells = parseTableRow(line)
-  if (cells.length === 0) return false
-  return cells.every((cell) => /^:?-{3,}:?$/.test(cell))
-}
-
-function parseBlocks(text: string): Block[] {
-  const lines = text.replace(/\r\n/g, "\n").split("\n")
-  const blocks: Block[] = []
-  let i = 0
-
-  while (i < lines.length) {
-    const line = lines[i]
-    const trimmed = line.trim()
-
-    if (trimmed.startsWith("```")) {
-      const lang = trimmed.slice(3).trim() || undefined
-      const codeLines: string[] = []
-      i += 1
-      while (i < lines.length && !lines[i].trim().startsWith("```")) {
-        codeLines.push(lines[i])
-        i += 1
-      }
-      blocks.push({ type: "code", lang, code: codeLines.join("\n") })
-      if (i < lines.length) i += 1
-      continue
-    }
-
-    if (/^(\*{3,}|-{3,}|_{3,})$/.test(trimmed)) {
-      blocks.push({ type: "hr" })
-      i += 1
-      continue
-    }
-
-    const heading = trimmed.match(/^(#{1,6})\s+(.+)$/)
-    if (heading) {
-      blocks.push({ type: "heading", level: heading[1].length, text: heading[2] })
-      i += 1
-      continue
-    }
-
-    if (/^[-*+]\s/.test(trimmed)) {
-      const items: string[] = []
-      while (i < lines.length && /^[-*+]\s/.test(lines[i].trim())) {
-        items.push(lines[i].trim().replace(/^[-*+]\s/, ""))
-        i += 1
-      }
-      blocks.push({ type: "ul", items })
-      continue
-    }
-
-    if (/^\d+\.\s/.test(trimmed)) {
-      const items: string[] = []
-      while (i < lines.length && /^\d+\.\s/.test(lines[i].trim())) {
-        items.push(lines[i].trim().replace(/^\d+\.\s/, ""))
-        i += 1
-      }
-      blocks.push({ type: "ol", items })
-      continue
-    }
-
-    if (
-      isTableRow(trimmed) &&
-      i + 1 < lines.length &&
-      isTableSeparator(lines[i + 1].trim())
-    ) {
-      const headers = parseTableRow(trimmed)
-      i += 2
-      const rows: string[][] = []
-      while (i < lines.length) {
-        const rowLine = lines[i].trim()
-        if (!isTableRow(rowLine) || isTableSeparator(rowLine)) break
-        rows.push(parseTableRow(rowLine))
-        i += 1
-      }
-      blocks.push({ type: "table", headers, rows })
-      continue
-    }
-
-    if (trimmed === "") {
-      i += 1
-      continue
-    }
-
-    const paraLines: string[] = []
-    while (i < lines.length) {
-      const l = lines[i]
-      const t = l.trim()
-      if (t === "") break
-      if (t.startsWith("```")) break
-      if (/^(#{1,6})\s/.test(t)) break
-      if (/^(\*{3,}|-{3,}|_{3,})$/.test(t)) break
-      if (/^[-*+]\s/.test(t)) break
-      if (/^\d+\.\s/.test(t)) break
-      if (isTableRow(t)) break
-      paraLines.push(l)
-      i += 1
-    }
-    if (paraLines.length > 0) {
-      blocks.push({ type: "paragraph", text: paraLines.join("\n") })
-    }
-  }
-
-  return blocks
-}
+/** Debounce stable-block parse during stream to avoid main-thread freeze. */
+const STABLE_PARSE_DEBOUNCE_MS = 250
+/** Beyond this length, freeze stable parse during stream; tail stays plain until done. */
+const STREAM_PARSE_FREEZE_LEN = 4500
 
 function inline(text: string, onOpenFile?: (path: string) => void) {
   const parts = text.split(/(`[^`]+`|\*\*[^*]+\*\*|@[^\s`,]+)/g)
@@ -180,7 +59,7 @@ const headingClass: Record<number, string> = {
   6: "mt-1.5 mb-0.5 text-xs font-medium text-muted-foreground",
 }
 
-function renderBlock(block: Block, key: number, onOpenFile?: (path: string) => void) {
+function renderBlock(block: MarkdownBlock, key: number, onOpenFile?: (path: string) => void) {
   switch (block.type) {
     case "heading": {
       const className = headingClass[block.level] ?? headingClass[3]
@@ -265,19 +144,110 @@ function renderBlock(block: Block, key: number, onOpenFile?: (path: string) => v
   }
 }
 
+const StableMarkdownBlocks = memo(function StableMarkdownBlocks({
+  stableText,
+  onOpenFile,
+}: {
+  stableText: string
+  onOpenFile?: (path: string) => void
+}) {
+  const blocks = useMemo(() => parseBlocks(stableText), [stableText])
+  if (blocks.length === 0) return null
+  return <>{blocks.map((block, i) => renderBlock(block, i, onOpenFile))}</>
+})
+
+function StreamingCursor() {
+  return (
+    <span className="ml-0.5 inline-block h-3.5 w-1.5 animate-pulse bg-primary align-middle" />
+  )
+}
+
+function useDebouncedStableText(stableText: string, streaming: boolean, contentLen: number) {
+  const [debounced, setDebounced] = useState(stableText)
+  const frozenRef = useRef(false)
+
+  useEffect(() => {
+    if (!streaming) {
+      frozenRef.current = false
+      setDebounced(stableText)
+      return
+    }
+    if (contentLen > STREAM_PARSE_FREEZE_LEN) {
+      if (!frozenRef.current) {
+        frozenRef.current = true
+        setDebounced(stableText)
+      }
+      return
+    }
+    frozenRef.current = false
+    const timer = window.setTimeout(() => setDebounced(stableText), STABLE_PARSE_DEBOUNCE_MS)
+    return () => window.clearTimeout(timer)
+  }, [stableText, streaming, contentLen])
+
+  return debounced
+}
+
+function streamingPendingPlain(content: string, formattedStable: string): string {
+  if (!formattedStable) return content
+  if (content.startsWith(formattedStable)) {
+    const rest = content.slice(formattedStable.length)
+    return rest.startsWith("\n") ? rest.slice(1) : rest
+  }
+  return content
+}
+
 export function MarkdownContent({
   content,
   onOpenFile,
   className,
+  streaming = false,
 }: {
   content: string
   onOpenFile?: (path: string) => void
   className?: string
+  /** When true, complete blocks are formatted (debounced); pending tail stays plain text. */
+  streaming?: boolean
 }) {
-  const blocks = useMemo(() => parseBlocks(content), [content])
+  const liveSplit = useMemo(() => {
+    if (!streaming) return { stableText: content, tail: "" }
+    return splitStreamingMarkdown(content)
+  }, [content, streaming])
+
+  const debouncedStable = useDebouncedStableText(
+    liveSplit.stableText,
+    streaming,
+    content.length,
+  )
+
+  const pendingPlain = useMemo(() => {
+    if (!streaming) return ""
+    return streamingPendingPlain(content, debouncedStable)
+  }, [content, debouncedStable, streaming])
+
+  const completeBlocks = useMemo(
+    () => (streaming ? null : parseBlocks(content)),
+    [content, streaming],
+  )
+
+  if (!streaming) {
+    return (
+      <div className={cn("flex flex-col gap-1.5 text-left", className)}>
+        {completeBlocks!.map((block, i) => renderBlock(block, i, onOpenFile))}
+      </div>
+    )
+  }
+
   return (
     <div className={cn("flex flex-col gap-1.5 text-left", className)}>
-      {blocks.map((block, i) => renderBlock(block, i, onOpenFile))}
+      <StableMarkdownBlocks stableText={debouncedStable} onOpenFile={onOpenFile} />
+      {pendingPlain.length > 0 ? (
+        <p className="whitespace-pre-wrap text-sm leading-relaxed text-foreground/90">
+          {pendingPlain}
+          <StreamingCursor />
+        </p>
+      ) : (
+        <StreamingCursor />
+      )}
     </div>
   )
 }
