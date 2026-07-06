@@ -116,7 +116,8 @@ fn to_anthropic_tools(tools: &[AiToolDef]) -> Value {
 
 // ── Async streaming chat ──
 
-/// Stream chat tokens via Tauri events. Each token is emitted as `chat-token` event.
+/// Stream chat tokens via Tauri events. Each token delta is emitted as a `chat-token`
+/// event (payload carries only `delta`, not cumulative content — the frontend accumulates).
 pub async fn stream_chat(
     app: AppHandle,
     req: ChatRequest,
@@ -245,7 +246,6 @@ async fn stream_anthropic(
                                 "session_id": session_id,
                                 "message_id": message_id,
                                 "delta": delta,
-                                "content": full_content,
                             }));
                         }
                         // Tool use
@@ -437,7 +437,6 @@ async fn stream_openai(
                                         "session_id": session_id,
                                         "message_id": message_id,
                                         "delta": delta,
-                                        "content": full_content,
                                     }));
                                 }
                                 // Tool calls
@@ -598,7 +597,6 @@ async fn stream_ollama(
                                         "session_id": session_id,
                                         "message_id": message_id,
                                         "delta": delta,
-                                        "content": full_content,
                                     }));
                                 }
                             }

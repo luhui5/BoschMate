@@ -73,13 +73,16 @@ export async function runSelectionKnowledgeChat(
   let streamedContent = ""
   const unlistenToken = onChatToken((e) => {
     if (e.session_id !== session.id || e.message_id !== assistantMsgId) return
-    streamedContent = e.content
-    opts.onToken?.(e.content)
+    streamedContent += e.delta
+    opts.onToken?.(streamedContent)
   })
 
   const unlistenActivity = onLoopActivity((e) => {
     if (e.session_id !== session.id || e.message_id !== assistantMsgId) return
     const step = mapActivityStep(e.step)
+    if (step.kind === "thought" && step.status === "running") {
+      streamedContent = ""
+    }
     opts.onActivity?.(step.label)
   })
 

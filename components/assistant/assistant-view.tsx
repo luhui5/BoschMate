@@ -374,6 +374,7 @@ export function AssistantView({
   const roundHasToolDeltaRef = useRef(false)
   const hasCompletedToolStepsRef = useRef(false)
   const latestStreamContentRef = useRef("")
+  const streamContentBufferRef = useRef("")
   const activityFlushTimerRef = useRef<number | null>(null)
   const pendingActivityStepsRef = useRef<ActivityStep[]>([])
   const chatMessagesCacheRef = useRef(new Map<string, ChatMessage>())
@@ -827,6 +828,7 @@ export function AssistantView({
         if (step.status === "running") {
           activeThoughtIdRef.current = step.id
           roundHasToolDeltaRef.current = false
+          streamContentBufferRef.current = ""
         } else if (
           activeThoughtIdRef.current === step.id &&
           (step.status === "success" || step.status === "error")
@@ -1185,10 +1187,12 @@ export function AssistantView({
       },
     ])
 
+    streamContentBufferRef.current = ""
     const unlistenToken = onChatToken((e) => {
       if (e.session_id !== activeId || e.message_id !== assistantMsgId) return
       if (stopRequestedRef.current) return
-      routeChatToken(assistantMsgId, e.content)
+      streamContentBufferRef.current += e.delta
+      routeChatToken(assistantMsgId, streamContentBufferRef.current)
     })
 
     const unlistenToolDelta = onChatToolDelta((e) => {
@@ -1377,10 +1381,12 @@ export function AssistantView({
       ),
     )
 
+    streamContentBufferRef.current = ""
     const unlistenToken = onChatToken((e) => {
       if (e.session_id !== activeId || e.message_id !== messageId) return
       if (stopRequestedRef.current) return
-      routeChatToken(messageId, e.content)
+      streamContentBufferRef.current += e.delta
+      routeChatToken(messageId, streamContentBufferRef.current)
     })
 
     const unlistenToolDelta = onChatToolDelta((e) => {

@@ -385,7 +385,6 @@ export interface ChatTokenEvent {
   session_id: string;
   message_id: string;
   delta: string;
-  content: string;
 }
 
 export async function streamChat(
