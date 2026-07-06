@@ -29,7 +29,7 @@ import { slashCommands } from "@/lib/mock-data"
 import type { AgentMode } from "@/lib/types"
 import { THINKING_DEPTHS, getThinkingDepth, type ThinkingDepth } from "@/lib/thinking-depth"
 import { validateMessage, validateImageDataUrl } from "@/lib/input-validation"
-import type { ModelConfig } from "@/lib/models"
+import { groupModelsByProvider, type ModelConfig, type ModelProviderConfig } from "@/lib/models"
 
 const agentModes: { id: AgentMode; label: string; icon: typeof Bot; desc: string }[] = [
   { id: "ask", label: "Ask", icon: MessageCircleQuestion, desc: "仅回答与解释，只读查看代码；修改请切换 Auto" },
@@ -56,6 +56,7 @@ export function ChatInput({
   onSend,
   onQuickAction,
   models,
+  providers,
   selectedModelId,
   onModelChange,
   disabled,
@@ -80,6 +81,7 @@ export function ChatInput({
   onSend: (text: string, imageDataUrl?: string) => void
   onQuickAction: (action: string) => void
   models: ModelConfig[]
+  providers: ModelProviderConfig[]
   selectedModelId: string
   onModelChange: (id: string) => void
   disabled?: boolean
@@ -127,13 +129,22 @@ export function ChatInput({
   const selectedKbase = kbaseList.find((b) => b.id === selectedKbaseId) ?? null
   const kbaseSelectorDisabled = kbaseList.length === 0
 
-  const filteredModels = useMemo(() => {
+  const groupedModels = useMemo(() => {
     const q = modelSearch.trim().toLowerCase()
-    if (!q) return models
-    return models.filter(
-      (m) => m.name.toLowerCase().includes(q) || m.detail.toLowerCase().includes(q),
-    )
-  }, [models, modelSearch])
+    const groups = groupModelsByProvider(models, providers)
+    if (!q) return groups
+    return groups
+      .map((group) => ({
+        ...group,
+        models: group.models.filter(
+          (m) =>
+            m.name.toLowerCase().includes(q) ||
+            m.detail.toLowerCase().includes(q) ||
+            group.provider.name.toLowerCase().includes(q),
+        ),
+      }))
+      .filter((group) => group.models.length > 0)
+  }, [models, providers, modelSearch])
 
   const loadImageFile = (file: File) => {
     const reader = new FileReader()
@@ -530,37 +541,44 @@ export function ChatInput({
                     </div>
 
                     <div className="max-h-52 overflow-y-auto p-1">
-                      {filteredModels.length === 0 ? (
+                      {groupedModels.length === 0 ? (
                         <p className="px-2 py-3 text-center text-xs text-muted-foreground">
                           暂无模型，请前往设置添加
                         </p>
                       ) : (
-                        filteredModels.map((m) => (
-                          <button
-                            key={m.id}
-                            type="button"
-                            onClick={() => {
-                              onModelChange(m.id)
-                              setShowModels(false)
-                              setModelSearch("")
-                            }}
-                            className={cn(
-                              "flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left transition-colors hover:bg-accent",
-                              m.id === selectedModelId && "bg-accent",
-                            )}
-                          >
-                            <span className="min-w-0 flex-1">
-                              <span className="block truncate text-sm font-medium">{m.name}</span>
-                              {m.detail && (
-                                <span className="block truncate text-xs text-muted-foreground">
-                                  {m.detail}
+                        groupedModels.map((group) => (
+                          <div key={group.provider.id} className="mb-1 last:mb-0">
+                            <p className="px-2.5 py-1.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
+                              {group.provider.name}
+                            </p>
+                            {group.models.map((m) => (
+                              <button
+                                key={m.id}
+                                type="button"
+                                onClick={() => {
+                                  onModelChange(m.id)
+                                  setShowModels(false)
+                                  setModelSearch("")
+                                }}
+                                className={cn(
+                                  "flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left transition-colors hover:bg-accent",
+                                  m.id === selectedModelId && "bg-accent",
+                                )}
+                              >
+                                <span className="min-w-0 flex-1">
+                                  <span className="block truncate text-sm font-medium">{m.name}</span>
+                                  {m.detail && (
+                                    <span className="block truncate text-xs text-muted-foreground">
+                                      {m.detail}
+                                    </span>
+                                  )}
                                 </span>
-                              )}
-                            </span>
-                            {m.id === selectedModelId && (
-                              <Check className="size-3.5 shrink-0 text-primary" />
-                            )}
-                          </button>
+                                {m.id === selectedModelId && (
+                                  <Check className="size-3.5 shrink-0 text-primary" />
+                                )}
+                              </button>
+                            ))}
+                          </div>
                         ))
                       )}
                     </div>

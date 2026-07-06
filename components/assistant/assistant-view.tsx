@@ -48,12 +48,14 @@ import {
 } from "@/lib/assistant-workspaces"
 import {
   loadModels,
+  loadProviders,
   findModel,
   loadApiKey,
   saveLastUsedModelId,
   recordModelUsage,
   resolveActiveModelId,
   type ModelConfig,
+  type ModelProviderConfig,
 } from "@/lib/models"
 import {
   aiLoopChat,
@@ -393,11 +395,13 @@ export function AssistantView({
   const [showJumpToBottom, setShowJumpToBottom] = useState(false)
 
   const [availableModels, setAvailableModels] = useState<ModelConfig[]>([])
+  const [availableProviders, setAvailableProviders] = useState<ModelProviderConfig[]>([])
 
   const refreshModels = useCallback(() => {
-    loadModels()
-      .then(async (models) => {
+    Promise.all([loadModels(), loadProviders()])
+      .then(async ([models, providers]) => {
         setAvailableModels(models)
+        setAvailableProviders(providers)
         if (models.length === 0 || !activeId) return
         const preferred = await resolveActiveModelId(models)
         setSessions((prev) =>
@@ -1238,7 +1242,7 @@ export function AssistantView({
 
       const response = await aiLoopChat(
         {
-          provider: modelCfg.provider,
+          provider: modelCfg.backend,
           model: modelCfg.name,
           messages: llmMessages,
           system_prompt: system,
@@ -1719,6 +1723,7 @@ export function AssistantView({
           onSend={(t, img) => { void send(t, img) }}
           onQuickAction={onQuickAction}
           models={availableModels}
+          providers={availableProviders}
           selectedModelId={active?.model ?? ""}
           onModelChange={(id) => patchActive({ model: id })}
           generating={generating}

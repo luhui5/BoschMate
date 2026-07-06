@@ -89,7 +89,7 @@ export async function runSelectionKnowledgeChat(
   try {
     const response = await aiLoopChat(
       {
-        provider: modelCfg.provider,
+        provider: modelCfg.backend,
         model: modelCfg.name,
         messages: llmMessages,
         system_prompt: system,

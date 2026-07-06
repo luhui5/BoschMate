@@ -9,19 +9,26 @@ import { getSetting, setSetting, saveCredential, getCredential, deleteCredential
 // ── Types ──
 
 export type ModelProtocol = "openai" | "anthropic"
-/**
- * Maps directly to the Rust backend's ChatRequest.provider field:
- * - "ollama"    → stream_ollama (OpenAI-compatible local)
- * - "openai"    → stream_openai (OpenAI API or compatible)
- * - "anthropic" → stream_anthropic (Anthropic API)
- */
-export type ModelProvider = "ollama" | "openai" | "anthropic"
+
+/** Backend streaming route — maps to Rust ChatRequest.provider */
+export type ModelBackend = "ollama" | "openai" | "anthropic"
+
+/** @deprecated Use ModelBackend — kept for migration only */
+export type ModelProvider = ModelBackend
+
+/** User-defined provider for grouping and display */
+export interface ModelProviderConfig {
+  id: string
+  name: string
+  description?: string
+}
 
 export interface ModelConfig {
   id: string
   name: string
   protocol: ModelProtocol
-  provider: ModelProvider
+  backend: ModelBackend
+  providerId: string
   detail: string
   endpoint: string | null
   apiKey?: string
@@ -29,25 +36,71 @@ export interface ModelConfig {
   temperature: number
 }
 
+/** Built-in provider ids — cannot be deleted from settings */
+export const BUILTIN_PROVIDER_IDS = new Set([
+  "provider-ollama",
+  "provider-openai",
+  "provider-anthropic",
+  "provider-bcsc",
+])
+
+export const BACKEND_LABEL: Record<ModelBackend, string> = {
+  ollama: "Ollama",
+  openai: "OpenAI",
+  anthropic: "Anthropic",
+}
+
+const UNGROUPED_PROVIDER_ID = "provider-ungrouped"
+
 // ── Defaults ──
+
+export const DEFAULT_PROVIDERS: ModelProviderConfig[] = [
+  { id: "provider-ollama", name: "Ollama" },
+  { id: "provider-openai", name: "OpenAI" },
+  { id: "provider-anthropic", name: "Anthropic" },
+  { id: "provider-bcsc", name: "BCSC" },
+]
 
 export const DEFAULT_MODELS: ModelConfig[] = [
   {
-    id: 'ollama-local',
-    name: 'qwen2.5-coder',
-    protocol: 'openai',
-    provider: 'ollama',
-    detail: '本地 Ollama 默认模型',
-    endpoint: 'http://localhost:11434',
+    id: "ollama-local",
+    name: "qwen2.5-coder",
+    protocol: "openai",
+    backend: "ollama",
+    providerId: "provider-ollama",
+    detail: "本地 Ollama 默认模型",
+    endpoint: "http://localhost:11434",
+    contextWindow: 32768,
+    temperature: 0.2,
+  },
+  {
+    id: "bcsc-qwen",
+    name: "Qwen3.5-27B-FP16",
+    protocol: "openai",
+    backend: "openai",
+    providerId: "provider-bcsc",
+    detail: "BCSC 默认模型",
+    endpoint: "http://10.190.179.61:11600",
     contextWindow: 32768,
     temperature: 0.2,
   },
 ]
 
+const DEFAULT_API_KEYS: Record<string, string> = {
+  "bcsc-qwen": "test",
+}
+
+const LEGACY_BACKEND_TO_PROVIDER_ID: Record<ModelBackend, string> = {
+  ollama: "provider-ollama",
+  openai: "provider-openai",
+  anthropic: "provider-anthropic",
+}
+
 // ── Persistence ──
 // Priority: Tauri IPC (SQLite) → localStorage fallback
 
 const MODELS_KEY = "bc-global-models"
+const PROVIDERS_KEY = "bc-global-providers"
 const LAST_MODEL_KEY = "bc-last-model-id"
 const MODEL_USAGE_KEY = "bc-model-usage"
 
@@ -61,46 +114,149 @@ function lsRemove(key: string): void {
   try { localStorage.removeItem(key) } catch { /* ignore */ }
 }
 
+async function readRawSetting(key: string): Promise<string | null> {
+  try {
+    const val = await getSetting(key)
+    if (val) return val
+  } catch { /* Tauri not available */ }
+  return lsGet(key)
+}
+
+type LegacyModelConfig = ModelConfig & { provider?: ModelBackend }
+
+function migrateModelEntry(raw: LegacyModelConfig): ModelConfig {
+  const backend = raw.backend ?? raw.provider ?? "openai"
+  const providerId =
+    raw.providerId ??
+    LEGACY_BACKEND_TO_PROVIDER_ID[backend] ??
+    DEFAULT_PROVIDERS[0].id
+  return {
+    id: raw.id,
+    name: raw.name,
+    protocol: raw.protocol,
+    backend,
+    providerId,
+    detail: raw.detail,
+    endpoint: raw.endpoint,
+    contextWindow: raw.contextWindow,
+    temperature: raw.temperature,
+  }
+}
+
+function needsModelMigration(raw: LegacyModelConfig[]): boolean {
+  return raw.some((m) => !m.backend || !m.providerId || "provider" in m)
+}
+
+function mergeProviders(existing: ModelProviderConfig[]): ModelProviderConfig[] {
+  const byId = new Map(existing.map((p) => [p.id, p]))
+  for (const def of DEFAULT_PROVIDERS) {
+    if (!byId.has(def.id)) byId.set(def.id, def)
+  }
+  const ordered: ModelProviderConfig[] = []
+  for (const def of DEFAULT_PROVIDERS) {
+    if (byId.has(def.id)) ordered.push(byId.get(def.id)!)
+  }
+  for (const p of byId.values()) {
+    if (!DEFAULT_PROVIDERS.some((d) => d.id === p.id)) ordered.push(p)
+  }
+  return ordered
+}
+
+function mergeModels(existing: ModelConfig[]): ModelConfig[] {
+  const byId = new Map(existing.map((m) => [m.id, m]))
+  for (const def of DEFAULT_MODELS) {
+    if (!byId.has(def.id)) byId.set(def.id, def)
+  }
+  const ordered: ModelConfig[] = []
+  for (const def of DEFAULT_MODELS) {
+    if (byId.has(def.id)) ordered.push(byId.get(def.id)!)
+  }
+  for (const m of byId.values()) {
+    if (!DEFAULT_MODELS.some((d) => d.id === m.id)) ordered.push(m)
+  }
+  return ordered
+}
+
+async function seedDefaultApiKeys(): Promise<void> {
+  for (const [modelId, key] of Object.entries(DEFAULT_API_KEYS)) {
+    const existing = await loadApiKey(modelId)
+    if (!existing) await saveApiKey(modelId, key)
+  }
+}
+
+export async function loadProviders(): Promise<ModelProviderConfig[]> {
+  let parsed: ModelProviderConfig[] | null = null
+
+  const raw = await readRawSetting(PROVIDERS_KEY)
+  if (raw) {
+    try {
+      const arr = JSON.parse(raw) as ModelProviderConfig[]
+      if (Array.isArray(arr) && arr.length > 0) parsed = arr
+    } catch { /* corrupted */ }
+  }
+
+  if (!parsed) {
+    await saveProviders(DEFAULT_PROVIDERS)
+    return [...DEFAULT_PROVIDERS]
+  }
+
+  const merged = mergeProviders(parsed)
+  if (merged.length !== parsed.length || merged.some((p, i) => p.id !== parsed![i]?.id)) {
+    await saveProviders(merged)
+  }
+  return merged
+}
+
+export async function saveProviders(providers: ModelProviderConfig[]): Promise<void> {
+  const json = JSON.stringify(providers)
+  lsSet(PROVIDERS_KEY, json)
+  try { await setSetting(PROVIDERS_KEY, json) } catch { /* Tauri not available */ }
+}
+
 export async function loadModels(): Promise<ModelConfig[]> {
-  // 1. Try Tauri backend
-  try {
-    const raw = await getSetting(MODELS_KEY)
-    if (raw) {
-      const parsed = JSON.parse(raw) as ModelConfig[]
-      if (Array.isArray(parsed) && parsed.length > 0) return parsed
-    }
-  } catch { /* Tauri not available, fall through */ }
+  let parsed: LegacyModelConfig[] | null = null
 
-  // 2. Try localStorage fallback
-  try {
-    const cached = lsGet(MODELS_KEY)
-    if (cached) {
-      const parsed = JSON.parse(cached) as ModelConfig[]
-      if (Array.isArray(parsed) && parsed.length > 0) return parsed
-    }
-  } catch { /* corrupted */ }
+  const raw = await readRawSetting(MODELS_KEY)
+  if (raw) {
+    try {
+      const arr = JSON.parse(raw) as LegacyModelConfig[]
+      if (Array.isArray(arr) && arr.length > 0) parsed = arr
+    } catch { /* corrupted */ }
+  }
 
-  // 3. First run — seed with defaults and persist to both stores
-  await saveModels(DEFAULT_MODELS)
-  return [...DEFAULT_MODELS]
+  if (!parsed) {
+    await saveModels(DEFAULT_MODELS)
+    await seedDefaultApiKeys()
+    return [...DEFAULT_MODELS]
+  }
+
+  let models = parsed.map(migrateModelEntry)
+  const migrated = needsModelMigration(parsed)
+  const merged = mergeModels(models)
+  const changed =
+    migrated ||
+    merged.length !== models.length ||
+    merged.some((m, i) => m.id !== models[i]?.id)
+
+  if (changed) {
+    models = merged
+    await saveModels(models)
+  }
+
+  await seedDefaultApiKeys()
+  return models
 }
 
 export async function saveModels(models: ModelConfig[]): Promise<void> {
   const json = JSON.stringify(models)
-  // Always write to localStorage as immediate fallback
   lsSet(MODELS_KEY, json)
-  // Also try Tauri backend
   try { await setSetting(MODELS_KEY, json) } catch { /* Tauri not available */ }
 }
 
 // ── Last-used & usage stats (for default model selection) ──
 
 async function readSetting(key: string): Promise<string | null> {
-  try {
-    const val = await getSetting(key)
-    if (val) return val
-  } catch { /* Tauri not available */ }
-  return lsGet(key)
+  return readRawSetting(key)
 }
 
 async function writeSetting(key: string, value: string): Promise<void> {
@@ -217,4 +373,54 @@ export function findModel(
   id: string,
 ): ModelConfig | undefined {
   return models.find((m) => m.id === id)
+}
+
+export function findProvider(
+  providers: ModelProviderConfig[],
+  id: string,
+): ModelProviderConfig | undefined {
+  return providers.find((p) => p.id === id)
+}
+
+export function groupModelsByProvider(
+  models: ModelConfig[],
+  providers: ModelProviderConfig[],
+): { provider: ModelProviderConfig; models: ModelConfig[] }[] {
+  const providerMap = new Map(providers.map((p) => [p.id, p]))
+  const buckets = new Map<string, ModelConfig[]>()
+
+  for (const p of providers) buckets.set(p.id, [])
+  buckets.set(UNGROUPED_PROVIDER_ID, [])
+
+  for (const m of models) {
+    const key = providerMap.has(m.providerId) ? m.providerId : UNGROUPED_PROVIDER_ID
+    buckets.get(key)!.push(m)
+  }
+
+  const groups: { provider: ModelProviderConfig; models: ModelConfig[] }[] = []
+  for (const p of providers) {
+    const items = buckets.get(p.id) ?? []
+    if (items.length > 0) groups.push({ provider: p, models: items })
+  }
+  const ungrouped = buckets.get(UNGROUPED_PROVIDER_ID) ?? []
+  if (ungrouped.length > 0) {
+    groups.push({
+      provider: { id: UNGROUPED_PROVIDER_ID, name: "未分类" },
+      models: ungrouped,
+    })
+  }
+  return groups
+}
+
+export function inferBackend(protocol: ModelProtocol, endpoint: string | null): ModelBackend {
+  if (protocol === "anthropic") return "anthropic"
+  if (
+    endpoint &&
+    (endpoint.includes("127.0.0.1") ||
+      endpoint.includes("localhost") ||
+      endpoint.includes(":11434"))
+  ) {
+    return "ollama"
+  }
+  return "openai"
 }

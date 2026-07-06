@@ -1,35 +1,52 @@
 "use client"
 
-import { useEffect, useState } from "react"
-import { Check, Cpu, Plus, Pencil, Trash2 } from "lucide-react"
+import { useEffect, useMemo, useState } from "react"
+import { Building2, Check, Cpu, Plus, Pencil, Trash2 } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { SectionHeader, Select } from "./primitives"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Modal } from "@/components/ui/modal"
 import {
+  type ModelBackend,
   type ModelConfig,
   type ModelProtocol,
-  type ModelProvider,
+  type ModelProviderConfig,
+  BACKEND_LABEL,
+  BUILTIN_PROVIDER_IDS,
   DEFAULT_MODELS,
-  loadModels,
-  saveModels,
+  DEFAULT_PROVIDERS,
+  groupModelsByProvider,
+  inferBackend,
   loadApiKey,
+  loadModels,
+  loadProviders,
   saveApiKey,
-  deleteApiKey,
   saveLastUsedModelId,
+  saveModels,
+  saveProviders,
+  deleteApiKey,
   resolveActiveModelId,
 } from "@/lib/models"
 
-const EMPTY_DRAFT: ModelConfig = {
+function createEmptyDraft(providers: ModelProviderConfig[]): ModelConfig {
+  return {
+    id: "",
+    name: "",
+    protocol: "openai",
+    backend: "ollama",
+    providerId: providers[0]?.id ?? "",
+    detail: "",
+    endpoint: "",
+    contextWindow: 32768,
+    temperature: 0.2,
+  }
+}
+
+const EMPTY_PROVIDER_DRAFT: ModelProviderConfig = {
   id: "",
   name: "",
-  protocol: "openai",
-  provider: "ollama",
-  detail: "",
-  endpoint: "",
-  contextWindow: 32768,
-  temperature: 0.2,
+  description: "",
 }
 
 const PROTOCOL_LABEL: Record<ModelProtocol, string> = {
@@ -37,44 +54,53 @@ const PROTOCOL_LABEL: Record<ModelProtocol, string> = {
   anthropic: "Anthropic",
 }
 
-const PROVIDER_LABEL: Record<ModelProvider, string> = {
-  ollama: "Ollama",
-  openai: "OpenAI",
-  anthropic: "Anthropic",
-}
-
 export function ModelSection() {
+  const [providers, setProviders] = useState<ModelProviderConfig[]>(DEFAULT_PROVIDERS)
   const [models, setModels] = useState<ModelConfig[]>(DEFAULT_MODELS)
   const [selected, setSelected] = useState<string>(DEFAULT_MODELS[0]?.id ?? "")
-  const [dialogOpen, setDialogOpen] = useState(false)
-  const [draft, setDraft] = useState<ModelConfig>(EMPTY_DRAFT)
-  const [editingId, setEditingId] = useState<string | null>(null)
+  const [modelDialogOpen, setModelDialogOpen] = useState(false)
+  const [providerDialogOpen, setProviderDialogOpen] = useState(false)
+  const [draft, setDraft] = useState<ModelConfig>(createEmptyDraft(DEFAULT_PROVIDERS))
+  const [providerDraft, setProviderDraft] = useState<ModelProviderConfig>(EMPTY_PROVIDER_DRAFT)
+  const [editingModelId, setEditingModelId] = useState<string | null>(null)
+  const [editingProviderId, setEditingProviderId] = useState<string | null>(null)
   const [apiKeyDraft, setApiKeyDraft] = useState("")
+  const [providerError, setProviderError] = useState<string | null>(null)
 
-  // Load persisted models on mount
   useEffect(() => {
     const init = async () => {
-      const saved = await loadModels()
-      setModels(saved)
-      if (saved.length > 0) {
-        setSelected(await resolveActiveModelId(saved))
+      const [savedProviders, savedModels] = await Promise.all([loadProviders(), loadModels()])
+      setProviders(savedProviders)
+      setModels(savedModels)
+      if (savedModels.length > 0) {
+        setSelected(await resolveActiveModelId(savedModels))
       }
     }
     init()
   }, [])
 
-  const openAdd = () => {
-    setDraft(EMPTY_DRAFT)
+  const groupedModels = useMemo(
+    () => groupModelsByProvider(models, providers),
+    [models, providers],
+  )
+
+  const modelCountByProvider = useMemo(() => {
+    const counts: Record<string, number> = {}
+    for (const m of models) counts[m.providerId] = (counts[m.providerId] ?? 0) + 1
+    return counts
+  }, [models])
+
+  const openAddModel = () => {
+    setDraft(createEmptyDraft(providers))
     setApiKeyDraft("")
-    setEditingId(null)
-    setDialogOpen(true)
+    setEditingModelId(null)
+    setModelDialogOpen(true)
   }
 
-  const openEdit = async (m: ModelConfig) => {
+  const openEditModel = async (m: ModelConfig) => {
     setDraft(m)
-    setEditingId(m.id)
-    setDialogOpen(true)
-    // Load existing API key if any
+    setEditingModelId(m.id)
+    setModelDialogOpen(true)
     try {
       const key = await loadApiKey(m.id)
       setApiKeyDraft(key ?? "")
@@ -84,11 +110,11 @@ export function ModelSection() {
   }
 
   const saveModel = async () => {
-    if (!draft.name.trim()) return
-    const modelId = editingId ?? `custom-${Date.now()}`
-    if (editingId) {
+    if (!draft.name.trim() || !draft.providerId) return
+    const modelId = editingModelId ?? `custom-${Date.now()}`
+    if (editingModelId) {
       setModels((prev) => {
-        const updated = prev.map((m) => (m.id === editingId ? { ...draft, id: editingId } : m))
+        const updated = prev.map((m) => (m.id === editingModelId ? { ...draft, id: editingModelId } : m))
         saveModels(updated).catch(console.error)
         return updated
       })
@@ -101,13 +127,12 @@ export function ModelSection() {
       setSelected(modelId)
       void saveLastUsedModelId(modelId)
     }
-    // Persist API key separately (same modelId)
     if (apiKeyDraft.trim()) {
       await saveApiKey(modelId, apiKeyDraft.trim())
-    } else if (editingId) {
-      await deleteApiKey(editingId)
+    } else if (editingModelId) {
+      await deleteApiKey(editingModelId)
     }
-    setDialogOpen(false)
+    setModelDialogOpen(false)
   }
 
   const deleteModel = async (id: string) => {
@@ -118,120 +143,260 @@ export function ModelSection() {
       return next
     })
     await deleteApiKey(id)
-    setDialogOpen(false)
+    setModelDialogOpen(false)
   }
 
-  // Derive provider from protocol/endpoint
-  const autoProvider = (protocol: ModelProtocol, endpoint: string | null): ModelProvider => {
-    if (protocol === "anthropic") return "anthropic"
-    // Local / self-hosted endpoints default to Ollama (OpenAI-compatible, no API key required)
-    if (endpoint && (endpoint.includes("127.0.0.1") || endpoint.includes("localhost") || endpoint.includes(":11434"))) return "ollama"
-    // Cloud OpenAI-compatible endpoints
-    return "openai"
+  const openAddProvider = () => {
+    setProviderDraft(EMPTY_PROVIDER_DRAFT)
+    setEditingProviderId(null)
+    setProviderError(null)
+    setProviderDialogOpen(true)
+  }
+
+  const openEditProvider = (p: ModelProviderConfig) => {
+    setProviderDraft(p)
+    setEditingProviderId(p.id)
+    setProviderError(null)
+    setProviderDialogOpen(true)
+  }
+
+  const saveProvider = async () => {
+    if (!providerDraft.name.trim()) return
+    const providerId = editingProviderId ?? `provider-custom-${Date.now()}`
+    if (editingProviderId) {
+      setProviders((prev) => {
+        const updated = prev.map((p) =>
+          p.id === editingProviderId ? { ...providerDraft, id: editingProviderId } : p,
+        )
+        saveProviders(updated).catch(console.error)
+        return updated
+      })
+    } else {
+      setProviders((prev) => {
+        const updated = [...prev, { ...providerDraft, id: providerId }]
+        saveProviders(updated).catch(console.error)
+        return updated
+      })
+    }
+    setProviderDialogOpen(false)
+  }
+
+  const deleteProvider = (id: string) => {
+    if (BUILTIN_PROVIDER_IDS.has(id)) {
+      setProviderError("内置提供商不可删除")
+      return
+    }
+    const linked = models.filter((m) => m.providerId === id)
+    if (linked.length > 0) {
+      setProviderError(`该提供商下仍有 ${linked.length} 个模型，请先移除或迁移模型`)
+      return
+    }
+    setProviders((prev) => {
+      const next = prev.filter((p) => p.id !== id)
+      saveProviders(next).catch(console.error)
+      return next
+    })
+    setProviderDialogOpen(false)
+    setProviderError(null)
   }
 
   useEffect(() => {
-    if (dialogOpen) {
-      const derived = autoProvider(draft.protocol, draft.endpoint)
-      if (derived !== draft.provider) {
-        setDraft((d) => ({ ...d, provider: derived }))
+    if (modelDialogOpen) {
+      const derived = inferBackend(draft.protocol, draft.endpoint)
+      if (derived !== draft.backend) {
+        setDraft((d) => ({ ...d, backend: derived }))
       }
     }
-  }, [draft.protocol, draft.endpoint, dialogOpen])
+  }, [draft.protocol, draft.endpoint, modelDialogOpen, draft.backend])
+
+  const renderModelCard = (m: ModelConfig) => {
+    const isActive = selected === m.id
+    return (
+      <div
+        key={m.id}
+        className={cn(
+          "group relative flex items-center gap-3 rounded-lg border px-3 py-3 transition-colors",
+          isActive ? "border-primary bg-primary/5" : "border-border hover:border-ring hover:bg-muted/40",
+        )}
+      >
+        <button
+          onClick={() => {
+            setSelected(m.id)
+            void saveLastUsedModelId(m.id)
+          }}
+          className="flex min-w-0 flex-1 items-center gap-3 text-left"
+        >
+          <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-primary/15 text-primary">
+            <Cpu className="h-4 w-4" />
+          </span>
+          <span className="min-w-0 flex-1">
+            <span className="flex items-center gap-1.5">
+              <span className="truncate text-sm font-medium">{m.name}</span>
+              <span className="shrink-0 rounded bg-secondary px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">
+                {BACKEND_LABEL[m.backend]}
+              </span>
+            </span>
+            <span className="mt-0.5 block truncate text-xs text-muted-foreground">
+              {m.detail} · {Number(m.contextWindow) / 1024}K · temp {m.temperature.toFixed(2)}
+            </span>
+          </span>
+          {isActive && <Check className="h-4 w-4 shrink-0 text-primary" />}
+        </button>
+        <div className="flex shrink-0 items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100">
+          <Button variant="ghost" size="icon-sm" onClick={() => openEditModel(m)} aria-label={`编辑 ${m.name}`}>
+            <Pencil className="size-3.5" />
+          </Button>
+          <Button
+            variant="ghost"
+            size="icon-sm"
+            onClick={() => deleteModel(m.id)}
+            aria-label={`删除 ${m.name}`}
+            disabled={models.length <= 1}
+          >
+            <Trash2 className="size-3.5" />
+          </Button>
+        </div>
+      </div>
+    )
+  }
 
   return (
     <div className="space-y-6">
       <SectionHeader
         title="模型配置"
-        desc="管理可用的模型。上下文窗口、采样温度、接口协议等参数均针对每个模型单独配置。"
+        desc="按提供商组织模型。上下文窗口、采样温度、接口协议等参数均针对每个模型单独配置。"
       />
 
+      {/* Provider management */}
+      <div>
+        <div className="mb-2 flex items-center justify-between">
+          <p className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
+            模型提供商
+          </p>
+          <Button variant="secondary" size="sm" onClick={openAddProvider}>
+            <Plus className="size-4" />
+            新增提供商
+          </Button>
+        </div>
+        <div className="grid gap-2 sm:grid-cols-2">
+          {providers.map((p) => (
+            <div
+              key={p.id}
+              className="group relative flex items-center gap-3 rounded-lg border border-border px-3 py-3 transition-colors hover:border-ring hover:bg-muted/40"
+            >
+              <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-secondary text-muted-foreground">
+                <Building2 className="h-4 w-4" />
+              </span>
+              <span className="min-w-0 flex-1">
+                <span className="block truncate text-sm font-medium">{p.name}</span>
+                <span className="mt-0.5 block truncate text-xs text-muted-foreground">
+                  {p.description || "无说明"} · {modelCountByProvider[p.id] ?? 0} 个模型
+                </span>
+              </span>
+              <div className="flex shrink-0 items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100">
+                <Button variant="ghost" size="icon-sm" onClick={() => openEditProvider(p)} aria-label={`编辑 ${p.name}`}>
+                  <Pencil className="size-3.5" />
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="icon-sm"
+                  onClick={() => deleteProvider(p.id)}
+                  aria-label={`删除 ${p.name}`}
+                  disabled={BUILTIN_PROVIDER_IDS.has(p.id)}
+                >
+                  <Trash2 className="size-3.5" />
+                </Button>
+              </div>
+            </div>
+          ))}
+        </div>
+        {providerError && (
+          <p className="mt-2 text-xs text-destructive">{providerError}</p>
+        )}
+      </div>
+
+      {/* Models grouped by provider */}
       <div>
         <div className="mb-2 flex items-center justify-between">
           <p className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
             模型列表
           </p>
-          <Button variant="secondary" size="sm" onClick={openAdd}>
+          <Button variant="secondary" size="sm" onClick={openAddModel} disabled={providers.length === 0}>
             <Plus className="size-4" />
             新增模型
           </Button>
         </div>
-        <div className="grid gap-2 sm:grid-cols-2">
-          {models.map((m) => {
-            const isActive = selected === m.id
-            return (
-              <div
-                key={m.id}
-                className={cn(
-                  "group relative flex items-center gap-3 rounded-lg border px-3 py-3 transition-colors",
-                  isActive ? "border-primary bg-primary/5" : "border-border hover:border-ring hover:bg-muted/40",
-                )}
-              >
-                <button
-                  onClick={() => {
-                    setSelected(m.id)
-                    void saveLastUsedModelId(m.id)
-                  }}
-                  className="flex min-w-0 flex-1 items-center gap-3 text-left"
-                >
-                  <span
-                    className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-primary/15 text-primary"
-                  >
-                    <Cpu className="h-4 w-4" />
-                  </span>
-                  <span className="min-w-0 flex-1">
-                    <span className="flex items-center gap-1.5">
-                      <span className="truncate text-sm font-medium">{m.name}</span>
-                      <span className="shrink-0 rounded bg-secondary px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">
-                        {PROVIDER_LABEL[m.provider]}
-                      </span>
-                    </span>
-                    <span className="mt-0.5 block truncate text-xs text-muted-foreground">
-                      {m.detail} · {Number(m.contextWindow) / 1024}K · temp {m.temperature.toFixed(2)}
-                    </span>
-                  </span>
-                  {isActive && <Check className="h-4 w-4 shrink-0 text-primary" />}
-                </button>
-                <div className="flex shrink-0 items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100">
-                  <Button variant="ghost" size="icon-sm" onClick={() => openEdit(m)} aria-label={`编辑 ${m.name}`}>
-                    <Pencil className="size-3.5" />
-                  </Button>
-                  <Button
-                    variant="ghost"
-                    size="icon-sm"
-                    onClick={() => deleteModel(m.id)}
-                    aria-label={`删除 ${m.name}`}
-                    disabled={models.length <= 1}
-                  >
-                    <Trash2 className="size-3.5" />
-                  </Button>
-                </div>
+        <div className="space-y-4">
+          {groupedModels.map(({ provider, models: groupModels }) => (
+            <div key={provider.id}>
+              <p className="mb-2 text-xs font-medium uppercase tracking-wider text-muted-foreground">
+                {provider.name}
+              </p>
+              <div className="grid gap-2 sm:grid-cols-2">
+                {groupModels.map(renderModelCard)}
               </div>
-            )
-          })}
+            </div>
+          ))}
         </div>
       </div>
 
       <div className="flex items-start gap-2 rounded-lg border border-border bg-muted/30 px-3 py-2.5 text-xs text-muted-foreground">
         <Cpu className="mt-0.5 h-3.5 w-3.5 shrink-0" />
         <span>
-          当前已配置 {models.length} 个模型。使用本地服务（Ollama / llama.cpp）时需确保对应服务已启动。
+          当前已配置 {providers.length} 个提供商、{models.length} 个模型。使用本地服务（Ollama / llama.cpp）时需确保对应服务已启动。
         </span>
       </div>
 
-      {/* Add / Edit dialog */}
+      {/* Provider dialog */}
       <Modal
-        open={dialogOpen}
-        onClose={() => setDialogOpen(false)}
-        title={editingId ? "编辑模型" : "新增模型"}
+        open={providerDialogOpen}
+        onClose={() => setProviderDialogOpen(false)}
+        title={editingProviderId ? "编辑提供商" : "新增提供商"}
+        description="提供商用于分组展示，不影响后端路由方式。"
+        footer={
+          <>
+            <Button variant="ghost" size="sm" onClick={() => setProviderDialogOpen(false)}>
+              取消
+            </Button>
+            <Button size="sm" onClick={saveProvider} disabled={!providerDraft.name.trim()}>
+              {editingProviderId ? "保存更改" : "添加"}
+            </Button>
+          </>
+        }
+      >
+        <div className="space-y-4">
+          <div className="space-y-1.5">
+            <label className="text-xs font-medium text-muted-foreground">名称</label>
+            <Input
+              value={providerDraft.name}
+              onChange={(e) => setProviderDraft((d) => ({ ...d, name: e.target.value }))}
+              placeholder="例如 DeepSeek、公司内网"
+            />
+          </div>
+          <div className="space-y-1.5">
+            <label className="text-xs font-medium text-muted-foreground">说明（选填）</label>
+            <Input
+              value={providerDraft.description ?? ""}
+              onChange={(e) => setProviderDraft((d) => ({ ...d, description: e.target.value }))}
+              placeholder="例如 内部推理服务"
+            />
+          </div>
+        </div>
+      </Modal>
+
+      {/* Model dialog */}
+      <Modal
+        open={modelDialogOpen}
+        onClose={() => setModelDialogOpen(false)}
+        title={editingModelId ? "编辑模型" : "新增模型"}
         description="每个模型独立配置连接信息与推理参数。"
         footer={
           <>
-            <Button variant="ghost" size="sm" onClick={() => setDialogOpen(false)}>
+            <Button variant="ghost" size="sm" onClick={() => setModelDialogOpen(false)}>
               取消
             </Button>
-            <Button size="sm" onClick={saveModel} disabled={!draft.name.trim()}>
-              {editingId ? "保存更改" : "添加"}
+            <Button size="sm" onClick={saveModel} disabled={!draft.name.trim() || !draft.providerId}>
+              {editingModelId ? "保存更改" : "添加"}
             </Button>
           </>
         }
@@ -243,6 +408,15 @@ export function ModelSection() {
               value={draft.name}
               onChange={(e) => setDraft((d) => ({ ...d, name: e.target.value }))}
               placeholder="例如 Llama 3.1 70B"
+            />
+          </div>
+
+          <div className="space-y-1.5">
+            <label className="text-xs font-medium text-muted-foreground">所属提供商</label>
+            <Select
+              value={draft.providerId}
+              onChange={(v) => setDraft((d) => ({ ...d, providerId: v }))}
+              options={providers.map((p) => ({ value: p.id, label: p.name }))}
             />
           </div>
 
@@ -258,7 +432,7 @@ export function ModelSection() {
                       setDraft((d) => ({
                         ...d,
                         protocol: p,
-                        provider: autoProvider(p, d.endpoint),
+                        backend: inferBackend(p, d.endpoint),
                       }))
                     }
                     className={cn(
@@ -272,10 +446,10 @@ export function ModelSection() {
               </div>
             </div>
             <div className="space-y-1.5">
-              <label className="text-xs font-medium text-muted-foreground">后端 Provider</label>
+              <label className="text-xs font-medium text-muted-foreground">后端路由</label>
               <Select
-                value={draft.provider}
-                onChange={(v) => setDraft((d) => ({ ...d, provider: v as ModelProvider }))}
+                value={draft.backend}
+                onChange={(v) => setDraft((d) => ({ ...d, backend: v as ModelBackend }))}
                 options={[
                   { value: "ollama", label: "Ollama" },
                   { value: "openai", label: "OpenAI" },
@@ -294,7 +468,6 @@ export function ModelSection() {
             />
           </div>
 
-          {/* API Key (optional) */}
           <div className="space-y-1.5">
             <label className="text-xs font-medium text-muted-foreground">API Key（选填）</label>
             <Input
