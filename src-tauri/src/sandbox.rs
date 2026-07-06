@@ -152,6 +152,8 @@ pub fn execute_sandboxed(
 
     cmd.current_dir(&work_dir);
 
+    crate::process_util::hide_console(&mut cmd);
+
     if let Some(env_vars) = &env {
         for (k, v) in env_vars {
             cmd.env(k, v);

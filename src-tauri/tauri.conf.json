@@ -28,8 +28,8 @@
         "label": "selection-popup",
         "title": "BoschCode Lookup",
         "url": "/selection-popup",
-        "width": 440,
-        "height": 360,
+        "width": 120,
+        "height": 48,
         "visible": false,
         "alwaysOnTop": true,
         "decorations": false,
@@ -46,5 +46,15 @@
     "shell": {
       "open": true
     }
+  },
+  "bundle": {
+    "active": true,
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ]
   }
 }

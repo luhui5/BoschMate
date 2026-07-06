@@ -155,20 +155,32 @@ export function AppProvider({ children }: { children: ReactNode }) {
     }
   }, [isDesktop])
 
-  // Health probe every 30s (Full / Degraded / Offline)
+  // Health probe every 30s (Full / Degraded / Offline) — main window only
   useEffect(() => {
     if (!isDesktop) return
-    const poll = async () => {
-      try {
-        const health = await healthCheck("http://localhost:11434")
-        setRunMode(health.mode as RunMode)
-      } catch {
-        setRunMode("offline")
+    let cancelled = false
+    let intervalId: ReturnType<typeof setInterval> | undefined
+
+    void import("@tauri-apps/api/window").then(({ getCurrentWindow }) => {
+      if (cancelled) return
+      if (getCurrentWindow().label !== "main") return
+
+      const poll = async () => {
+        try {
+          const health = await healthCheck("http://localhost:11434")
+          setRunMode(health.mode as RunMode)
+        } catch {
+          setRunMode("offline")
+        }
       }
+      void poll()
+      intervalId = setInterval(() => void poll(), 30_000)
+    })
+
+    return () => {
+      cancelled = true
+      if (intervalId) clearInterval(intervalId)
     }
-    void poll()
-    const id = setInterval(() => void poll(), 30_000)
-    return () => clearInterval(id)
   }, [isDesktop])
 
   // 应用主题 + 持久化

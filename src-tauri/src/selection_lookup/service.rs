@@ -15,7 +15,7 @@ use tauri::{AppHandle, Emitter, Manager, State, WebviewWindow};
 pub struct SelectionLookupStartPayload {
     pub text: String,
     pub kbase_id: String,
-    pub top_k: usize,
+    pub kbase_name: String,
     pub source: String,
 }
 
@@ -171,13 +171,14 @@ pub async fn trigger_lookup(
         return Ok(());
     };
 
-    {
+    let kbase_name = {
         let conn = state.db.conn.lock().unwrap();
         if !settings::kbase_exists(&conn, &kbase_id) {
             emit_error(app, "invalid_kbase", "默认知识库不存在，请重新选择");
             return Ok(());
         }
-    }
+        settings::load_kbase_name(&conn, &kbase_id).unwrap_or_else(|| "知识库".into())
+    };
 
     let text = if source == "clipboard" {
         preset_text.unwrap_or_else(|| read_clipboard_selection().unwrap_or_default())
@@ -216,7 +217,7 @@ pub async fn trigger_lookup(
     let payload = SelectionLookupStartPayload {
         text,
         kbase_id,
-        top_k: settings.top_k,
+        kbase_name,
         source: source.to_string(),
     };
     popup

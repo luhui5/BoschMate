@@ -1,5 +1,4 @@
 use std::path::Path;
-use std::process::Command;
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct TestRunResult {
@@ -42,7 +41,8 @@ fn detect_test_command(root: &Path, filter: Option<&str>) -> Result<(String, Vec
 }
 
 fn execute_test(cmd: &str, args: &[String], cwd: &Path) -> Result<TestRunResult, String> {
-    let output = Command::new(cmd)
+    let mut command = crate::process_util::command(cmd);
+    let output = command
         .args(args)
         .current_dir(cwd)
         .output()

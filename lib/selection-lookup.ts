@@ -29,9 +29,12 @@ export const DEFAULT_SELECTION_LOOKUP_SETTINGS: SelectionLookupSettings = {
 export interface SelectionLookupStartEvent {
   text: string
   kbaseId: string
-  topK: number
+  kbaseName: string
   source: string
 }
+
+export const SELECTION_CHIP_SIZE = { width: 120, height: 48 } as const
+export const SELECTION_CHAT_SIZE = { width: 440, height: 360 } as const
 
 export interface SelectionLookupErrorEvent {
   code: string

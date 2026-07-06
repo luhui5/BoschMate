@@ -62,7 +62,7 @@ export function SelectionLookupSection() {
     <div className="space-y-6">
       <SectionHeader
         title="划词知识库查询"
-        desc="在任意应用中选中文字后，基于默认知识库本地检索匹配片段。不发送到模型。"
+        desc="选中文字后显示知识库入口；点击 logo 将在浮窗内发起 Ask 知识库对话，并保存到 Home 工作区历史。"
       />
 
       <SettingsCard>
@@ -129,23 +129,13 @@ export function SelectionLookupSection() {
             className="h-8 w-24 rounded-md border border-border bg-background px-2 text-xs"
           />
         </SettingRow>
-        <SettingRow title="检索条数" desc="每次返回的最大片段数">
-          <input
-            type="number"
-            min={1}
-            max={20}
-            value={settings.topK}
-            onChange={(e) => patch({ topK: Number(e.target.value) || 8 })}
-            className="h-8 w-24 rounded-md border border-border bg-background px-2 text-xs"
-          />
-        </SettingRow>
         <SettingRow title="关闭时最小化到托盘" desc="关闭主窗口后仍可在后台划词">
           <Switch
             checked={settings.closeToTray}
             onCheckedChange={(closeToTray) => patch({ closeToTray })}
           />
         </SettingRow>
-        <SettingRow title="默认知识库" desc="划词检索的目标知识库">
+        <SettingRow title="默认知识库" desc="划词浮窗中显示的知识库 logo">
           <Select
             value={kbaseId ?? ""}
             onChange={handleKbaseChange}

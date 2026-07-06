@@ -1,5 +1,4 @@
 use std::path::Path;
-use std::process::Command;
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct LintIssue {
@@ -59,7 +58,7 @@ fn detect_lint_command(root: &Path, target: Option<&str>) -> Result<(String, Vec
 }
 
 fn execute_lint(cmd: &str, args: &[String], cwd: &Path) -> Result<LintResult, String> {
-    let output = Command::new(cmd)
+    let output = crate::process_util::command(cmd)
         .args(args)
         .current_dir(cwd)
         .output()

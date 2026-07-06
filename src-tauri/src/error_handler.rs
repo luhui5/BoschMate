@@ -217,17 +217,35 @@ fn disk_available_mb(path: &std::path::Path) -> Option<u64> {
     }
     #[cfg(windows)]
     {
-        let drive = path.to_str()?.chars().next()?.to_string() + ":\\";
-        let script = format!(
-            "(Get-PSDrive -Name '{}').Free / 1MB",
-            drive.chars().next()?
-        );
-        let output = std::process::Command::new("powershell")
-            .args(["-NoProfile", "-Command", &script])
-            .output()
-            .ok()?;
-        let text = String::from_utf8_lossy(&output.stdout);
-        return text.trim().parse::<u64>().ok();
+        use std::ffi::OsStr;
+        use std::os::windows::ffi::OsStrExt;
+        use winapi::shared::ntdef::ULARGE_INTEGER;
+        use winapi::um::fileapi::GetDiskFreeSpaceExW;
+
+        let path_str = path.to_str()?;
+        let root = if path_str.len() >= 2 && path_str.as_bytes()[1] == b':' {
+            format!("{}:\\", &path_str[..1])
+        } else {
+            return None;
+        };
+        let wide: Vec<u16> = OsStr::new(&root)
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect();
+        let mut free_bytes: ULARGE_INTEGER = unsafe { std::mem::zeroed() };
+        let ok = unsafe {
+            GetDiskFreeSpaceExW(
+                wide.as_ptr(),
+                &mut free_bytes,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+            )
+        };
+        if ok == 0 {
+            return None;
+        }
+        let bytes = unsafe { *free_bytes.QuadPart() };
+        return Some(bytes / (1024 * 1024));
     }
     #[cfg(not(any(unix, windows)))]
     {

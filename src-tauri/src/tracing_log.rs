@@ -41,5 +41,6 @@ fn write_line(level: &str, target: &str, message: &str) {
             let _ = f.write_all(line.as_bytes());
         }
     }
+    #[cfg(debug_assertions)]
     eprintln!("{}", line.trim());
 }

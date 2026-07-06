@@ -116,7 +116,7 @@ fn resolve_app_alias(name: &str) -> Option<PathBuf> {
 }
 
 fn spawn_windows_start(target: &str) -> Result<(), String> {
-    std::process::Command::new("cmd")
+    crate::process_util::command("cmd")
         .args(["/C", "start", "", target])
         .spawn()
         .map_err(|e| format!("Failed to start application: {}", e))?;
@@ -294,7 +294,7 @@ fn open_vscode_shell_fallback(path_arg: &str) -> Result<String, String> {
     let mut last_err = String::new();
     for command in commands {
         #[cfg(target_os = "windows")]
-        let spawn = std::process::Command::new("cmd").args(["/C", &command]).spawn();
+        let spawn = crate::process_util::command("cmd").args(["/C", &command]).spawn();
         #[cfg(not(target_os = "windows"))]
         let spawn = std::process::Command::new("sh")
             .args(["-c", &command])

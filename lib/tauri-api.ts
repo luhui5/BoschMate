@@ -1023,8 +1023,14 @@ export function onSelectionLookupStart(
   if (!isTauri()) return () => {};
   const { listen } = require('@tauri-apps/api/event');
   let unlisten: (() => void) | null = null;
-  listen('selection-lookup:start', (event: { payload: SelectionLookupStartEvent }) => {
-    callback(event.payload);
+  listen('selection-lookup:start', (event: { payload: Record<string, unknown> }) => {
+    const p = event.payload;
+    callback({
+      text: String(p.text ?? ''),
+      kbaseId: String(p.kbaseId ?? p.kbase_id ?? ''),
+      kbaseName: String(p.kbaseName ?? p.kbase_name ?? '知识库'),
+      source: String(p.source ?? ''),
+    });
   }).then((fn: () => void) => {
     unlisten = fn;
   });

@@ -20,13 +20,13 @@ pub fn run_skill(skill_dir: &Path, args: &[String]) -> Result<SkillRunResult, St
     // MVP: execute via shell when entry is .sh/.js; Deno sandbox in future iteration
     let ext = entry.extension().and_then(|e| e.to_str()).unwrap_or("");
     let output = if ext == "sh" {
-        std::process::Command::new("sh")
+        crate::process_util::command("sh")
             .arg(&entry)
             .args(args)
             .output()
             .map_err(|e| e.to_string())?
     } else {
-        std::process::Command::new("node")
+        crate::process_util::command("node")
             .arg(&entry)
             .args(args)
             .output()

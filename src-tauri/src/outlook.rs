@@ -2,7 +2,6 @@
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::process::Command;
 
 const MAX_COUNT: u32 = 25;
 const DEFAULT_COUNT: u32 = 10;
@@ -274,10 +273,12 @@ fn format_read_result(result: ReadResult, include_body: bool) -> String {
 
 #[cfg(target_os = "windows")]
 fn run_powershell(script: &str, params_json: &str) -> Result<String, String> {
-    let output = Command::new("powershell")
+    let output = crate::process_util::command("powershell")
         .args([
             "-NoProfile",
             "-NonInteractive",
+            "-WindowStyle",
+            "Hidden",
             "-ExecutionPolicy",
             "Bypass",
             "-Command",

@@ -220,7 +220,7 @@ pub fn unstage_files(repo_path: &Path, paths: &[String]) -> Result<(), String> {
     if paths.is_empty() {
         return Ok(());
     }
-    let mut cmd = std::process::Command::new("git");
+    let mut cmd = crate::process_util::command("git");
     cmd.current_dir(repo_path).arg("reset").arg("HEAD").arg("--");
     for path in paths {
         cmd.arg(path);

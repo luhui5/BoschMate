@@ -160,6 +160,15 @@ pub fn kbase_exists(conn: &Connection, kbase_id: &str) -> bool {
     .is_ok()
 }
 
+pub fn load_kbase_name(conn: &Connection, kbase_id: &str) -> Option<String> {
+    conn.query_row(
+        "SELECT name FROM knowledge_bases WHERE id = ?1",
+        params![kbase_id],
+        |row| row.get(0),
+    )
+    .ok()
+}
+
 pub fn should_close_to_tray(conn: &Connection) -> bool {
     load_settings(conn).close_to_tray
 }

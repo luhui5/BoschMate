@@ -1,3 +1,5 @@
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+
 mod ai_client;
 mod ai_loop;
 mod audit;
@@ -25,6 +27,7 @@ mod models;
 mod os_open;
 mod outlook;
 mod path_guard;
+mod process_util;
 mod paused_loop;
 mod recovery;
 mod retriever;
@@ -154,7 +157,7 @@ fn open_project(state: State<AppState>, id: String) -> Result<Project, String> {
     let (git_remote, git_branch) = match git_ops::get_status(PathBuf::from(&path).as_path()) {
         Ok(status) => {
             // Try to read git remote
-            let remote = std::process::Command::new("git")
+            let remote = crate::process_util::command("git")
                 .args(["remote", "get-url", "origin"])
                 .current_dir(&path)
                 .output()
@@ -650,7 +653,7 @@ fn git_clone_repo(parent_dir: String, url: String, name: Option<String>) -> Resu
     if target.exists() {
         return Err(format!("Directory already exists: {}", target.display()));
     }
-    let output = std::process::Command::new("git")
+    let output = crate::process_util::command("git")
         .args(["clone", &url, target.to_str().unwrap_or("")])
         .output()
         .map_err(|e| format!("Failed to run git clone: {}", e))?;
@@ -718,7 +721,7 @@ fn reveal_in_explorer(state: State<AppState>, project_id: String, path: String) 
     let full = full.canonicalize().unwrap_or(full);
     #[cfg(target_os = "windows")]
     {
-        std::process::Command::new("explorer")
+        crate::process_util::command("explorer")
             .arg(format!("/select,{}", full.display()))
             .spawn()
             .map_err(|e| format!("Failed to open explorer: {}", e))?;
