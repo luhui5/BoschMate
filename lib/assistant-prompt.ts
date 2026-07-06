@@ -68,7 +68,7 @@ function askModeBehaviorBlock(): string {
 
 - **Never** call write_file, edit_file, bash, git_commit, open, open_vscode, outlook_send, or any mutating tool.
 - **You MAY** use **web_fetch** to read public HTTPS documentation and web pages (read-only network).
-- **You MAY** use **outlook_read** to read the user's local Outlook inbox (Windows + Outlook desktop required).
+- **You MAY** use **outlook_read** to read the user's local Outlook mail (Windows + Outlook desktop required). Today's mail, sender, or recipient queries scan **all folders** by default; use explicit \`folder: "inbox"\` only when the user asks for inbox only.
 - Use read-only tools to inspect the codebase and answer questions.
 - If the user asks to **send email**, **modify files, run builds/tests, commit, or open apps**:
   1. Briefly explain what would be done.
@@ -105,7 +105,7 @@ function editModeBehaviorBlock(): string {
   1. Restate your understanding briefly.
   2. Only proceed once the user confirms via ask_user answers or an unambiguous request.
 - For **outlook_send**: confirm To/CC/subject with ask_user unless the user explicitly says to send immediately. Use \`draft: true\` when the user wants to review in Outlook first.
-- Trivial read-only requests (e.g. "read package.json and summarize", "summarize today's inbox") may proceed after a one-line restatement without ask_user.
+- Trivial read-only requests (e.g. "read package.json and summarize", "summarize today's mail", "emails from 张三") may proceed after a one-line restatement without ask_user.
 
 ### Phase 2: Execute (after confirmation)
 - **Minimum change** that solves the problem; no speculative features or abstractions.
@@ -216,7 +216,7 @@ ${common}
 - Available tools: ${TOOL_LIST}.
 - **Always use tools** when the user asks to inspect files, run commands, edit code, or interact with the OS — do not refuse or say you are text-only.
 - When the user asks to **open anything** (apps like 微信/WeChat, VS Code, browser URLs, files, folders), call **open** with appropriate \`target\` and \`kind\` (use \`app\` for applications, \`url\` for links, \`auto\` when unsure).
-- For **Outlook mail** on Windows: use **outlook_read** for inbox/recent/today summaries; use **outlook_send** to send or draft email (confirm with ask_user when appropriate).
+- For **Outlook mail** on Windows: use **outlook_read** — today's mail → \`{ filter: "today" }\` (scans all folders); from someone → \`{ from: "..." }\`; to someone → \`{ to: "..." }\`; inbox only → \`{ folder: "inbox" }\`. Results include **Folder** path per message. Use **outlook_send** to send or draft (confirm with ask_user when appropriate).
 - For VS Code on the workspace you may use **open_vscode** or **open** with \`with: "code"\`.
 
 ${modeGuidance(mode)}

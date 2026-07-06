@@ -32,6 +32,16 @@ pub struct ChatRequest {
     pub api_key: Option<String>,    // for anthropic/openai
     pub base_url: Option<String>,   // for ollama / custom endpoints
     pub system: Option<String>,
+    /// When true, skip TLS certificate validation (for self-signed / internal CAs).
+    #[serde(default)]
+    pub skip_tls_verify: bool,
+}
+
+fn build_http_client(skip_tls_verify: bool) -> Result<reqwest::Client, String> {
+    reqwest::Client::builder()
+        .danger_accept_invalid_certs(skip_tls_verify)
+        .build()
+        .map_err(|e| format!("HTTP client error: {}", e))
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -176,7 +186,7 @@ async fn stream_anthropic(
     cancel: Arc<AtomicBool>,
 ) -> Result<ChatResponse, String> {
     let api_key = req.api_key.clone().ok_or("Anthropic API key required")?;
-    let client = reqwest::Client::new();
+    let client = build_http_client(req.skip_tls_verify)?;
     let model = if req.model.is_empty() { "claude-sonnet-4-6".to_string() } else { req.model.clone() };
 
     let mut body = serde_json::json!({
@@ -354,7 +364,7 @@ async fn stream_openai(
     message_id: String,
     cancel: Arc<AtomicBool>,
 ) -> Result<ChatResponse, String> {
-    let client = reqwest::Client::new();
+    let client = build_http_client(req.skip_tls_verify)?;
     let base = req.base_url.unwrap_or_else(|| "https://api.openai.com/v1".into());
     let model = if req.model.is_empty() { "gpt-4o" } else { &req.model };
 
@@ -522,7 +532,7 @@ async fn stream_ollama(
     message_id: String,
     cancel: Arc<AtomicBool>,
 ) -> Result<ChatResponse, String> {
-    let client = reqwest::Client::new();
+    let client = build_http_client(req.skip_tls_verify)?;
     let base = req.base_url.unwrap_or_else(|| "http://localhost:11434/v1".into());
     let model = if req.model.is_empty() { "qwen2.5-coder" } else { &req.model };
 

@@ -18,6 +18,7 @@ import {
   DEFAULT_PROVIDERS,
   groupModelsByProvider,
   inferBackend,
+  isHttpsEndpoint,
   loadApiKey,
   loadModels,
   loadProviders,
@@ -38,6 +39,7 @@ function createEmptyDraft(providers: ModelProviderConfig[]): ModelConfig {
     providerId: providers[0]?.id ?? "",
     detail: "",
     endpoint: "",
+    skipTlsVerify: false,
     contextWindow: 32768,
     temperature: 0.2,
   }
@@ -463,10 +465,34 @@ export function ModelSection() {
             <label className="text-xs font-medium text-muted-foreground">API 端点</label>
             <Input
               value={draft.endpoint ?? ""}
-              onChange={(e) => setDraft((d) => ({ ...d, endpoint: e.target.value }))}
+              onChange={(e) => {
+                const endpoint = e.target.value
+                setDraft((d) => ({
+                  ...d,
+                  endpoint,
+                  ...(!isHttpsEndpoint(endpoint) ? { skipTlsVerify: false } : {}),
+                }))
+              }}
               placeholder="http://localhost:11434 或 https://api.example.com"
             />
           </div>
+
+          {isHttpsEndpoint(draft.endpoint) && (
+            <label className="flex cursor-pointer items-start gap-2.5 rounded-md border border-border px-3 py-2.5">
+              <input
+                type="checkbox"
+                checked={draft.skipTlsVerify ?? false}
+                onChange={(e) => setDraft((d) => ({ ...d, skipTlsVerify: e.target.checked }))}
+                className="mt-0.5 accent-primary"
+              />
+              <span className="min-w-0">
+                <span className="block text-xs font-medium">跳过 TLS 证书校验</span>
+                <span className="mt-0.5 block text-[11px] leading-relaxed text-muted-foreground">
+                  仅在内网自签名证书时使用。会降低连接安全性，存在中间人攻击风险。
+                </span>
+              </span>
+            </label>
+          )}
 
           <div className="space-y-1.5">
             <label className="text-xs font-medium text-muted-foreground">API Key（选填）</label>

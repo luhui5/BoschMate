@@ -363,6 +363,7 @@ export interface AiChatRequest {
   max_tokens?: number;
   api_key?: string;
   base_url?: string;
+  skip_tls_verify?: boolean;
   system?: string;
 }
 
@@ -373,6 +374,7 @@ export interface AiLoopRequest {
   system_prompt?: string;
   api_key?: string;
   base_url?: string;
+  skip_tls_verify?: boolean;
   max_iterations?: number;
   assistant_mode?: boolean;
   edit_dry_run?: boolean;

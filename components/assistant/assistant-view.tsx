@@ -1248,6 +1248,7 @@ export function AssistantView({
           system_prompt: system,
           api_key: apiKey,
           base_url: modelCfg.endpoint ?? undefined,
+          skip_tls_verify: modelCfg.skipTlsVerify ?? false,
           assistant_mode: true,
           agent_mode: sessionAgentMode,
           edit_dry_run: hasKnowledge ? false : agentMode === "edit",

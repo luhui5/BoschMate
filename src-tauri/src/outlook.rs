@@ -14,6 +14,7 @@ struct ReadParams {
     filter: String,
     since: Option<String>,
     from: Option<String>,
+    to: Option<String>,
     count: u32,
     include_body: bool,
 }
@@ -32,8 +33,12 @@ struct SendParams {
 struct MailItem {
     subject: String,
     from: String,
+    #[serde(default)]
+    to: String,
     received: String,
     unread: bool,
+    #[serde(default)]
+    folder: String,
     #[serde(default)]
     body: String,
 }
@@ -71,19 +76,6 @@ fn format_com_error(detail: &str) -> String {
 }
 
 fn parse_read_args(args: &Value) -> Result<ReadParams, String> {
-    let folder = args
-        .get("folder")
-        .and_then(|v| v.as_str())
-        .unwrap_or("inbox")
-        .trim()
-        .to_lowercase();
-    if !matches!(folder.as_str(), "inbox" | "sent" | "drafts" | "deleted") {
-        return Err(format!(
-            "Invalid folder: {} (use inbox, sent, drafts, or deleted)",
-            folder
-        ));
-    }
-
     let filter = args
         .get("filter")
         .and_then(|v| v.as_str())
@@ -116,6 +108,36 @@ fn parse_read_args(args: &Value) -> Result<ReadParams, String> {
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty());
 
+    let to = args
+        .get("to")
+        .and_then(|v| v.as_str())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+
+    let folder_explicit = args.get("folder").and_then(|v| v.as_str()).is_some();
+    let folder = if folder_explicit {
+        let f = args
+            .get("folder")
+            .and_then(|v| v.as_str())
+            .unwrap_or("inbox")
+            .trim()
+            .to_lowercase();
+        if !matches!(
+            f.as_str(),
+            "inbox" | "sent" | "drafts" | "deleted" | "all"
+        ) {
+            return Err(format!(
+                "Invalid folder: {} (use inbox, sent, drafts, deleted, or all)",
+                f
+            ));
+        }
+        f
+    } else if filter == "today" || from.is_some() || to.is_some() {
+        "all".to_string()
+    } else {
+        "inbox".to_string()
+    };
+
     let mut count = args
         .get("count")
         .and_then(|v| v.as_u64())
@@ -137,6 +159,7 @@ fn parse_read_args(args: &Value) -> Result<ReadParams, String> {
         filter,
         since,
         from,
+        to,
         count,
         include_body,
     })
@@ -252,6 +275,12 @@ fn format_read_result(result: ReadResult, include_body: bool) -> String {
             msg.from,
             msg.received
         ));
+        if !msg.to.is_empty() {
+            out.push_str(&format!("- **To:** {}\n", msg.to));
+        }
+        if !msg.folder.is_empty() {
+            out.push_str(&format!("- **Folder:** {}\n", msg.folder));
+        }
         if include_body && !msg.body.is_empty() {
             out.push_str("\n");
             out.push_str(&msg.body);
@@ -314,46 +343,40 @@ $count = [int]$params.count
 $includeBody = [bool]$params.include_body
 $since = $params.since
 $fromFilter = $params.from
+$toFilter = $params.to
 
-$folderIds = @{
-  inbox = 6
-  sent = 5
-  drafts = 16
-  deleted = 3
-}
-$folderId = $folderIds[$folderName]
-if (-not $folderId) { throw "Unknown folder: $folderName" }
-
-$ol = New-Object -ComObject Outlook.Application
-$ns = $ol.GetNamespace('MAPI')
-$folder = $ns.GetDefaultFolder($folderId)
-$items = $folder.Items
-$items.Sort('[ReceivedTime]', $true)
-
-$restrict = $null
-if ($filterName -eq 'today') {
-  $start = (Get-Date).Date
-  $restrict = "[ReceivedTime] >= '" + $start.ToString('M/d/yyyy h:mm tt') + "'"
-} elseif ($filterName -eq 'unread') {
-  $restrict = '[Unread] = true'
-} elseif ($filterName -eq 'since' -and $since) {
-  $dt = [DateTime]::Parse($since)
-  $restrict = "[ReceivedTime] >= '" + $dt.ToString('M/d/yyyy h:mm tt') + "'"
-}
-
-if ($restrict) {
-  try { $items = $items.Restrict($restrict) } catch { }
-}
-
-$results = @()
-foreach ($item in $items) {
-  if ($item.Class -ne 43) { continue }
+function Get-Sender($item) {
   $sender = ''
   try { $sender = $item.SenderEmailAddress } catch { }
   if (-not $sender) {
     try { $sender = $item.SenderName } catch { $sender = '' }
   }
-  if ($fromFilter -and $sender -notlike "*$fromFilter*") { continue }
+  return [string]$sender
+}
+
+function Get-Recipients($item) {
+  $r = ''
+  try { $r = [string]$item.To } catch { }
+  try {
+    $cc = $item.CC
+    if ($cc) {
+      if ($r) { $r += ';' + [string]$cc } else { $r = [string]$cc }
+    }
+  } catch { }
+  return [string]$r
+}
+
+function Test-PersonFilters($sender, $recipients) {
+  if ($fromFilter -and $sender -notlike "*$fromFilter*") { return $false }
+  if ($toFilter -and $recipients -notlike "*$toFilter*") { return $false }
+  return $true
+}
+
+function Get-MailFields($item, $folderPath) {
+  if ($item.Class -ne 43) { return $null }
+  $sender = Get-Sender $item
+  $recipients = Get-Recipients $item
+  if (-not (Test-PersonFilters $sender $recipients)) { return $null }
   $received = ''
   try { $received = $item.ReceivedTime.ToString('o') } catch { }
   $body = ''
@@ -362,21 +385,109 @@ foreach ($item in $items) {
   }
   $unread = $false
   try { $unread = [bool]$item.Unread } catch { }
-  $results += [PSCustomObject]@{
+  return [PSCustomObject]@{
     subject = [string]$item.Subject
     from = [string]$sender
+    to = [string]$recipients
     received = [string]$received
     unread = $unread
     body = [string]$body
+    folder = [string]$folderPath
   }
-  if ($results.Count -ge $count) { break }
+}
+
+function Build-Restrict($filterName, $sinceVal) {
+  if ($filterName -eq 'today') {
+    $start = (Get-Date).Date
+    return "[ReceivedTime] >= '" + $start.ToString('M/d/yyyy h:mm tt') + "'"
+  } elseif ($filterName -eq 'unread') {
+    return '[Unread] = true'
+  } elseif ($filterName -eq 'since' -and $sinceVal) {
+    $dt = [DateTime]::Parse($sinceVal)
+    return "[ReceivedTime] >= '" + $dt.ToString('M/d/yyyy h:mm tt') + "'"
+  }
+  return $null
+}
+
+$ol = New-Object -ComObject Outlook.Application
+$ns = $ol.GetNamespace('MAPI')
+$restrict = Build-Restrict $filterName $since
+
+if ($folderName -eq 'all') {
+  $maxFolders = 200
+  $script:folderCount = 0
+  $script:allFolders = @()
+
+  function Collect-Folders($folders) {
+    foreach ($f in $folders) {
+      if ($script:folderCount -ge $maxFolders) { return }
+      $script:allFolders += $f
+      $script:folderCount++
+      if ($f.Folders.Count -gt 0) {
+        Collect-Folders $f.Folders
+      }
+    }
+  }
+
+  foreach ($store in $ns.Folders) {
+    if ($script:folderCount -ge $maxFolders) { break }
+    Collect-Folders $store.Folders
+  }
+
+  $collected = @()
+  foreach ($f in $script:allFolders) {
+    $folderPath = ''
+    try { $folderPath = $f.FolderPath } catch { try { $folderPath = $f.Name } catch { $folderPath = '' } }
+    $items = $f.Items
+    try { $items.Sort('[ReceivedTime]', $true) } catch { }
+    if ($restrict) {
+      try { $items = $items.Restrict($restrict) } catch { }
+    }
+    $scanned = 0
+    foreach ($item in $items) {
+      if ($filterName -eq 'recent' -and $scanned -ge $count) { break }
+      $scanned++
+      $row = Get-MailFields $item $folderPath
+      if ($row) { $collected += $row }
+    }
+  }
+
+  $results = @($collected | Sort-Object { try { [DateTime]$_.received } catch { [DateTime]::MinValue } } -Descending | Select-Object -First $count)
+} else {
+  $folderIds = @{
+    inbox = 6
+    sent = 5
+    drafts = 16
+    deleted = 3
+  }
+  $folderId = $folderIds[$folderName]
+  if (-not $folderId) { throw "Unknown folder: $folderName" }
+
+  $folder = $ns.GetDefaultFolder($folderId)
+  $folderPath = ''
+  try { $folderPath = $folder.FolderPath } catch { $folderPath = $folderName }
+  $items = $folder.Items
+  $items.Sort('[ReceivedTime]', $true)
+
+  if ($restrict) {
+    try { $items = $items.Restrict($restrict) } catch { }
+  }
+
+  $results = @()
+  foreach ($item in $items) {
+    $row = Get-MailFields $item $folderPath
+    if ($row) {
+      $results += $row
+      if ($results.Count -ge $count) { break }
+    }
+  }
 }
 
 [PSCustomObject]@{
   folder = $folderName
   filter = $filterName
-  count = $results.Count
-  messages = $results
+  count = @($results).Count
+  messages = @($results)
 } | ConvertTo-Json -Compress -Depth 5
 "#;
 
@@ -479,6 +590,74 @@ mod tests {
     }
 
     #[test]
+    fn parse_read_today_defaults_to_all() {
+        let p = parse_read_args(&json!({ "filter": "today" })).unwrap();
+        assert_eq!(p.folder, "all");
+        assert_eq!(p.filter, "today");
+    }
+
+    #[test]
+    fn parse_read_from_defaults_to_all() {
+        let p = parse_read_args(&json!({ "from": "zhang" })).unwrap();
+        assert_eq!(p.folder, "all");
+        assert_eq!(p.from.as_deref(), Some("zhang"));
+    }
+
+    #[test]
+    fn parse_read_to_defaults_to_all() {
+        let p = parse_read_args(&json!({ "to": "lisi" })).unwrap();
+        assert_eq!(p.folder, "all");
+        assert_eq!(p.to.as_deref(), Some("lisi"));
+    }
+
+    #[test]
+    fn parse_read_explicit_inbox_overrides() {
+        let p = parse_read_args(&json!({ "from": "x", "folder": "inbox" })).unwrap();
+        assert_eq!(p.folder, "inbox");
+    }
+
+    #[test]
+    fn parse_read_today_explicit_inbox() {
+        let p = parse_read_args(&json!({ "filter": "today", "folder": "inbox" })).unwrap();
+        assert_eq!(p.folder, "inbox");
+    }
+
+    #[test]
+    fn parse_read_accepts_all() {
+        let p = parse_read_args(&json!({ "folder": "all" })).unwrap();
+        assert_eq!(p.folder, "all");
+    }
+
+    #[test]
+    fn parse_read_accepts_to() {
+        let p = parse_read_args(&json!({ "to": "a@b.com", "folder": "sent" })).unwrap();
+        assert_eq!(p.to.as_deref(), Some("a@b.com"));
+        assert_eq!(p.folder, "sent");
+    }
+
+    #[test]
+    fn format_read_result_includes_folder_and_to() {
+        let result = ReadResult {
+            folder: "all".into(),
+            filter: "today".into(),
+            count: 1,
+            messages: vec![MailItem {
+                subject: "Hello".into(),
+                from: "a@b.com".into(),
+                to: "c@d.com".into(),
+                received: "2026-01-01".into(),
+                unread: false,
+                folder: "\\\\mailbox\\Inbox\\Digi colleague".into(),
+                body: String::new(),
+            }],
+        };
+        let out = format_read_result(result, false);
+        assert!(out.contains("**To:** c@d.com"));
+        assert!(out.contains("**Folder:**"));
+        assert!(out.contains("Digi colleague"));
+    }
+
+    #[test]
     fn parse_read_caps_count() {
         let p = parse_read_args(&json!({ "count": 100 })).unwrap();
         assert_eq!(p.count, MAX_COUNT);
@@ -535,8 +714,10 @@ mod tests {
             messages: vec![MailItem {
                 subject: "Test".into(),
                 from: "a@b.com".into(),
+                to: String::new(),
                 received: "2026-01-01".into(),
                 unread: false,
+                folder: String::new(),
                 body: "x".repeat(MAX_TOTAL_CHARS + 1000),
             }],
         };

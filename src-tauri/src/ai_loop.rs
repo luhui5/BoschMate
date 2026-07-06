@@ -152,6 +152,7 @@ pub struct PausedLoopState {
     pub model: String,
     pub api_key: Option<String>,
     pub base_url: Option<String>,
+    pub skip_tls_verify: bool,
     pub system_prompt: Option<String>,
     pub current_messages: Vec<AiMessage>,
     pub tools: Vec<AiToolDef>,
@@ -393,14 +394,15 @@ pub fn get_tools() -> Vec<AiToolDef> {
         },
         AiToolDef {
             name: "outlook_read".into(),
-            description: "Read emails from the local Outlook desktop client (Windows). Use for inbox summaries, recent mail, today's mail, or unread messages. Examples: summarize today's inbox; fetch the 5 most recent emails.".into(),
+            description: "Read emails from the local Outlook desktop client (Windows). Scans all folders when filter=today or from/to is set (default). Examples: today's mail across all folders ({ filter: today }); emails from someone ({ from: name }); emails to someone ({ to: email }); inbox only ({ folder: inbox }).".into(),
             parameters: serde_json::json!({
                 "type": "object",
                 "properties": {
-                    "folder": {"type": "string", "enum": ["inbox", "sent", "drafts", "deleted"], "description": "Mail folder (default: inbox)"},
+                    "folder": {"type": "string", "enum": ["inbox", "sent", "drafts", "deleted", "all"], "description": "Mail folder. Default: all when filter=today or from/to set; otherwise inbox."},
                     "filter": {"type": "string", "enum": ["recent", "today", "unread", "since"], "description": "Filter mode (default: recent)"},
                     "since": {"type": "string", "description": "ISO date YYYY-MM-DD when filter=since"},
-                    "from": {"type": "string", "description": "Optional sender name or email substring"},
+                    "from": {"type": "string", "description": "Sender name or email substring. Default folder=all when set."},
+                    "to": {"type": "string", "description": "Recipient name or email substring (matches To and CC). Default folder=all when set."},
                     "count": {"type": "integer", "description": "Max messages to return (default 10, max 25)"},
                     "include_body": {"type": "boolean", "description": "Include message body (default true)"}
                 }
@@ -936,6 +938,7 @@ struct LoopRunContext {
     model: String,
     api_key: Option<String>,
     base_url: Option<String>,
+    skip_tls_verify: bool,
     system_prompt: Option<String>,
     current_messages: Vec<AiMessage>,
     tools: Vec<AiToolDef>,
@@ -958,6 +961,7 @@ pub async fn run_loop(
     model: String,
     api_key: Option<String>,
     base_url: Option<String>,
+    skip_tls_verify: bool,
     messages: Vec<AiMessage>,
     system_prompt: Option<String>,
     tools: Vec<AiToolDef>,
@@ -975,6 +979,7 @@ pub async fn run_loop(
         model,
         api_key,
         base_url,
+        skip_tls_verify,
         system_prompt,
         current_messages: messages,
         tools,
@@ -1017,6 +1022,7 @@ pub async fn run_loop_resume(
         model: paused.model,
         api_key: paused.api_key,
         base_url: paused.base_url,
+        skip_tls_verify: paused.skip_tls_verify,
         system_prompt: paused.system_prompt,
         current_messages,
         tools: paused.tools,
@@ -1089,6 +1095,7 @@ async fn run_loop_inner(mut ctx: LoopRunContext) -> Result<LoopOutcome, String> 
             max_tokens: Some(8192),
             api_key: ctx.api_key.clone(),
             base_url: ctx.base_url.clone(),
+            skip_tls_verify: ctx.skip_tls_verify,
             system: ctx.system_prompt.clone(),
         };
 
@@ -1266,6 +1273,7 @@ async fn run_loop_inner(mut ctx: LoopRunContext) -> Result<LoopOutcome, String> 
                                 model: ctx.model.clone(),
                                 api_key: ctx.api_key.clone(),
                                 base_url: ctx.base_url.clone(),
+                                skip_tls_verify: ctx.skip_tls_verify,
                                 system_prompt: ctx.system_prompt.clone(),
                                 current_messages: ctx.current_messages.clone(),
                                 tools: ctx.tools.clone(),

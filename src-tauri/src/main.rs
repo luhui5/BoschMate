@@ -1486,6 +1486,8 @@ struct AiLoopInput {
     system_prompt: Option<String>,
     api_key: Option<String>,
     base_url: Option<String>,
+    #[serde(default)]
+    skip_tls_verify: bool,
     max_iterations: Option<usize>,
     #[allow(dead_code)]
     assistant_mode: Option<bool>,
@@ -1900,6 +1902,7 @@ async fn ai_loop_chat_inner(
         input.model,
         input.api_key,
         input.base_url,
+        input.skip_tls_verify,
         input.messages,
         system_prompt,
         tools,

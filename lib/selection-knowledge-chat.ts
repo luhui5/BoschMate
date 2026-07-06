@@ -95,6 +95,7 @@ export async function runSelectionKnowledgeChat(
         system_prompt: system,
         api_key: apiKey,
         base_url: modelCfg.endpoint ?? undefined,
+        skip_tls_verify: modelCfg.skipTlsVerify ?? false,
         assistant_mode: true,
         agent_mode: "ask",
         edit_dry_run: false,

@@ -32,6 +32,7 @@ export interface ModelConfig {
   detail: string
   endpoint: string | null
   apiKey?: string
+  skipTlsVerify?: boolean
   contextWindow: number
   temperature: number
 }
@@ -63,24 +64,13 @@ export const DEFAULT_PROVIDERS: ModelProviderConfig[] = [
 
 export const DEFAULT_MODELS: ModelConfig[] = [
   {
-    id: "ollama-local",
-    name: "qwen2.5-coder",
-    protocol: "openai",
-    backend: "ollama",
-    providerId: "provider-ollama",
-    detail: "本地 Ollama 默认模型",
-    endpoint: "http://localhost:11434",
-    contextWindow: 32768,
-    temperature: 0.2,
-  },
-  {
     id: "bcsc-qwen",
     name: "Qwen3.5-27B-FP16",
     protocol: "openai",
     backend: "openai",
     providerId: "provider-bcsc",
     detail: "BCSC 默认模型",
-    endpoint: "http://10.190.179.61:11600",
+    endpoint: "http://10.190.179.61:11600/v1",
     contextWindow: 32768,
     temperature: 0.2,
   },
@@ -94,6 +84,28 @@ const LEGACY_BACKEND_TO_PROVIDER_ID: Record<ModelBackend, string> = {
   ollama: "provider-ollama",
   openai: "provider-openai",
   anthropic: "provider-anthropic",
+}
+
+const REMOVED_DEFAULT_MODEL_IDS = new Set(["ollama-local"])
+const OLD_BCSC_ENDPOINT = "http://10.190.179.61:11600"
+
+function applyDefaultModelMaintenance(models: ModelConfig[]): { models: ModelConfig[]; changed: boolean } {
+  let changed = false
+  const filtered = models.filter((m) => {
+    if (REMOVED_DEFAULT_MODEL_IDS.has(m.id)) {
+      changed = true
+      return false
+    }
+    return true
+  })
+  const patched = filtered.map((m) => {
+    if (m.id === "bcsc-qwen" && m.endpoint === OLD_BCSC_ENDPOINT) {
+      changed = true
+      return { ...m, endpoint: DEFAULT_MODELS[0].endpoint }
+    }
+    return m
+  })
+  return { models: patched, changed }
 }
 
 // ── Persistence ──
@@ -138,6 +150,7 @@ function migrateModelEntry(raw: LegacyModelConfig): ModelConfig {
     providerId,
     detail: raw.detail,
     endpoint: raw.endpoint,
+    skipTlsVerify: raw.skipTlsVerify ?? false,
     contextWindow: raw.contextWindow,
     temperature: raw.temperature,
   }
@@ -231,10 +244,13 @@ export async function loadModels(): Promise<ModelConfig[]> {
   }
 
   let models = parsed.map(migrateModelEntry)
+  const maintained = applyDefaultModelMaintenance(models)
+  models = maintained.models
   const migrated = needsModelMigration(parsed)
   const merged = mergeModels(models)
   const changed =
     migrated ||
+    maintained.changed ||
     merged.length !== models.length ||
     merged.some((m, i) => m.id !== models[i]?.id)
 
@@ -410,6 +426,10 @@ export function groupModelsByProvider(
     })
   }
   return groups
+}
+
+export function isHttpsEndpoint(endpoint: string | null | undefined): boolean {
+  return (endpoint ?? "").trim().toLowerCase().startsWith("https://")
 }
 
 export function inferBackend(protocol: ModelProtocol, endpoint: string | null): ModelBackend {

@@ -69,9 +69,28 @@ function toolStepLabel(step: ActivityStep): string {
     case "web_fetch":
       return `Fetch ${args.url ?? "url"}`
     case "outlook_read": {
-      const folder = String(args.folder ?? "inbox")
+      const filter = args.filter != null ? String(args.filter) : undefined
+      const from = args.from != null ? String(args.from) : undefined
+      const to = args.to != null ? String(args.to) : undefined
+      const folder = args.folder != null ? String(args.folder) : undefined
       const count = args.count ?? 10
-      return `Read Outlook ${folder} (${count})`
+
+      const usesAll =
+        folder === "all" ||
+        (!folder &&
+          (filter === "today" || from != null || to != null))
+
+      if (usesAll) {
+        const parts: string[] = []
+        if (filter === "today") parts.push("today")
+        if (from) parts.push(`from: ${from}`)
+        if (to) parts.push(`to: ${to}`)
+        const detail = parts.length > 0 ? ` (${parts.join(", ")})` : ""
+        return `Read Outlook all folders${detail} (${count})`
+      }
+
+      const folderLabel = folder ?? "inbox"
+      return `Read Outlook ${folderLabel} (${count})`
     }
     case "outlook_send": {
       const to = args.to
