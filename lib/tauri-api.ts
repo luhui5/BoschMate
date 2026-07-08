@@ -438,21 +438,34 @@ export async function listModels(
   return invoke<string[]>('list_models', { provider, baseUrl });
 }
 
-export function onChatToken(callback: (event: ChatTokenEvent) => void): () => void {
+/**
+ * Subscribe to a Tauri event. `listen` resolves asynchronously, so if the
+ * caller unsubscribes before it resolves, the listener must still be removed
+ * once registered — otherwise it leaks and duplicates callbacks.
+ */
+function subscribeTauriEvent<T>(eventName: string, callback: (payload: T) => void): () => void {
   if (!isTauri()) return () => {};
 
   const { listen } = require('@tauri-apps/api/event');
   let unlisten: (() => void) | null = null;
+  let disposed = false;
 
-  listen('chat-token', (event: { payload: ChatTokenEvent }) => {
+  listen(eventName, (event: { payload: T }) => {
+    if (disposed) return;
     callback(event.payload);
   }).then((fn: () => void) => {
-    unlisten = fn;
+    if (disposed) fn();
+    else unlisten = fn;
   });
 
   return () => {
+    disposed = true;
     if (unlisten) unlisten();
   };
+}
+
+export function onChatToken(callback: (event: ChatTokenEvent) => void): () => void {
+  return subscribeTauriEvent('chat-token', callback);
 }
 
 export interface ChatToolDeltaEvent {
@@ -464,20 +477,17 @@ export interface ChatToolDeltaEvent {
 }
 
 export function onChatToolDelta(callback: (event: ChatToolDeltaEvent) => void): () => void {
-  if (!isTauri()) return () => {};
+  return subscribeTauriEvent('chat-tool-delta', callback);
+}
 
-  const { listen } = require('@tauri-apps/api/event');
-  let unlisten: (() => void) | null = null;
+export interface ChatStreamResetEvent {
+  session_id: string;
+  message_id: string;
+}
 
-  listen('chat-tool-delta', (event: { payload: ChatToolDeltaEvent }) => {
-    callback(event.payload);
-  }).then((fn: () => void) => {
-    unlisten = fn;
-  });
-
-  return () => {
-    if (unlisten) unlisten();
-  };
+/** Emitted before a stream retry: partial content from the failed attempt must be discarded. */
+export function onChatStreamReset(callback: (event: ChatStreamResetEvent) => void): () => void {
+  return subscribeTauriEvent('chat-stream-reset', callback);
 }
 
 // ── Code editor / changes ──

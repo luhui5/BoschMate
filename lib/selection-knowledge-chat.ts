@@ -12,6 +12,7 @@ import {
 import {
   aiLoopChat,
   mapActivityStep,
+  onChatStreamReset,
   onChatToken,
   onLoopActivity,
   sendMessage,
@@ -77,6 +78,12 @@ export async function runSelectionKnowledgeChat(
     opts.onToken?.(streamedContent)
   })
 
+  const unlistenReset = onChatStreamReset((e) => {
+    if (e.session_id !== session.id || e.message_id !== assistantMsgId) return
+    streamedContent = ""
+    opts.onToken?.(streamedContent)
+  })
+
   const unlistenActivity = onLoopActivity((e) => {
     if (e.session_id !== session.id || e.message_id !== assistantMsgId) return
     const step = mapActivityStep(e.step)
@@ -113,6 +120,7 @@ export async function runSelectionKnowledgeChat(
     }
   } finally {
     unlistenToken()
+    unlistenReset()
     unlistenActivity()
   }
 }

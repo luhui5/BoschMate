@@ -147,33 +147,6 @@ impl AppError {
     }
 }
 
-// ── Retry helper ──
-
-/// Exponential backoff retry for recoverable operations
-pub async fn retry_with_backoff<F, Fut, T>(
-    max_retries: u32,
-    operation: F,
-) -> Result<T, String>
-where
-    F: Fn() -> Fut,
-    Fut: std::future::Future<Output = Result<T, String>>,
-{
-    let mut last_error = String::new();
-    for attempt in 0..=max_retries {
-        match operation().await {
-            Ok(val) => return Ok(val),
-            Err(e) => {
-                last_error = e;
-                if attempt < max_retries {
-                    let delay_ms = 1000u64 * 2u64.pow(attempt);
-                    tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
-                }
-            }
-        }
-    }
-    Err(format!("Operation failed after {} retries: {}", max_retries, last_error))
-}
-
 // ── System health check ──
 
 #[derive(Debug, Clone, Serialize)]

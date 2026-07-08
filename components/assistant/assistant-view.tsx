@@ -75,6 +75,7 @@ import {
   listKnowledgeBases,
   isTauri,
   onChatToken,
+  onChatStreamReset,
   onChatToolDelta,
   onLoopActivity,
   mapActivityStep,
@@ -1199,6 +1200,12 @@ export function AssistantView({
       routeChatToken(assistantMsgId, streamContentBufferRef.current)
     })
 
+    const unlistenReset = onChatStreamReset((e) => {
+      if (e.session_id !== activeId || e.message_id !== assistantMsgId) return
+      streamContentBufferRef.current = ""
+      routeChatToken(assistantMsgId, "")
+    })
+
     const unlistenToolDelta = onChatToolDelta((e) => {
       if (e.session_id !== activeId || e.message_id !== assistantMsgId) return
       if (stopRequestedRef.current) return
@@ -1307,6 +1314,7 @@ export function AssistantView({
       flushPendingThoughtDetailSync()
       flushStreamingTokenSync()
       unlistenToken()
+      unlistenReset()
       unlistenToolDelta()
       unlistenActivity()
       activeThoughtIdRef.current = null
@@ -1394,6 +1402,12 @@ export function AssistantView({
       routeChatToken(messageId, streamContentBufferRef.current)
     })
 
+    const unlistenReset = onChatStreamReset((e) => {
+      if (e.session_id !== activeId || e.message_id !== messageId) return
+      streamContentBufferRef.current = ""
+      routeChatToken(messageId, "")
+    })
+
     const unlistenToolDelta = onChatToolDelta((e) => {
       if (e.session_id !== activeId || e.message_id !== messageId) return
       if (stopRequestedRef.current) return
@@ -1464,6 +1478,7 @@ export function AssistantView({
       flushPendingThoughtDetailSync()
       flushStreamingTokenSync()
       unlistenToken()
+      unlistenReset()
       unlistenToolDelta()
       unlistenActivity()
       activeThoughtIdRef.current = null
