@@ -25,7 +25,7 @@ import { Button } from "@/components/ui/button"
 import { Textarea } from "@/components/ui/input"
 import { BoschGradientBorder } from "@/components/bosch-gradient-border"
 import { cn } from "@/lib/utils"
-import { slashCommands } from "@/lib/mock-data"
+import { getCommands } from "@/lib/slash-commands"
 import type { AgentMode } from "@/lib/types"
 import { THINKING_DEPTHS, getThinkingDepth, type ThinkingDepth } from "@/lib/thinking-depth"
 import { validateMessage, validateImageDataUrl } from "@/lib/input-validation"
@@ -188,7 +188,7 @@ export function ChatInput({
   }
 
   const slashFiltered = enableSlashCommands
-    ? slashCommands.filter((c) => c.cmd.startsWith(value.trim()))
+    ? getCommands().filter((c) => `/${c.name}`.startsWith(value.trim()))
     : []
   const canSend = !disabled && !generating && (value.trim().length > 0 || pastedImage)
 
@@ -203,17 +203,17 @@ export function ChatInput({
         <div className="absolute bottom-full left-3 mb-2 w-72 overflow-hidden rounded-lg border border-border bg-popover shadow-xl">
           {slashFiltered.map((c) => (
             <button
-              key={c.cmd}
+              key={c.name}
               onClick={() => {
-                setValue(c.cmd + " ")
+                setValue(`/${c.name}${c.takesArgs ? " " : ""}`)
                 setShowSlash(false)
                 taRef.current?.focus()
               }}
               className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm hover:bg-accent"
             >
               <Slash className="size-3.5 text-muted-foreground" />
-              <span className="font-mono">{c.cmd}</span>
-              <span className="ml-auto text-xs text-muted-foreground">{c.desc}</span>
+              <span className="font-mono">/{c.name}</span>
+              <span className="ml-auto text-xs text-muted-foreground">{c.description}</span>
             </button>
           ))}
         </div>

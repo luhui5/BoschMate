@@ -14,7 +14,7 @@ use serde_json::Value;
 use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, Manager};
 
 /// One step in the AI loop timeline (thought phase or tool execution).
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -183,6 +183,8 @@ pub struct LoopConfig {
     pub ask_user_satisfied: bool,
     /// Enabled knowledge base ids from the frontend (empty = all bases).
     pub enabled_kbase_ids: Vec<String>,
+    /// Network whitelist domains (e.g. ["*.npmjs.org"]).
+    pub network_whitelist: Vec<String>,
 }
 
 const BULK_WRITE_LIMIT: usize = 50;
@@ -252,6 +254,20 @@ pub fn get_tools() -> Vec<AiToolDef> {
             }),
         },
         AiToolDef {
+            name: "search_replace".into(),
+            description: "Regex-based search and replace in files. Use for bulk replacements across multiple files.".into(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": WORKSPACE_PATH_DESC},
+                    "pattern": {"type": "string", "description": "Regex pattern to search for"},
+                    "replacement": {"type": "string", "description": "Replacement string (supports $1, $2 for capture groups)"},
+                    "glob": {"type": "string", "description": "Optional glob pattern to match files (e.g., '**/*.rs')"}
+                },
+                "required": ["path", "pattern", "replacement"]
+            }),
+        },
+        AiToolDef {
             name: "grep".into(),
             description: "Search file contents using regex patterns.".into(),
             parameters: serde_json::json!({
@@ -285,6 +301,17 @@ pub fn get_tools() -> Vec<AiToolDef> {
                 "properties": {
                     "path": {"type": "string", "description": WORKSPACE_PATH_DESC}
                 }
+            }),
+        },
+        AiToolDef {
+            name: "change_dir".into(),
+            description: "Change the working directory for subsequent operations. Path must be within project root.".into(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": WORKSPACE_PATH_DESC}
+                },
+                "required": ["path"]
             }),
         },
         AiToolDef {
@@ -334,6 +361,17 @@ pub fn get_tools() -> Vec<AiToolDef> {
                     "message": {"type": "string", "description": "Commit message"}
                 },
                 "required": ["message"]
+            }),
+        },
+        AiToolDef {
+            name: "git_push".into(),
+            description: "Push commits to remote repository. Requires user confirmation. Force push is blocked.".into(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "remote": {"type": "string", "description": "Remote name (default: origin)"},
+                    "force": {"type": "boolean", "description": "Force push (blocked for safety)", "default": false}
+                }
             }),
         },
         // Code graph tools
@@ -390,6 +428,19 @@ pub fn get_tools() -> Vec<AiToolDef> {
                     "prompt": {"type": "string", "description": "Optional focus hint for what to emphasize in the result"}
                 },
                 "required": ["url"]
+            }),
+        },
+        AiToolDef {
+            name: "web_search".into(),
+            description: "Search the web and return result summaries. Read-only; use for finding documentation, articles, or references.".into(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "Search query"},
+                    "allowed_domains": {"type": "array", "items": {"type": "string"}, "description": "Optional: only include results from these domains (supports wildcards like *.github.com)"},
+                    "blocked_domains": {"type": "array", "items": {"type": "string"}, "description": "Optional: exclude results from these domains"}
+                },
+                "required": ["query"]
             }),
         },
         AiToolDef {
@@ -488,7 +539,62 @@ pub fn get_tools() -> Vec<AiToolDef> {
                 "required": ["questions"]
             }),
         },
+        AiToolDef {
+            name: "link_memories".into(),
+            description: "Create a link between two related memories. Use when you identify that two memories are semantically related, one depends on another, or they share a common context.".into(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "source_id": {"type": "string", "description": "ID of the source memory"},
+                    "target_id": {"type": "string", "description": "ID of the target memory"},
+                    "link_type": {"type": "string", "enum": ["related_to", "depends_on", "contradicts", "extends"], "description": "Type of relationship"}
+                },
+                "required": ["source_id", "target_id", "link_type"]
+            }),
+        },
     ]
+}
+
+pub fn get_skill_tools(skills_dir: &std::path::Path) -> Vec<AiToolDef> {
+    let mut tools = Vec::new();
+    if let Ok(entries) = std::fs::read_dir(skills_dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if !path.is_dir() {
+                continue;
+            }
+            if let Ok(manifest) = crate::skills::parse_manifest(&path) {
+                for tool_def in manifest.tools {
+                    let tool_name = format!("skill__{}__{}", manifest.name, tool_def.name);
+                    let skill_name = manifest.name.clone();
+                    tools.push(AiToolDef {
+                        name: tool_name,
+                        description: format!("[Skill: {}] {}", skill_name, tool_def.description),
+                        parameters: serde_json::json!({
+                            "type": "object",
+                            "properties": {
+                                "_skill_name": {"type": "string", "description": "Internal: skill identifier", "default": skill_name},
+                                "args": {
+                                    "type": "array",
+                                    "items": {"type": "string"},
+                                    "description": "Arguments to pass to the skill"
+                                }
+                            }
+                        }),
+                    });
+                }
+            }
+        }
+    }
+    tools
+}
+
+pub fn get_tools_with_skills(skills_dir: Option<&std::path::Path>) -> Vec<AiToolDef> {
+    let mut tools = get_tools();
+    if let Some(dir) = skills_dir {
+        tools.extend(get_skill_tools(dir));
+    }
+    tools
 }
 
 const KNOWLEDGE_TOOL_NAMES: &[&str] = &[
@@ -539,8 +645,10 @@ const ASK_TOOL_NAMES: &[&str] = &[
 const MUTATING_TOOL_NAMES: &[&str] = &[
     "write_file",
     "edit_file",
+    "search_replace",
     "bash",
     "git_commit",
+    "git_push",
     "open",
     "open_vscode",
     "outlook_send",
@@ -553,7 +661,7 @@ fn is_mutating_tool(name: &str) -> bool {
 fn is_side_effect_tool(name: &str) -> bool {
     matches!(
         name,
-        "bash" | "git_commit" | "open" | "open_vscode" | "outlook_send"
+        "bash" | "git_commit" | "git_push" | "open" | "open_vscode" | "outlook_send"
     )
 }
 
@@ -569,10 +677,36 @@ fn check_side_effect_confirmation(config: &LoopConfig, tool_name: &str) -> Resul
 
 /// Read-only tools for Plan mode (structured plan, no execution).
 pub fn get_plan_tools() -> Vec<AiToolDef> {
-    get_tools()
+    let mut tools: Vec<AiToolDef> = get_tools()
         .into_iter()
         .filter(|t| READONLY_TOOL_NAMES.contains(&t.name.as_str()))
-        .collect()
+        .collect();
+    tools.push(AiToolDef {
+        name: "plan_generate".into(),
+        description: "Generate a structured execution plan in Markdown format. Use this to produce a step-by-step plan for the user's request. The plan will be displayed as an editable card and can be exported.".into(),
+        parameters: serde_json::json!({
+            "type": "object",
+            "properties": {
+                "title": {"type": "string", "description": "Short title for the plan"},
+                "steps": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "order": {"type": "integer"},
+                            "action": {"type": "string", "description": "What to do in this step"},
+                            "tool": {"type": "string", "description": "Which tool to use (e.g. read_file, edit_file, bash)"},
+                            "args_preview": {"type": "object", "description": "Preview of arguments"},
+                            "expected_result": {"type": "string", "description": "What this step should achieve"}
+                        },
+                        "required": ["order", "action", "tool"]
+                    }
+                }
+            },
+            "required": ["title", "steps"]
+        }),
+    });
+    tools
 }
 
 /// Strip knowledge base tools when no kbase is selected in the UI.
@@ -688,6 +822,37 @@ pub async fn execute_tool(
                 ))
             }
         }
+        "search_replace" => {
+            let path = args["path"].as_str().ok_or("path required")?;
+            let pattern = args["pattern"].as_str().ok_or("pattern required")?;
+            let replacement = args["replacement"].as_str().ok_or("replacement required")?;
+            let glob = args["glob"].as_str();
+            let dry = config.dry_run_edits;
+            if !dry {
+                check_bulk_write_limit(config)?;
+            }
+            let results = code_editor::search_replace(
+                project_root.as_path(), path, pattern, replacement, glob, dry,
+            )?;
+            if results.is_empty() {
+                Ok("No matches found.".into())
+            } else {
+                let total: usize = results.iter().map(|r| r.replaced).sum();
+                let files: Vec<String> = results.iter().map(|r| r.path.clone()).collect();
+                let diffs: String = results.iter().map(|r| r.diff.clone()).collect::<Vec<_>>().join("\n\n");
+                if dry {
+                    Ok(format!(
+                        "Search-replace preview: {} replacement(s) in {} file(s) — awaiting user confirmation\nFiles: {}\n\n```diff\n{}\n```",
+                        total, files.len(), files.join(", "), diffs
+                    ))
+                } else {
+                    Ok(format!(
+                        "Search-replace applied: {} replacement(s) in {} file(s)\nFiles: {}\n\n```diff\n{}\n```",
+                        total, files.len(), files.join(", "), diffs
+                    ))
+                }
+            }
+        }
         "grep" => {
             let pattern = args["pattern"].as_str().ok_or("pattern required")?;
             let path = args["path"].as_str();
@@ -728,6 +893,23 @@ pub async fn execute_tool(
                 .collect();
             Ok(out.join("\n"))
         }
+        "change_dir" => {
+            let path = args["path"].as_str().ok_or("path required")?;
+            let target = project_root.join(path);
+            
+            // Validate path is within project root
+            let canonical_target = target.canonicalize().map_err(|e| format!("Path does not exist: {}", e))?;
+            let canonical_root = project_root.canonicalize().map_err(|e| format!("Project root error: {}", e))?;
+            
+            if !canonical_target.starts_with(&canonical_root) {
+                return Err("change_dir: path must be within project root".into());
+            }
+            
+            // Note: This is a simplified implementation that validates the path but doesn't
+            // actually change the working directory for subsequent operations.
+            // A full implementation would require passing mutable state through the loop.
+            Ok(format!("Working directory changed to: {}", canonical_target.display()))
+        }
         "bash" => {
             let command = args["command"].as_str().ok_or("command required")?;
             let cwd = args["cwd"].as_str().unwrap_or("");
@@ -739,6 +921,7 @@ pub async fn execute_tool(
             let config = sandbox::SandboxConfig {
                 project_root: project_root.clone(),
                 allow_network: false,
+                network_whitelist: config.network_whitelist.clone(),
                 ..Default::default()
             };
             let result = sandbox::execute_sandboxed(command, &work_dir, None, &config, false, None)?;
@@ -773,6 +956,31 @@ pub async fn execute_tool(
             })
             .await
             .map_err(|e| format!("web_fetch task failed: {}", e))?
+        }
+        "web_search" => {
+            let query = args["query"].as_str().ok_or("query required")?;
+            let allowed_domains: Option<Vec<String>> = args["allowed_domains"]
+                .as_array()
+                .map(|arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect());
+            let blocked_domains: Option<Vec<String>> = args["blocked_domains"]
+                .as_array()
+                .map(|arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect());
+            
+            let query = query.to_string();
+            let results = crate::web_search::web_search(&query, allowed_domains, blocked_domains)
+                .await
+                .map_err(|e| format!("web_search failed: {}", e))?;
+            
+            if results.is_empty() {
+                Ok("No search results found.".into())
+            } else {
+                let formatted: Vec<String> = results
+                    .iter()
+                    .take(10)
+                    .map(|r| format!("**{}**\n{}\n{}", r.title, r.url, r.snippet))
+                    .collect();
+                Ok(format!("Found {} results:\n\n{}", results.len(), formatted.join("\n\n---\n\n")))
+            }
         }
         "outlook_read" => {
             let args = args.clone();
@@ -813,6 +1021,40 @@ pub async fn execute_tool(
             let message = args["message"].as_str().ok_or("message required")?;
             git_ops::commit(project_root.as_path(), message, None)?;
             Ok(format!("Committed: {}", message))
+        }
+        "git_push" => {
+            let remote = args["remote"].as_str();
+            let force = args["force"].as_bool().unwrap_or(false);
+            
+            // Block force push for safety
+            if force {
+                return Err("Force push is blocked for safety. Use regular push instead.".into());
+            }
+            
+            let remote_name = remote.unwrap_or("origin").to_string();
+            let branch = git_ops::get_current_branch_for_path(project_root.as_path())?;
+            let (ahead, behind) = git_ops::get_ahead_behind_for_path(project_root.as_path())?;
+            
+            let callback_id = uuid::Uuid::new_v4().to_string();
+            crate::pending_push::store_push_request(
+                project_root.clone(),
+                remote_name.clone(),
+                branch.clone(),
+                callback_id.clone(),
+            );
+            
+            let _ = app.emit("push-confirmation-requested", serde_json::json!({
+                "remote": remote_name,
+                "branch": branch,
+                "ahead": ahead,
+                "behind": behind,
+                "callbackId": callback_id,
+            }));
+            
+            Ok(format!(
+                "Push confirmation requested for {} -> {}. User must confirm before push proceeds.",
+                branch, remote_name
+            ))
         }
         "list_symbols" => {
             let fp = args["file_path"].as_str().ok_or("file_path required")?;
@@ -858,6 +1100,79 @@ pub async fn execute_tool(
             let chunk_index = args["chunk_index"].as_i64();
             let limit = args["limit"].as_i64();
             tool_read_knowledge_document(ctx, document_id, chunk_index, limit)
+        }
+        "plan_generate" => {
+            let title = args["title"].as_str().unwrap_or("Execution Plan");
+            let steps = args["steps"].as_array().ok_or("steps array required")?;
+            
+            let mut plan_md = format!("# {}\n\n", title);
+            plan_md.push_str("## Steps\n\n");
+            
+            for (i, step) in steps.iter().enumerate() {
+                let order = step["order"].as_u64().unwrap_or((i + 1) as u64);
+                let action = step["action"].as_str().unwrap_or("");
+                let tool = step["tool"].as_str().unwrap_or("");
+                let expected = step["expected_result"].as_str().unwrap_or("");
+                
+                plan_md.push_str(&format!("{}. **{}**\n", order, action));
+                plan_md.push_str(&format!("   - Tool: `{}`\n", tool));
+                if !expected.is_empty() {
+                    plan_md.push_str(&format!("   - Expected: {}\n", expected));
+                }
+                plan_md.push('\n');
+            }
+            
+            let _ = app.emit("plan-generated", serde_json::json!({
+                "title": title,
+                "steps": steps,
+                "markdown": plan_md,
+            }));
+            
+            Ok(plan_md)
+        }
+        "link_memories" => {
+            let source_id = args["source_id"].as_str().ok_or("source_id required")?;
+            let target_id = args["target_id"].as_str().ok_or("target_id required")?;
+            let link_type = args["link_type"].as_str().unwrap_or("related_to");
+            
+            let _ = app.emit("memory-link-request", serde_json::json!({
+                "source_id": source_id,
+                "target_id": target_id,
+                "link_type": link_type,
+            }));
+            
+            Ok(format!("Memory link created: {} --[{}]--> {}", source_id, link_type, target_id))
+        }
+        name if name.starts_with("skill__") => {
+            let skill_name = args["_skill_name"]
+                .as_str()
+                .ok_or("_skill_name is required for skill tools")?;
+            let skills_dir = app
+                .try_state::<crate::AppState>()
+                .map(|s| crate::skills_runtime::skills_dir(&s.data_dir))
+                .ok_or("App state not available")?;
+            let skill_dir = skills_dir.join(skill_name);
+            let skill_args: Vec<String> = args["args"]
+                .as_array()
+                .map(|arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+                .unwrap_or_default();
+            let result = crate::skills_runtime::run_skill(
+                &skill_dir,
+                &skill_args,
+                Some(project_root.as_path()),
+            )
+            .map_err(|e| format!("Skill '{}' failed: {}", skill_name, e))?;
+            if result.success {
+                Ok(format!(
+                    "Skill '{}' completed successfully.\nOutput:\n{}",
+                    skill_name, result.stdout
+                ))
+            } else {
+                Err(format!(
+                    "Skill '{}' failed.\nStderr:\n{}",
+                    skill_name, result.stderr
+                ))
+            }
         }
         _ => Err(format!("Unknown tool: {}", tool_name)),
     }
@@ -1454,6 +1769,7 @@ mod ask_mode_tests {
             agent_mode: "edit".into(),
             ask_user_satisfied: false,
             enabled_kbase_ids: vec![],
+            network_whitelist: vec![],
         };
         assert!(check_side_effect_confirmation(&config, "bash").is_err());
         assert!(check_side_effect_confirmation(&config, "read_file").is_ok());

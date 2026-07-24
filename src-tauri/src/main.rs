@@ -25,8 +25,11 @@ mod knowledge_tools;
 mod memory_compressor;
 mod models;
 mod os_open;
+mod os_sandbox;
 mod outlook;
 mod path_guard;
+mod pending_push;
+mod pr_draft;
 mod process_util;
 mod paused_loop;
 mod recovery;
@@ -34,11 +37,14 @@ mod retriever;
 mod sandbox;
 mod skills;
 mod skills_runtime;
+mod ssh;
 mod test_runner;
 mod tools;
 mod tracing_log;
+mod tree_sitter_graph;
 mod vector_store;
 mod web_fetch;
+mod web_search;
 mod selection_lookup;
 
 use ai_client::{stream_chat as ai_stream_chat, list_ollama_models as ai_list_ollama_models};
@@ -49,7 +55,7 @@ use models::*;
 use rusqlite::params;
 use std::path::PathBuf;
 use std::sync::Mutex;
-use tauri::{AppHandle, Manager, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 use tauri_plugin_global_shortcut::ShortcutState;
 
 pub struct AppState {
@@ -540,13 +546,26 @@ fn sandbox_exec(
     session_id: Option<String>,
 ) -> Result<sandbox::SandboxResult, String> {
     let project = get_project_path(&state, &project_id)?;
+    
+    let network_whitelist: Vec<String> = {
+        let conn = state.db.conn.lock().unwrap();
+        conn.query_row(
+            "SELECT value FROM settings WHERE scope = 'global' AND key = 'privacy_network_whitelist'",
+            [],
+            |row| row.get::<_, String>(0),
+        )
+        .ok()
+        .and_then(|json| serde_json::from_str(&json).ok())
+        .unwrap_or_default()
+    };
+    
     let config = sandbox::SandboxConfig {
         project_root: PathBuf::from(&project),
         allowed_dirs: vec![PathBuf::from(&project)],
         allow_network: allow_network.unwrap_or(false),
+        network_whitelist,
         timeout_ms: 120_000,
         max_output_bytes: 102_400,
-        ..Default::default()
     };
 
     let work_dir = cwd.unwrap_or_else(|| project.clone());
@@ -749,30 +768,63 @@ fn reveal_in_explorer(state: State<AppState>, project_id: String, path: String) 
 
 #[tauri::command]
 fn list_memories(state: State<AppState>, project_id: String) -> Result<Vec<Memory>, String> {
-    let conn = state.db.conn.lock().unwrap();
-    let mut stmt = conn
-        .prepare("SELECT id, project_id, type, content, summary, importance, source_session_id, access_count, last_accessed_at, encrypted, created_at FROM memories WHERE project_id = ?1 ORDER BY importance DESC, last_accessed_at DESC")
-        .map_err(|e| e.to_string())?;
+    let encrypt_enabled = get_setting(state.clone(), "privacy_encrypt_memory".into())
+        .ok()
+        .flatten()
+        .map(|v| v == "true")
+        .unwrap_or(false);
 
-    let memories = stmt
-        .query_map(params![project_id], |row| {
-            Ok(Memory {
-                id: row.get(0)?,
-                project_id: row.get(1)?,
-                r#type: row.get(2)?,
-                content: row.get(3)?,
-                summary: row.get(4)?,
-                importance: row.get(5)?,
-                source_session_id: row.get(6)?,
-                access_count: row.get(7)?,
-                last_accessed_at: row.get(8)?,
-                encrypted: row.get::<_, i32>(9)? != 0,
-                created_at: row.get(10)?,
+    let memories = {
+        let conn = state.db.conn.lock().unwrap();
+        let mut stmt = conn
+            .prepare("SELECT id, project_id, type, content, summary, importance, source_session_id, access_count, last_accessed_at, encrypted, created_at FROM memories WHERE project_id = ?1 ORDER BY importance DESC, last_accessed_at DESC")
+            .map_err(|e| e.to_string())?;
+
+        let rows = stmt
+            .query_map(params![project_id], |row| {
+                Ok(Memory {
+                    id: row.get(0)?,
+                    project_id: row.get(1)?,
+                    r#type: row.get(2)?,
+                    content: row.get(3)?,
+                    summary: row.get(4)?,
+                    importance: row.get(5)?,
+                    source_session_id: row.get(6)?,
+                    access_count: row.get(7)?,
+                    last_accessed_at: row.get(8)?,
+                    encrypted: row.get::<_, i32>(9)? != 0,
+                    created_at: row.get(10)?,
+                })
             })
-        })
-        .map_err(|e| e.to_string())?
-        .filter_map(|r| r.ok())
-        .collect();
+            .map_err(|e| e.to_string())?;
+
+        let mut result = Vec::new();
+        for row in rows {
+            if let Ok(m) = row {
+                result.push(m);
+            }
+        }
+        result
+    };
+
+    if encrypt_enabled {
+        if let Some(key_hex) = credentials::get_secret("memory_encryption_key").ok().flatten() {
+            if let Ok(key_bytes) = hex::decode(&key_hex) {
+                if key_bytes.len() == 32 {
+                    let key: [u8; 32] = key_bytes.try_into().unwrap();
+                    let mut result = memories;
+                    for m in result.iter_mut() {
+                        if m.encrypted {
+                            if let Ok(decrypted) = crypto::decrypt(&m.content, &key) {
+                                m.content = decrypted;
+                            }
+                        }
+                    }
+                    return Ok(result);
+                }
+            }
+        }
+    }
 
     Ok(memories)
 }
@@ -789,11 +841,29 @@ fn save_memory(
     let id = uuid::Uuid::new_v4().to_string();
     let now = chrono::Utc::now().to_rfc3339();
 
+    let encrypt_enabled = get_setting(state.clone(), "privacy_encrypt_memory".into())
+        .ok()
+        .flatten()
+        .map(|v| v == "true")
+        .unwrap_or(false);
+
+    let (content_to_store, is_encrypted) = if encrypt_enabled {
+        match get_or_create_encryption_key() {
+            Ok(key) => match crypto::encrypt(&content, &key) {
+                Ok(encrypted) => (encrypted, true),
+                Err(_) => (content.clone(), false),
+            },
+            Err(_) => (content.clone(), false),
+        }
+    } else {
+        (content.clone(), false)
+    };
+
     let conn = state.db.conn.lock().unwrap();
     let content_for_fts = content.clone();
     conn.execute(
-        "INSERT INTO memories (id, project_id, type, content, importance, source_session_id, encrypted, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, 0, ?7, ?8)",
-        params![id, project_id, r#type, content, importance.unwrap_or(0.5), source_session_id, now, now],
+        "INSERT INTO memories (id, project_id, type, content, importance, source_session_id, encrypted, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+        params![id, project_id, r#type, content_to_store, importance.unwrap_or(0.5), source_session_id, is_encrypted as i32, now, now],
     )
     .map_err(|e| e.to_string())?;
 
@@ -809,9 +879,25 @@ fn save_memory(
         source_session_id,
         access_count: 0,
         last_accessed_at: None,
-        encrypted: false,
+        encrypted: is_encrypted,
         created_at: now,
     })
+}
+
+fn get_or_create_encryption_key() -> Result<[u8; 32], String> {
+    if let Some(key_hex) = credentials::get_secret("memory_encryption_key")? {
+        let key_bytes = hex::decode(&key_hex).map_err(|e| e.to_string())?;
+        if key_bytes.len() == 32 {
+            let mut key = [0u8; 32];
+            key.copy_from_slice(&key_bytes);
+            return Ok(key);
+        }
+    }
+    let salt = crypto::generate_salt();
+    let passphrase = uuid::Uuid::new_v4().to_string();
+    let key = crypto::derive_key(&passphrase, &salt);
+    credentials::save_secret("memory_encryption_key", &hex::encode(key))?;
+    Ok(key)
 }
 
 #[tauri::command]
@@ -982,6 +1068,30 @@ fn rebuild_vector_index(state: State<AppState>, project_id: Option<String>) -> R
 }
 
 #[tauri::command]
+fn get_vector_index_meta(state: State<AppState>) -> Result<Vec<serde_json::Value>, String> {
+    let conn = state.db.conn.lock().unwrap();
+    let mut stmt = conn
+        .prepare("SELECT id, project_id, dimension, entry_count, backend, last_rebuild_at, status FROM vector_index_meta ORDER BY last_rebuild_at DESC")
+        .map_err(|e| e.to_string())?;
+    let entries = stmt
+        .query_map([], |row| {
+            Ok(serde_json::json!({
+                "id": row.get::<_, String>(0)?,
+                "projectId": row.get::<_, Option<String>>(1)?,
+                "dimension": row.get::<_, i64>(2)?,
+                "entryCount": row.get::<_, i64>(3)?,
+                "backend": row.get::<_, String>(4)?,
+                "lastRebuildAt": row.get::<_, Option<String>>(5)?,
+                "status": row.get::<_, String>(6)?,
+            }))
+        })
+        .map_err(|e| e.to_string())?
+        .filter_map(|r| r.ok())
+        .collect();
+    Ok(entries)
+}
+
+#[tauri::command]
 fn check_database(state: State<AppState>) -> Result<serde_json::Value, String> {
     let conn = state.db.conn.lock().unwrap();
     let integrity = Database::check_db_integrity(&conn)?;
@@ -1119,6 +1229,51 @@ fn delete_memory(state: State<AppState>, id: String) -> Result<(), String> {
     Ok(())
 }
 
+// ── Memory links commands ──
+
+#[tauri::command]
+fn list_memory_links(state: State<AppState>, memory_id: String) -> Result<Vec<serde_json::Value>, String> {
+    let conn = state.db.conn.lock().unwrap();
+    let mut stmt = conn
+        .prepare("SELECT id, source_id, target_id, link_type, created_at FROM memory_links WHERE source_id = ?1 OR target_id = ?1")
+        .map_err(|e| e.to_string())?;
+    let links = stmt
+        .query_map(params![memory_id], |row| {
+            Ok(serde_json::json!({
+                "id": row.get::<_, String>(0)?,
+                "source_id": row.get::<_, String>(1)?,
+                "target_id": row.get::<_, String>(2)?,
+                "link_type": row.get::<_, String>(3)?,
+                "created_at": row.get::<_, String>(4)?,
+            }))
+        })
+        .map_err(|e| e.to_string())?
+        .filter_map(|r| r.ok())
+        .collect();
+    Ok(links)
+}
+
+#[tauri::command]
+fn create_memory_link(state: State<AppState>, source_id: String, target_id: String, link_type: String) -> Result<(), String> {
+    let id = uuid::Uuid::new_v4().to_string();
+    let now = chrono::Utc::now().to_rfc3339();
+    let conn = state.db.conn.lock().unwrap();
+    conn.execute(
+        "INSERT INTO memory_links (id, source_id, target_id, link_type, created_at) VALUES (?1, ?2, ?3, ?4, ?5)",
+        params![id, source_id, target_id, link_type, now],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+fn delete_memory_link(state: State<AppState>, link_id: String) -> Result<(), String> {
+    let conn = state.db.conn.lock().unwrap();
+    conn.execute("DELETE FROM memory_links WHERE id = ?1", params![link_id])
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 // ── Notes commands ──
 
 #[tauri::command]
@@ -1232,26 +1387,38 @@ fn list_skills(state: State<AppState>) -> Result<Vec<Skill>, String> {
 
     let conn = state.db.conn.lock().unwrap();
     let mut stmt = conn
-        .prepare("SELECT name FROM skills WHERE enabled = 1")
+        .prepare("SELECT name, version, enabled FROM skills")
         .map_err(|e| e.to_string())?;
 
-    let db_names: Vec<String> = stmt
-        .query_map([], |row| row.get(0))
+    let db_skills: Vec<(String, String, bool)> = stmt
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, i32>(2)? != 0,
+            ))
+        })
         .map_err(|e| e.to_string())?
         .filter_map(|r| r.ok())
         .collect();
 
     let mut skills: Vec<Skill> = discovered
         .into_iter()
-        .map(|m| Skill {
-            name: m.name.clone(),
-            description: m.description.unwrap_or_else(|| m.name.clone()),
-            command: Some(format!("/skill {}", m.name)),
+        .map(|m| {
+            let name = m.name.clone();
+            let db_entry = db_skills.iter().find(|(n, _, _)| n == &name);
+            Skill {
+                name: name.clone(),
+                description: m.description.unwrap_or_else(|| name.clone()),
+                command: Some(format!("/skill {}", name)),
+                version: db_entry.map(|(_, v, _)| v.clone()),
+                enabled: db_entry.map(|(_, _, e)| e).copied(),
+            }
         })
         .collect();
 
-    for name in db_names {
-        if skills.iter().any(|s| s.name == name) {
+    for (name, version, enabled) in &db_skills {
+        if skills.iter().any(|s| &s.name == name) {
             continue;
         }
         let (desc, cmd) = match name.as_str() {
@@ -1264,9 +1431,11 @@ fn list_skills(state: State<AppState>) -> Result<Vec<Skill>, String> {
             _ => ("Built-in skill", None),
         };
         skills.push(Skill {
-            name,
+            name: name.clone(),
             description: desc.to_string(),
             command: cmd.map(|s| s.to_string()),
+            version: Some(version.clone()),
+            enabled: Some(*enabled),
         });
     }
 
@@ -1279,11 +1448,88 @@ fn install_skill(state: State<AppState>, source_path: String) -> Result<Skill, S
     std::fs::create_dir_all(&skills_dir).map_err(|e| e.to_string())?;
     let manifest = skills_runtime::install_local_skill(&skills_dir, PathBuf::from(source_path).as_path())?;
     let name = manifest.name.clone();
+    let version = manifest.version.clone();
+    let desc = manifest.description.clone().unwrap_or(name.clone());
+    let id = uuid::Uuid::new_v4().to_string();
+    let now = chrono::Utc::now().to_rfc3339();
+    {
+        let conn = state.db.conn.lock().unwrap();
+        conn.execute(
+            "INSERT OR REPLACE INTO skills (id, name, version, source, entry_point, permissions, enabled, installed_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, 1, ?7)",
+            rusqlite::params![id, name, version, "local", manifest.entry, serde_json::to_string(&manifest.permissions).unwrap_or_default(), now],
+        ).map_err(|e| e.to_string())?;
+    }
     Ok(Skill {
         name: name.clone(),
-        description: manifest.description.unwrap_or(name.clone()),
+        description: desc,
         command: Some(format!("/skill {}", name)),
+        version: Some(version),
+        enabled: Some(true),
     })
+}
+
+#[tauri::command]
+fn uninstall_skill(state: State<AppState>, skill_name: String) -> Result<(), String> {
+    let skills_dir = skills_runtime::skills_dir(&state.data_dir);
+    let skill_path = skills_dir.join(&skill_name);
+    if skill_path.exists() {
+        std::fs::remove_dir_all(&skill_path).map_err(|e| format!("Failed to remove skill dir: {}", e))?;
+    }
+    let conn = state.db.conn.lock().unwrap();
+    conn.execute("DELETE FROM skills WHERE name = ?1", rusqlite::params![skill_name])
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+fn enable_skill(state: State<AppState>, skill_name: String) -> Result<(), String> {
+    let conn = state.db.conn.lock().unwrap();
+    conn.execute("UPDATE skills SET enabled = 1 WHERE name = ?1", rusqlite::params![skill_name])
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+fn disable_skill(state: State<AppState>, skill_name: String) -> Result<(), String> {
+    let conn = state.db.conn.lock().unwrap();
+    conn.execute("UPDATE skills SET enabled = 0 WHERE name = ?1", rusqlite::params![skill_name])
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+fn generate_pr_draft(state: State<AppState>, project_id: String, base_branch: Option<String>) -> Result<PrDraftOutput, String> {
+    let conn = state.db.conn.lock().unwrap();
+    let local_path: String = conn
+        .query_row("SELECT local_path FROM projects WHERE id = ?1", rusqlite::params![project_id], |row| row.get(0))
+        .map_err(|e| e.to_string())?;
+    drop(conn);
+    let draft = crate::pr_draft::generate_pr_draft(std::path::Path::new(&local_path), base_branch.as_deref())?;
+    Ok(PrDraftOutput {
+        title: draft.title,
+        description: draft.description,
+        branch: draft.branch,
+        base_branch: draft.base_branch,
+        file_count: draft.file_count,
+        commit_count: draft.commit_count,
+    })
+}
+
+#[tauri::command]
+fn confirm_git_push(callback_id: String) -> Result<String, String> {
+    let req = pending_push::take_push_request(&callback_id)
+        .ok_or("No pending push request found")?;
+    git_ops::push(&req.project_root, Some(&req.remote), false)?;
+    Ok(format!("Pushed {} to {}", req.branch, req.remote))
+}
+
+#[tauri::command]
+fn cancel_git_push(callback_id: String) -> Result<String, String> {
+    if pending_push::cancel_push(&callback_id) {
+        Ok("Push cancelled".to_string())
+    } else {
+        Err("No pending push request found".to_string())
+    }
 }
 
 #[tauri::command]
@@ -1291,10 +1537,23 @@ fn run_skill(
     state: State<AppState>,
     skill_name: String,
     args: Option<Vec<String>>,
+    project_id: Option<String>,
 ) -> Result<skills_runtime::SkillRunResult, String> {
     let skills_dir = skills_runtime::skills_dir(&state.data_dir);
     let skill_dir = skills_dir.join(&skill_name);
-    skills_runtime::run_skill(&skill_dir, &args.unwrap_or_default())
+    
+    let project_root = project_id.and_then(|pid| {
+        let conn = state.db.conn.lock().unwrap();
+        conn.query_row(
+            "SELECT local_path FROM projects WHERE id = ?1",
+            params![pid],
+            |row| row.get::<_, String>(0),
+        )
+        .ok()
+        .map(std::path::PathBuf::from)
+    });
+    
+    skills_runtime::run_skill(&skill_dir, &args.unwrap_or_default(), project_root.as_deref())
 }
 
 #[tauri::command]
@@ -1325,6 +1584,7 @@ fn save_ssh_connection(state: State<AppState>, host: String, user: String, port:
 #[tauri::command]
 fn export_backup(state: State<AppState>, output_path: String) -> Result<(), String> {
     let conn = state.db.conn.lock().unwrap();
+
     let mut projects: Vec<serde_json::Value> = Vec::new();
     if let Ok(mut stmt) = conn.prepare("SELECT id, name, local_path, settings FROM projects") {
         if let Ok(rows) = stmt.query_map([], |row| {
@@ -1339,13 +1599,249 @@ fn export_backup(state: State<AppState>, output_path: String) -> Result<(), Stri
         }
     }
 
+    let mut sessions: Vec<serde_json::Value> = Vec::new();
+    if let Ok(mut stmt) = conn.prepare("SELECT id, project_id, title, mode, status, parent_id, token_count, created_at, updated_at FROM sessions") {
+        if let Ok(rows) = stmt.query_map([], |row| {
+            Ok(serde_json::json!({
+                "id": row.get::<_, String>(0)?,
+                "project_id": row.get::<_, String>(1)?,
+                "title": row.get::<_, Option<String>>(2)?,
+                "mode": row.get::<_, String>(3)?,
+                "status": row.get::<_, String>(4)?,
+                "parent_id": row.get::<_, Option<String>>(5)?,
+                "token_count": row.get::<_, i64>(6)?,
+                "created_at": row.get::<_, String>(7)?,
+                "updated_at": row.get::<_, String>(8)?,
+            }))
+        }) {
+            sessions = rows.filter_map(|r| r.ok()).collect();
+        }
+    }
+
+    let mut messages: Vec<serde_json::Value> = Vec::new();
+    if let Ok(mut stmt) = conn.prepare("SELECT id, session_id, role, content, tool_calls, artifacts, token_usage, created_at FROM messages") {
+        if let Ok(rows) = stmt.query_map([], |row| {
+            Ok(serde_json::json!({
+                "id": row.get::<_, String>(0)?,
+                "session_id": row.get::<_, String>(1)?,
+                "role": row.get::<_, String>(2)?,
+                "content": row.get::<_, String>(3)?,
+                "tool_calls": row.get::<_, Option<String>>(4)?,
+                "artifacts": row.get::<_, Option<String>>(5)?,
+                "token_usage": row.get::<_, Option<String>>(6)?,
+                "created_at": row.get::<_, String>(7)?,
+            }))
+        }) {
+            messages = rows.filter_map(|r| r.ok()).collect();
+        }
+    }
+
+    let mut memories: Vec<serde_json::Value> = Vec::new();
+    if let Ok(mut stmt) = conn.prepare("SELECT id, project_id, type, content, summary, importance, source_session_id, access_count, last_accessed_at, encrypted, created_at FROM memories") {
+        if let Ok(rows) = stmt.query_map([], |row| {
+            Ok(serde_json::json!({
+                "id": row.get::<_, String>(0)?,
+                "project_id": row.get::<_, String>(1)?,
+                "type": row.get::<_, String>(2)?,
+                "content": row.get::<_, String>(3)?,
+                "summary": row.get::<_, Option<String>>(4)?,
+                "importance": row.get::<_, f64>(5)?,
+                "source_session_id": row.get::<_, Option<String>>(6)?,
+                "access_count": row.get::<_, i64>(7)?,
+                "last_accessed_at": row.get::<_, Option<String>>(8)?,
+                "encrypted": row.get::<_, i32>(9)? != 0,
+                "created_at": row.get::<_, String>(10)?,
+            }))
+        }) {
+            memories = rows.filter_map(|r| r.ok()).collect();
+        }
+    }
+
+    let mut settings: Vec<serde_json::Value> = Vec::new();
+    if let Ok(mut stmt) = conn.prepare("SELECT scope, project_id, key, value FROM settings") {
+        if let Ok(rows) = stmt.query_map([], |row| {
+            Ok(serde_json::json!({
+                "scope": row.get::<_, String>(0)?,
+                "project_id": row.get::<_, Option<String>>(1)?,
+                "key": row.get::<_, String>(2)?,
+                "value": row.get::<_, String>(3)?,
+            }))
+        }) {
+            settings = rows.filter_map(|r| r.ok()).collect();
+        }
+    }
+
+    let mut knowledge_bases: Vec<serde_json::Value> = Vec::new();
+    if let Ok(mut stmt) = conn.prepare("SELECT id, name, description, created_at FROM knowledge_bases") {
+        if let Ok(rows) = stmt.query_map([], |row| {
+            Ok(serde_json::json!({
+                "id": row.get::<_, String>(0)?,
+                "name": row.get::<_, String>(1)?,
+                "description": row.get::<_, Option<String>>(2)?,
+                "created_at": row.get::<_, String>(3)?,
+            }))
+        }) {
+            knowledge_bases = rows.filter_map(|r| r.ok()).collect();
+        }
+    }
+
+    let ssh_json = conn
+        .query_row(
+            "SELECT value FROM settings WHERE scope = 'global' AND key = 'ssh_connections'",
+            [],
+            |row| row.get::<_, String>(0),
+        )
+        .unwrap_or_else(|_| "[]".into());
+
     let backup = serde_json::json!({
-        "version": 1,
+        "version": 2,
         "exported_at": chrono::Utc::now().to_rfc3339(),
         "projects": projects,
+        "sessions": sessions,
+        "messages": messages,
+        "memories": memories,
+        "settings": settings,
+        "knowledge_bases": knowledge_bases,
+        "ssh_connections": serde_json::from_str::<serde_json::Value>(&ssh_json).unwrap_or_default(),
     });
     std::fs::write(&output_path, serde_json::to_string_pretty(&backup).unwrap())
         .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn import_backup(state: State<AppState>, input_path: String) -> Result<serde_json::Value, String> {
+    let json = std::fs::read_to_string(&input_path).map_err(|e| e.to_string())?;
+    let backup: serde_json::Value = serde_json::from_str(&json).map_err(|e| e.to_string())?;
+    
+    let version = backup.get("version").and_then(|v| v.as_u64()).unwrap_or(1);
+    if version > 2 {
+        return Err(format!("Unsupported backup version: {}", version));
+    }
+    
+    let conn = state.db.conn.lock().unwrap();
+    let mut imported = serde_json::json!({});
+    
+    if let Some(projects) = backup.get("projects").and_then(|v| v.as_array()) {
+        let mut count = 0;
+        for p in projects {
+            let id = p["id"].as_str().unwrap_or("");
+            let name = p["name"].as_str().unwrap_or("");
+            let local_path = p["local_path"].as_str().unwrap_or("");
+            let settings = p["settings"].as_str().unwrap_or("{}");
+            let now = chrono::Utc::now().to_rfc3339();
+            
+            conn.execute(
+                "INSERT OR IGNORE INTO projects (id, name, local_path, settings, created_at, opened_at) VALUES (?1, ?2, ?3, ?4, ?5, ?5)",
+                params![id, name, local_path, settings, now],
+            ).ok();
+            count += 1;
+        }
+        imported["projects"] = serde_json::json!(count);
+    }
+    
+    if let Some(sessions) = backup.get("sessions").and_then(|v| v.as_array()) {
+        let mut count = 0;
+        for s in sessions {
+            let id = s["id"].as_str().unwrap_or("");
+            let project_id = s["project_id"].as_str().unwrap_or("");
+            let title = s["title"].as_str();
+            let mode = s["mode"].as_str().unwrap_or("ask");
+            let status = s["status"].as_str().unwrap_or("active");
+            let parent_id = s["parent_id"].as_str();
+            let token_count = s["token_count"].as_i64().unwrap_or(0);
+            let created_at = s["created_at"].as_str().unwrap_or("");
+            let updated_at = s["updated_at"].as_str().unwrap_or("");
+            
+            conn.execute(
+                "INSERT OR IGNORE INTO sessions (id, project_id, title, mode, status, parent_id, token_count, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                params![id, project_id, title, mode, status, parent_id, token_count, created_at, updated_at],
+            ).ok();
+            count += 1;
+        }
+        imported["sessions"] = serde_json::json!(count);
+    }
+    
+    if let Some(messages) = backup.get("messages").and_then(|v| v.as_array()) {
+        let mut count = 0;
+        for m in messages {
+            let id = m["id"].as_str().unwrap_or("");
+            let session_id = m["session_id"].as_str().unwrap_or("");
+            let role = m["role"].as_str().unwrap_or("user");
+            let content = m["content"].as_str().unwrap_or("");
+            let tool_calls = m["tool_calls"].as_str();
+            let artifacts = m["artifacts"].as_str();
+            let token_usage = m["token_usage"].as_str();
+            let created_at = m["created_at"].as_str().unwrap_or("");
+            
+            conn.execute(
+                "INSERT OR IGNORE INTO messages (id, session_id, role, content, tool_calls, artifacts, token_usage, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                params![id, session_id, role, content, tool_calls, artifacts, token_usage, created_at],
+            ).ok();
+            count += 1;
+        }
+        imported["messages"] = serde_json::json!(count);
+    }
+    
+    if let Some(memories) = backup.get("memories").and_then(|v| v.as_array()) {
+        let mut count = 0;
+        for m in memories {
+            let id = m["id"].as_str().unwrap_or("");
+            let project_id = m["project_id"].as_str().unwrap_or("");
+            let mem_type = m["type"].as_str().unwrap_or("fact");
+            let content = m["content"].as_str().unwrap_or("");
+            let summary = m["summary"].as_str();
+            let importance = m["importance"].as_f64().unwrap_or(0.5);
+            let source_session_id = m["source_session_id"].as_str();
+            let access_count = m["access_count"].as_i64().unwrap_or(0);
+            let last_accessed_at = m["last_accessed_at"].as_str();
+            let encrypted = if m["encrypted"].as_bool().unwrap_or(false) { 1 } else { 0 };
+            let created_at = m["created_at"].as_str().unwrap_or("");
+            
+            conn.execute(
+                "INSERT OR IGNORE INTO memories (id, project_id, type, content, summary, importance, source_session_id, access_count, last_accessed_at, encrypted, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?11)",
+                params![id, project_id, mem_type, content, summary, importance, source_session_id, access_count, last_accessed_at, encrypted, created_at],
+            ).ok();
+            count += 1;
+        }
+        imported["memories"] = serde_json::json!(count);
+    }
+    
+    if let Some(settings) = backup.get("settings").and_then(|v| v.as_array()) {
+        let mut count = 0;
+        for s in settings {
+            let scope = s["scope"].as_str().unwrap_or("global");
+            let project_id = s["project_id"].as_str();
+            let key = s["key"].as_str().unwrap_or("");
+            let value = s["value"].as_str().unwrap_or("");
+            
+            conn.execute(
+                "INSERT OR REPLACE INTO settings (scope, project_id, key, value) VALUES (?1, ?2, ?3, ?4)",
+                params![scope, project_id, key, value],
+            ).ok();
+            count += 1;
+        }
+        imported["settings"] = serde_json::json!(count);
+    }
+    
+    if let Some(kbases) = backup.get("knowledge_bases").and_then(|v| v.as_array()) {
+        let mut count = 0;
+        for k in kbases {
+            let id = k["id"].as_str().unwrap_or("");
+            let name = k["name"].as_str().unwrap_or("");
+            let description = k["description"].as_str();
+            let created_at = k["created_at"].as_str().unwrap_or("");
+            let now = chrono::Utc::now().to_rfc3339();
+            
+            conn.execute(
+                "INSERT OR IGNORE INTO knowledge_bases (id, name, description, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![id, name, description, created_at, now],
+            ).ok();
+            count += 1;
+        }
+        imported["knowledge_bases"] = serde_json::json!(count);
+    }
+    
+    Ok(imported)
 }
 
 #[tauri::command]
@@ -1593,6 +2089,7 @@ fn build_chat_message(
 }
 
 async fn handle_loop_outcome(
+    app: &AppHandle,
     state: &AppState,
     outcome: ai_loop::LoopOutcome,
     session_id: &str,
@@ -1688,6 +2185,10 @@ async fn handle_loop_outcome(
                 params![total_tokens as i64, now, session_id],
             )
             .map_err(|e| e.to_string())?;
+            let _ = app.emit("loop-completed", serde_json::json!({
+                "session_id": session_id,
+                "message_id": msg_id,
+            }));
             Ok(build_chat_message(
                 msg_id.to_string(),
                 session_id.to_string(),
@@ -1703,6 +2204,7 @@ async fn handle_loop_outcome(
 }
 
 async fn handle_loop_outcome_update(
+    app: &AppHandle,
     state: &AppState,
     outcome: ai_loop::LoopOutcome,
     session_id: &str,
@@ -1790,6 +2292,10 @@ async fn handle_loop_outcome_update(
                 ],
             )
             .map_err(|e| e.to_string())?;
+            let _ = app.emit("loop-completed", serde_json::json!({
+                "session_id": session_id,
+                "message_id": msg_id,
+            }));
             Ok(build_chat_message(
                 msg_id.to_string(),
                 session_id.to_string(),
@@ -1893,8 +2399,21 @@ async fn ai_loop_chat_inner(
     };
 
     let cancel = state.chat_cancel.register(&session_id);
+    
+    let network_whitelist: Vec<String> = {
+        let conn = state.db.conn.lock().unwrap();
+        conn.query_row(
+            "SELECT value FROM settings WHERE scope = 'global' AND key = 'privacy_network_whitelist'",
+            [],
+            |row| row.get::<_, String>(0),
+        )
+        .ok()
+        .and_then(|json| serde_json::from_str(&json).ok())
+        .unwrap_or_default()
+    };
+    
     let outcome = ai_loop::run_loop(
-        app,
+        app.clone(),
         project_root.clone(),
         session_id.clone(),
         msg_id.clone(),
@@ -1915,6 +2434,7 @@ async fn ai_loop_chat_inner(
             agent_mode: agent_mode.to_string(),
             ask_user_satisfied: false,
             enabled_kbase_ids,
+            network_whitelist,
         },
         cancel,
         knowledge_ctx,
@@ -1924,6 +2444,7 @@ async fn ai_loop_chat_inner(
     let outcome = outcome?;
     let agent_mode = input.agent_mode.as_deref().unwrap_or("edit");
     handle_loop_outcome(
+        &app,
         &state,
         outcome,
         &session_id,
@@ -1938,6 +2459,7 @@ async fn ai_loop_chat_inner(
 
 #[tauri::command]
 async fn continue_ai_loop(
+    app: AppHandle,
     state: State<'_, AppState>,
     session_id: String,
     message_id: String,
@@ -1981,6 +2503,7 @@ async fn continue_ai_loop(
     let edit_dry_run = mode == "edit";
 
     handle_loop_outcome_update(
+        &app,
         &state,
         outcome,
         &session_id,
@@ -2336,6 +2859,7 @@ fn main() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_process::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(
             tauri_plugin_global_shortcut::Builder::new()
                 .with_handler(|app, _shortcut, event| {
@@ -2439,11 +2963,15 @@ fn main() {
             update_memory,
             export_memories,
             rebuild_vector_index,
+            get_vector_index_meta,
             check_database,
             repair_database,
             check_disk_space,
             embed_memory,
             compress_memories,
+            list_memory_links,
+            create_memory_link,
+            delete_memory_link,
             // Knowledge base
             knowledge::list_knowledge_bases,
             knowledge::create_knowledge_base,
@@ -2469,10 +2997,17 @@ fn main() {
             // Skills & Settings
             list_skills,
             install_skill,
+            uninstall_skill,
+            enable_skill,
+            disable_skill,
             run_skill,
+            generate_pr_draft,
+            confirm_git_push,
+            cancel_git_push,
             list_ssh_connections,
             save_ssh_connection,
             export_backup,
+            import_backup,
             get_setting,
             set_setting,
             save_credential,

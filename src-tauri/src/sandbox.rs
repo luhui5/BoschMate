@@ -57,9 +57,7 @@ pub struct SandboxConfig {
     pub project_root: PathBuf,
     pub allowed_dirs: Vec<PathBuf>,
     pub allow_network: bool,
-    #[allow(dead_code)]
-    pub network_whitelist: Vec<String>, // e.g. ["*.npmjs.org", "*.github.com"]
-    #[allow(dead_code)]
+    pub network_whitelist: Vec<String>,
     pub timeout_ms: u64,
     pub max_output_bytes: usize,
 }
@@ -161,20 +159,35 @@ pub fn execute_sandboxed(
     }
 
     if !config.allow_network {
-        cmd.env("http_proxy", "http://0.0.0.0:0")
-            .env("https_proxy", "http://0.0.0.0:0")
-            .env("HTTP_PROXY", "http://0.0.0.0:0")
-            .env("HTTPS_PROXY", "http://0.0.0.0:0")
-            .env("no_proxy", "");
+        if config.network_whitelist.is_empty() {
+            cmd.env("http_proxy", "http://0.0.0.0:0")
+                .env("https_proxy", "http://0.0.0.0:0")
+                .env("HTTP_PROXY", "http://0.0.0.0:0")
+                .env("HTTPS_PROXY", "http://0.0.0.0:0")
+                .env("no_proxy", "");
+        } else {
+            let whitelist_str = config.network_whitelist.join(",");
+            cmd.env("http_proxy", "http://0.0.0.0:0")
+                .env("https_proxy", "http://0.0.0.0:0")
+                .env("HTTP_PROXY", "http://0.0.0.0:0")
+                .env("HTTPS_PROXY", "http://0.0.0.0:0")
+                .env("no_proxy", &whitelist_str);
+        }
     }
 
     #[cfg(unix)]
     cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
 
+    // OS-level sandbox: Windows Job Objects for CPU/memory limits
+    let _job_guard = crate::os_sandbox::JobObjectGuard::new();
+
     let output = {
         #[cfg(unix)]
         {
             let mut child = cmd.spawn().map_err(|e| format!("Failed to execute command: {}", e))?;
+            if let Some(ref guard) = _job_guard {
+                guard.assign_process(&child);
+            }
             let timeout = std::time::Duration::from_millis(config.timeout_ms);
             match child.wait_timeout(timeout) {
                 Ok(Some(status)) => {
@@ -205,12 +218,43 @@ pub fn execute_sandboxed(
         }
         #[cfg(not(unix))]
         {
-            cmd.output().map_err(|e| {
-                format!(
-                    "Failed to execute command: {}\n\nVerify that the command and arguments are valid.",
-                    e
-                )
-            })?
+            let mut child = cmd.spawn().map_err(|e| format!("Failed to execute command: {}", e))?;
+            if let Some(ref guard) = _job_guard {
+                guard.assign_process(&child);
+            }
+            let timeout = std::time::Duration::from_millis(config.timeout_ms);
+            let start_wait = std::time::Instant::now();
+            loop {
+                match child.try_wait() {
+                    Ok(Some(status)) => {
+                        use std::io::Read;
+                        let mut stdout_buf = Vec::new();
+                        let mut stderr_buf = Vec::new();
+                        if let Some(mut out) = child.stdout.take() {
+                            out.read_to_end(&mut stdout_buf).ok();
+                        }
+                        if let Some(mut err) = child.stderr.take() {
+                            err.read_to_end(&mut stderr_buf).ok();
+                        }
+                        break std::process::Output {
+                            status,
+                            stdout: stdout_buf,
+                            stderr: stderr_buf,
+                        };
+                    }
+                    Ok(None) => {
+                        if start_wait.elapsed() >= timeout {
+                            let _ = child.kill();
+                            return Err(format!(
+                                "Command timed out after {}ms: {}",
+                                config.timeout_ms, command
+                            ));
+                        }
+                        std::thread::sleep(std::time::Duration::from_millis(50));
+                    }
+                    Err(e) => return Err(format!("Failed waiting for command: {}", e)),
+                }
+            }
         }
     };
 

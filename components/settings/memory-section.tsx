@@ -9,7 +9,7 @@ import { SectionHeader, SettingsCard, SettingRow, Select } from "./primitives"
 import { Switch } from "@/components/ui/switch"
 import { Input } from "@/components/ui/input"
 import { useSetting } from "@/lib/use-setting"
-import { isTauri, listProjects, listMemories, deleteMemory, searchMemories, compressMemories, updateMemory, exportMemories, repairDatabase, checkDatabase } from "@/lib/tauri-api"
+import { isTauri, listProjects, listMemories, deleteMemory, searchMemories, compressMemories, updateMemory, exportMemories, repairDatabase, checkDatabase, rebuildVectorIndex } from "@/lib/tauri-api"
 
 const TYPE_LABEL: Record<MemoryType, string> = {
   fact: "事实",
@@ -141,10 +141,11 @@ export function MemorySection() {
         </div>
       ) : (
         <>
-          <div className="grid grid-cols-3 gap-3">
+          <div className="grid grid-cols-4 gap-3">
             <StatCard icon={Database} label="记忆条目" value={String(memories.length)} />
             <StatCard icon={Layers} label="向量维度" value="768" />
             <StatCard icon={Lock} label="加密条目" value={String(memories.filter((m) => m.encrypted).length)} />
+            <VectorIndexStat />
           </div>
 
           <SettingsCard>
@@ -250,6 +251,41 @@ function StatCard({ icon: Icon, label, value }: { icon: typeof Database; label: 
         <span className="text-xs">{label}</span>
       </div>
       <div className="mt-1 text-xl font-semibold">{value}</div>
+    </div>
+  )
+}
+
+function VectorIndexStat() {
+  const [status, setStatus] = useState<{ entries: number; corrupted: boolean } | null>(null)
+
+  useEffect(() => {
+    if (!isTauri()) return
+    checkDatabase()
+      .then((r) => setStatus({ entries: r.vector_entries, corrupted: r.vector_corrupted }))
+      .catch(() => {})
+  }, [])
+
+  async function handleRebuild() {
+    if (!isTauri()) return
+    try {
+      const r = await rebuildVectorIndex()
+      setStatus({ entries: r.entry_count, corrupted: false })
+    } catch {}
+  }
+
+  return (
+    <div className="rounded-lg border border-border bg-card p-3">
+      <div className="flex items-center gap-2 text-muted-foreground">
+        <Database className="size-4" />
+        <span className="text-xs">向量索引</span>
+        {status?.corrupted && <span className="text-xs text-red-400">损坏</span>}
+      </div>
+      <div className="mt-1 flex items-center justify-between">
+        <span className="text-xl font-semibold">{status?.entries ?? "-"}</span>
+        <button type="button" className="text-xs text-primary hover:underline" onClick={() => void handleRebuild()}>
+          重建
+        </button>
+      </div>
     </div>
   )
 }

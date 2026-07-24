@@ -78,10 +78,12 @@ import {
   onChatStreamReset,
   onChatToolDelta,
   onLoopActivity,
+  onLoopCompleted,
   mapActivityStep,
   onAssistantPrefillQuery,
 } from "@/lib/tauri-api"
 import { isChatCancelled } from "@/lib/chat-cancel"
+import { getCommands, parseCommand, executeCommand } from "@/lib/slash-commands"
 import { sidebarFeatures } from "@/lib/ui-features"
 import { parseLlmError } from "@/lib/llm-error"
 import { LlmErrorCard } from "@/components/llm-error-card"
@@ -213,6 +215,16 @@ function finalizeCancelledMessage(m: AssistantMessage): AssistantMessage {
   }
 }
 
+function finalizeCompletedMessage(m: AssistantMessage): AssistantMessage {
+  return {
+    ...m,
+    streaming: false,
+    activitySteps: m.activitySteps?.map((s) =>
+      s.status === "running" ? { ...s, status: "success" as const } : s,
+    ),
+  }
+}
+
 function isMessageProcessing(m: AssistantMessage): boolean {
   return (
     m.role === "assistant" &&
@@ -307,6 +319,27 @@ export function AssistantView({
         setMode("ask")
       }
       setPrefillText(text)
+    })
+  }, [])
+
+  useEffect(() => {
+    if (!isTauri()) return
+    return onLoopCompleted((e) => {
+      setSessions((prev) =>
+        prev.map((s) =>
+          s.id === e.session_id
+            ? {
+                ...s,
+                messages: s.messages.map((m) =>
+                  m.id === e.message_id && m.role === "assistant"
+                    ? finalizeCompletedMessage(m)
+                    : m,
+                ),
+                updatedAt: new Date().toISOString(),
+              }
+            : s,
+        ),
+      )
     })
   }, [])
 
@@ -1127,6 +1160,31 @@ export function AssistantView({
       }
     }
 
+    const slash = parseCommand(content)
+    if (slash && getCommands().some((c) => c.name === slash.command)) {
+      try {
+        const output = await executeCommand(
+          slash.command,
+          { projectId: workspaceProjectId ?? undefined },
+          slash.args,
+        )
+        updateActiveMessages((msgs) => [
+          ...msgs,
+          {
+            id: `a-${Date.now()}`,
+            role: "assistant",
+            content: output,
+            createdAt: new Date().toISOString(),
+          },
+        ])
+      } finally {
+        setGenerating(false)
+        generatingSessionRef.current = null
+        sendInFlightRef.current = false
+      }
+      return
+    }
+
     const modelCfg = findModel(availableModels, active.model)
 
     if (!isTauri()) {
@@ -1746,7 +1804,7 @@ export function AssistantView({
           disabled={hasPendingQuestions}
           onStop={stopGeneration}
           onValidationError={setToast}
-          enableSlashCommands={false}
+          enableSlashCommands={Boolean(workspaceProjectId)}
           knowledgeBases={kbaseOptions}
           selectedKbaseId={selectedKbaseId}
           onKbaseChange={handleKbaseChange}

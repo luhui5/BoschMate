@@ -367,12 +367,9 @@ export async function loadApiKey(modelId: string): Promise<string | null> {
 
 export async function saveApiKey(modelId: string, key: string): Promise<void> {
   const storageKey = `api_key:${modelId}`
-  try {
-    await saveCredential(storageKey, key)
-  } catch {
-    lsSet(apiKeyStorageKey(modelId), key)
-    try { await setSetting(storageKey, key) } catch { /* Tauri not available */ }
-  }
+  lsSet(apiKeyStorageKey(modelId), key)
+  try { await saveCredential(storageKey, key) } catch { /* keychain unavailable */ }
+  try { await setSetting(storageKey, key) } catch { /* Tauri not available */ }
 }
 
 export async function deleteApiKey(modelId: string): Promise<void> {

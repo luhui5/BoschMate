@@ -1,0 +1,24 @@
+pre-commit:
+  parallel: true
+  commands:
+    frontend-lint:
+      glob: "*.{ts,tsx,js,jsx}"
+      run: pnpm lint --fix {staged_files}
+    typecheck:
+      glob: "*.{ts,tsx}"
+      run: npx tsc --noEmit
+    frontend-test:
+      glob: "*.{ts,tsx,js,jsx}"
+      run: npx vitest --run
+    rust-check:
+      glob: "*.rs"
+      run: cd src-tauri && cargo check
+    rust-test:
+      glob: "*.rs"
+      run: cd src-tauri && cargo test
+    rust-clippy:
+      glob: "*.rs"
+      run: cd src-tauri && cargo clippy -- -D warnings
+    format-check:
+      glob: "*.{ts,tsx,js,jsx,rs,json,md}"
+      run: npx prettier --check {staged_files}

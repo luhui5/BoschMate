@@ -4,7 +4,7 @@ import { createContext, useCallback, useContext, useEffect, useRef, useState, ty
 import type { RunMode } from "@/lib/types"
 import { translate, type Lang, type TranslationKey } from "@/lib/i18n"
 import {
-  MOCK_RELEASE,
+  releaseFromUpdateInfo,
   type ReleaseInfo,
   type UpdateChannel,
   type UpdatePhase,
@@ -12,7 +12,7 @@ import {
 import { projectPath } from "@/lib/project-route"
 import { UpdateManager } from "@/components/update/update-manager"
 import { RecoveryDialog, type RecoverySnapshotItem } from "@/components/recovery-dialog"
-import { isTauri, getSetting, setSetting as tauriSetSetting, loadRecoverySnapshots, clearRecoverySnapshot, healthCheck } from "@/lib/tauri-api"
+import { isTauri, getSetting, setSetting as tauriSetSetting, loadRecoverySnapshots, clearRecoverySnapshot, healthCheck, getUpdateInfo } from "@/lib/tauri-api"
 
 type ThemeMode = "dark" | "light" | "system"
 type FontSize = "sm" | "md" | "lg"
@@ -211,19 +211,24 @@ export function AppProvider({ children }: { children: ReactNode }) {
     }
   }, [fontSize, editorFont, lang, isDesktop])
 
-  // 启动时自动静默检查（仅在 mock release 可用时）
+  // 启动时自动静默检查（桌面端，延迟 5s 避免影响启动）
   useEffect(() => {
-    const release = MOCK_RELEASE
-    if (!release) return
+    if (!isDesktop) return
     const tid = setTimeout(() => {
-      setUpdate((u) => {
-        if (u.phase !== "idle") return u
-        if (u.skippedVersion === release.latestVersion) return u
-        return { ...u, phase: "available", release }
-      })
+      void getUpdateInfo()
+        .then((info) => {
+          const release = releaseFromUpdateInfo(info)
+          if (!release) return
+          setUpdate((u) => {
+            if (u.phase !== "idle") return u
+            if (u.skippedVersion === release.latestVersion) return u
+            return { ...u, phase: "available", release }
+          })
+        })
+        .catch(() => {})
     }, 5000)
     return () => clearTimeout(tid)
-  }, [])
+  }, [isDesktop])
 
   // 清理
   useEffect(() => {
@@ -243,40 +248,36 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const setChannel = (c: UpdateChannel) => setUpdate((u) => ({ ...u, channel: c }))
 
   const checkForUpdates = () => {
-    const release = MOCK_RELEASE
-    if (!release) return
+    if (!isDesktop) return
     setUpdate((u) => ({ ...u, phase: "checking", error: null }))
-    const tid = setTimeout(() => {
-      setUpdate((u) => ({ ...u, phase: "available", release }))
-    }, 1400)
-    timers.current.push(tid)
+    void getUpdateInfo()
+      .then((info) => {
+        const release = releaseFromUpdateInfo(info)
+        setUpdate((u) => {
+          if (!release) return { ...u, phase: "up-to-date", release: null }
+          return { ...u, phase: "available", release }
+        })
+      })
+      .catch((e) => {
+        setUpdate((u) => ({ ...u, phase: "idle", error: String(e) }))
+      })
   }
 
   const startUpdate = () => setUpdate((u) => ({ ...u, phase: "confirm" }))
 
+  // 尚未接入 tauri-plugin-updater（P8-13），下载动作打开发布页由用户手动下载安装。
   const confirmDownload = () => {
-    const release = MOCK_RELEASE
-    if (!release) return
-    setUpdate((u) => ({ ...u, phase: "downloading", progress: 0, downloadedBytes: 0 }))
-    const total = release.sizeBytes
-    if (downloadTimer.current) clearInterval(downloadTimer.current)
-    downloadTimer.current = setInterval(() => {
-      setUpdate((u) => {
-        if (u.phase !== "downloading") return u
-        const next = Math.min(100, u.progress + Math.random() * 12 + 4)
-        const downloadedBytes = Math.round((next / 100) * total)
-        if (next >= 100) {
-          if (downloadTimer.current) clearInterval(downloadTimer.current)
-          return { ...u, phase: "downloaded", progress: 100, downloadedBytes: total }
-        }
-        return {
-          ...u,
-          progress: next,
-          downloadedBytes,
-          speedBytesPerSec: Math.round((1.8 + Math.random() * 1.2) * 1024 * 1024),
-        }
-      })
-    }, 500)
+    const url = update.release?.changelogUrl
+    if (url) {
+      if (isDesktop) {
+        void import("@tauri-apps/plugin-shell")
+          .then(({ open }) => open(url))
+          .catch(() => window.open(url, "_blank"))
+      } else {
+        window.open(url, "_blank")
+      }
+    }
+    setUpdate((u) => ({ ...u, phase: "idle" }))
   }
 
   const remindLater = () => setUpdate((u) => ({ ...u, phase: "idle" }))

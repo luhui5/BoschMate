@@ -33,9 +33,18 @@ tokio = { version = "1", features = ["full"] }
 reqwest = { version = "0.12", features = ["json", "stream", "rustls-tls", "blocking"], default-features = false }
 htmd = "0.5"
 url = "2"
+urlencoding = "2"
+html-escape = "0.2"
 futures = "0.3"
 ring = "0.17"
+argon2 = "0.5"
 keyring = "3"
+# usearch = "2"  # Disabled: numkong C code fails on Windows MSVC
+# ssh2 = "0.9"  # Disabled: vendored openssl build fails on Windows
+rayon = "1"
+tree-sitter = "0.23"
+tree-sitter-rust = "0.21"
+tauri-plugin-updater = "2"
 notify = "6.1"
 calamine = "0.26"
 docx-rs = "0.4"
@@ -43,6 +52,7 @@ pdf-extract = "0.7"
 
 [dev-dependencies]
 tempfile = "3"
+proptest = "1"
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }

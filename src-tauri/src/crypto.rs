@@ -1,6 +1,6 @@
+use argon2::Argon2;
 use ring::aead::{Aad, LessSafeKey, Nonce, UnboundKey, AES_256_GCM};
 use ring::rand::{SecureRandom, SystemRandom};
-use sha2::Digest;
 
 /// Encrypt plaintext with AES-256-GCM.
 /// Returns base64(ciphertext + nonce), where nonce is 96 bits (12 bytes).
@@ -19,11 +19,13 @@ pub fn encrypt(plaintext: &str, key_bytes: &[u8; 32]) -> Result<String, String> 
     key.seal_in_place_append_tag(nonce, Aad::empty(), &mut in_out)
         .map_err(|e| format!("Encryption error: {:?}", e))?;
 
-    // Prepend nonce to ciphertext for storage
     let mut result = nonce_bytes.to_vec();
     result.extend_from_slice(&in_out);
 
-    Ok(base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &result))
+    Ok(base64::Engine::encode(
+        &base64::engine::general_purpose::STANDARD,
+        &result,
+    ))
 }
 
 /// Decrypt base64-encoded ciphertext produced by encrypt().
@@ -35,7 +37,9 @@ pub fn decrypt(encoded: &str, key_bytes: &[u8; 32]) -> Result<String, String> {
         return Err("Ciphertext too short".into());
     }
 
-    let nonce_bytes: [u8; 12] = data[..12].try_into().map_err(|_| "Nonce error".to_string())?;
+    let nonce_bytes: [u8; 12] = data[..12]
+        .try_into()
+        .map_err(|_| "Nonce error".to_string())?;
     let ciphertext = &data[12..];
 
     let unbound_key =
@@ -51,22 +55,13 @@ pub fn decrypt(encoded: &str, key_bytes: &[u8; 32]) -> Result<String, String> {
     Ok(String::from_utf8_lossy(plaintext).to_string())
 }
 
-/// Derive a 256-bit key from a user passphrase using Argon2-style derivation.
-/// For MVP, uses SHA-256 with a salt. Full Argon2id should replace this.
+/// Derive a 256-bit key from a user passphrase using Argon2id.
 pub fn derive_key(passphrase: &str, salt: &[u8]) -> [u8; 32] {
-    let mut hasher = sha2::Sha256::new();
-    hasher.update(passphrase.as_bytes());
-    hasher.update(salt);
-    // Multiple rounds to slow down brute force
-    let mut hash = hasher.finalize();
-    for _ in 0..100_000 {
-        let mut h = sha2::Sha256::new();
-        h.update(&hash);
-        h.update(salt);
-        hash = h.finalize();
-    }
+    let argon2 = Argon2::default();
     let mut key = [0u8; 32];
-    key.copy_from_slice(&hash);
+    argon2
+        .hash_password_into(passphrase.as_bytes(), salt, &mut key)
+        .expect("Argon2id hashing failed");
     key
 }
 

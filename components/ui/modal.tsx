@@ -10,7 +10,7 @@ interface ModalProps {
   onClose: () => void
   title: string
   description?: string
-  children: ReactNode
+  children?: ReactNode
   footer?: ReactNode
   className?: string
 }

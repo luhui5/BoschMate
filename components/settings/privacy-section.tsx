@@ -1,19 +1,30 @@
 "use client"
 
-import { ShieldCheck, KeyRound, FileLock2 } from "lucide-react"
+import { ShieldCheck, KeyRound, FileLock2, Globe, Plus, X, Upload } from "lucide-react"
 import { SectionHeader, SettingsCard, SettingRow, Select } from "./primitives"
 import { Switch } from "@/components/ui/switch"
 import { useSetting } from "@/lib/use-setting"
-import { isTauri, checkDiskSpace, exportBackup } from "@/lib/tauri-api"
+import { isTauri, checkDiskSpace, exportBackup, importBackup } from "@/lib/tauri-api"
 import { useEffect, useState } from "react"
 
 export function PrivacySection() {
   const [telemetry, setTelemetry] = useSetting("privacy_telemetry", false)
   const [encryptMemory, setEncryptMemory] = useSetting("privacy_encrypt_memory", true)
+  const [redactSecrets, setRedactSecrets] = useSetting("privacy_redact_secrets", true)
   const [confirmPush, setConfirmPush] = useSetting("privacy_confirm_push", true)
   const [confirmShell, setConfirmShell] = useSetting("privacy_confirm_shell", true)
   const [writeScope, setWriteScope] = useSetting("privacy_write_scope", "project")
+  const [networkWhitelist, setNetworkWhitelist] = useSetting("privacy_network_whitelist", "[]")
   const [diskWarning, setDiskWarning] = useState<string | null>(null)
+  const [newDomain, setNewDomain] = useState("")
+
+  const whitelist: string[] = (() => {
+    try {
+      return JSON.parse(networkWhitelist)
+    } catch {
+      return []
+    }
+  })()
 
   useEffect(() => {
     if (!isTauri()) return
@@ -23,6 +34,18 @@ export function PrivacySection() {
       })
       .catch(() => {})
   }, [])
+
+  const addDomain = () => {
+    if (!newDomain.trim()) return
+    const updated = [...whitelist, newDomain.trim()]
+    setNetworkWhitelist(JSON.stringify(updated))
+    setNewDomain("")
+  }
+
+  const removeDomain = (domain: string) => {
+    const updated = whitelist.filter((d) => d !== domain)
+    setNetworkWhitelist(JSON.stringify(updated))
+  }
 
   return (
     <div className="space-y-6">
@@ -89,7 +112,60 @@ export function PrivacySection() {
         </SettingsCard>
       </div>
 
-      <div className="grid gap-2 sm:grid-cols-2">
+      <div>
+        <p className="mb-2 text-xs font-medium uppercase tracking-wider text-muted-foreground">
+          网络白名单
+        </p>
+        <SettingsCard>
+          <div className="px-4 py-3">
+            <p className="mb-2 text-sm text-muted-foreground">
+              允许沙箱命令访问的域名（如 *.npmjs.org）。默认阻止所有网络访问。
+            </p>
+            <div className="mb-3 flex gap-2">
+              <input
+                type="text"
+                value={newDomain}
+                onChange={(e) => setNewDomain(e.target.value)}
+                onKeyDown={(e) => e.key === "Enter" && addDomain()}
+                placeholder="*.example.com"
+                className="flex-1 rounded-md border border-border bg-background px-3 py-1.5 text-sm"
+              />
+              <button
+                type="button"
+                onClick={addDomain}
+                className="flex items-center gap-1 rounded-md bg-primary px-3 py-1.5 text-sm text-primary-foreground hover:bg-primary/90"
+              >
+                <Plus className="h-3.5 w-3.5" />
+                添加
+              </button>
+            </div>
+            {whitelist.length > 0 && (
+              <div className="space-y-1">
+                {whitelist.map((domain) => (
+                  <div
+                    key={domain}
+                    className="flex items-center justify-between rounded-md bg-muted/50 px-3 py-1.5"
+                  >
+                    <span className="flex items-center gap-2 text-sm">
+                      <Globe className="h-3.5 w-3.5 text-muted-foreground" />
+                      {domain}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => removeDomain(domain)}
+                      className="rounded p-0.5 hover:bg-muted"
+                    >
+                      <X className="h-3.5 w-3.5 text-muted-foreground" />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </SettingsCard>
+      </div>
+
+      <div className="grid gap-2 sm:grid-cols-3">
         <button className="flex items-center gap-3 rounded-lg border border-border bg-card px-3 py-3 text-left transition-colors hover:border-ring">
           <KeyRound className="h-4 w-4 text-muted-foreground" />
           <span className="text-sm font-medium">管理 API 密钥</span>
@@ -105,7 +181,25 @@ export function PrivacySection() {
           }}
         >
           <FileLock2 className="h-4 w-4 text-muted-foreground" />
-          <span className="text-sm font-medium">导出 / 清除本地数据</span>
+          <span className="text-sm font-medium">导出备份</span>
+        </button>
+        <button
+          type="button"
+          className="flex items-center gap-3 rounded-lg border border-border bg-card px-3 py-3 text-left transition-colors hover:border-ring"
+          onClick={async () => {
+            if (!isTauri()) return
+            const path = prompt("导入路径 (完整文件路径):") ?? ""
+            if (!path) return
+            try {
+              const result = await importBackup(path)
+              alert(`导入完成: ${JSON.stringify(result)}`)
+            } catch (e) {
+              alert(`导入失败: ${e}`)
+            }
+          }}
+        >
+          <Upload className="h-4 w-4 text-muted-foreground" />
+          <span className="text-sm font-medium">导入备份</span>
         </button>
       </div>
     </div>

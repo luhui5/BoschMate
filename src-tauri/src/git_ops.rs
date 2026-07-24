@@ -132,6 +132,42 @@ pub fn commit(repo_path: &Path, message: &str, files: Option<Vec<String>>) -> Re
     Ok(commit_oid.to_string())
 }
 
+/// Push commits to remote
+pub fn push(repo_path: &Path, remote: Option<&str>, _force: bool) -> Result<String, String> {
+    let repo = Repository::open(repo_path).map_err(|e| format!("Not a git repository: {}", e))?;
+    
+    let remote_name = remote.unwrap_or("origin");
+    let mut remote = repo.find_remote(remote_name).map_err(|e| format!("Remote '{}' not found: {}", remote_name, e))?;
+    
+    let branch = get_current_branch(&repo)?;
+    let refspec = format!("refs/heads/{}:refs/heads/{}", branch, branch);
+    
+    let mut push_options = git2::PushOptions::new();
+    let mut remote_callbacks = git2::RemoteCallbacks::new();
+    
+    // Set up credentials callback
+    remote_callbacks.credentials(|_url, username_from_url, allowed_types| {
+        if allowed_types.contains(git2::CredentialType::SSH_KEY) {
+            let user = username_from_url.unwrap_or("git");
+            git2::Cred::ssh_key_from_agent(user)
+        } else if allowed_types.contains(git2::CredentialType::USER_PASS_PLAINTEXT) {
+            let config = repo.config().map_err(|_| git2::Error::from_str("Config error"))?;
+            git2::Cred::credential_helper(&config, _url, username_from_url)
+        } else {
+            git2::Cred::default()
+        }
+    });
+    
+    push_options.remote_callbacks(remote_callbacks);
+    
+    // Note: force push is blocked at the AI loop level for safety
+    
+    remote.push(&[&refspec], Some(&mut push_options))
+        .map_err(|e| format!("Push error: {}", e))?;
+    
+    Ok(format!("Pushed {} to {}", branch, remote_name))
+}
+
 /// List branches
 pub fn list_branches(repo_path: &Path) -> Result<Vec<String>, String> {
     let repo = Repository::open(repo_path).map_err(|e| format!("Not a git repository: {}", e))?;
@@ -470,4 +506,14 @@ mod stage_tests {
             "expected git changes in dev repo"
         );
     }
+}
+
+pub fn get_current_branch_for_path(repo_path: &Path) -> Result<String, String> {
+    let repo = Repository::open(repo_path).map_err(|e| format!("Not a git repository: {}", e))?;
+    get_current_branch(&repo)
+}
+
+pub fn get_ahead_behind_for_path(repo_path: &Path) -> Result<(usize, usize), String> {
+    let repo = Repository::open(repo_path).map_err(|e| format!("Not a git repository: {}", e))?;
+    get_ahead_behind(&repo)
 }

@@ -80,12 +80,12 @@ jobs:
       - uses: pnpm/action-setup@v4
         with: { version: '10' }
       - run: pnpm install --frozen-lockfile
-      - run: cd src-tauri && cargo audit
-      - run: npx audit-ci --moderate
+      - run: cd src-tauri && cargo audit --deny warnings
+      - run: npx audit-ci --moderate --skip-dev
 
   build:
     name: Build (${{ matrix.os }})
-    needs: [lint, rust-check, test-rust, test-frontend, e2e]
+    needs: [lint, rust-check, test-rust, test-frontend, e2e, security]
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:

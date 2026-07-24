@@ -10,34 +10,81 @@ pub struct SkillRunResult {
     pub stderr: String,
 }
 
-pub fn run_skill(skill_dir: &Path, args: &[String]) -> Result<SkillRunResult, String> {
+pub fn run_skill(
+    skill_dir: &Path,
+    args: &[String],
+    project_root: Option<&Path>,
+) -> Result<SkillRunResult, String> {
     let manifest = parse_manifest(skill_dir)?;
     let entry = skill_dir.join(&manifest.entry);
     if !entry.exists() {
         return Err(format!("Skill entry not found: {}", manifest.entry));
     }
 
-    // MVP: execute via shell when entry is .sh/.js; Deno sandbox in future iteration
+    check_permissions(&manifest, project_root)?;
+
     let ext = entry.extension().and_then(|e| e.to_str()).unwrap_or("");
-    let output = if ext == "sh" {
+    let mut cmd = if ext == "sh" {
         crate::process_util::command("sh")
-            .arg(&entry)
-            .args(args)
-            .output()
-            .map_err(|e| e.to_string())?
     } else {
         crate::process_util::command("node")
-            .arg(&entry)
-            .args(args)
-            .output()
-            .map_err(|e| format!("Failed to run skill entry: {}", e))?
     };
 
-    Ok(SkillRunResult {
-        success: output.status.success(),
-        stdout: String::from_utf8_lossy(&output.stdout).to_string(),
-        stderr: String::from_utf8_lossy(&output.stderr).to_string(),
-    })
+    cmd.arg(&entry).args(args);
+
+    if let Some(root) = project_root {
+        cmd.current_dir(root);
+    }
+
+    let timeout = std::time::Duration::from_secs(30);
+    let mut child = cmd
+        .spawn()
+        .map_err(|e| format!("Failed to run skill entry: {}", e))?;
+
+    let start = std::time::Instant::now();
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                return Ok(SkillRunResult {
+                    success: status.success(),
+                    stdout: String::new(),
+                    stderr: String::new(),
+                });
+            }
+            Ok(None) => {
+                if start.elapsed() >= timeout {
+                    let _ = child.kill();
+                    return Err(format!(
+                        "Skill timed out after {}s: {}",
+                        timeout.as_secs(),
+                        manifest.name
+                    ));
+                }
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+            Err(e) => return Err(format!("Failed waiting for skill: {}", e)),
+        }
+    }
+}
+
+fn check_permissions(manifest: &SkillManifest, project_root: Option<&Path>) -> Result<(), String> {
+    for perm in &manifest.permissions {
+        match perm.as_str() {
+            "filesystem:read" | "filesystem:write" | "filesystem:read_write" => {
+                if project_root.is_none() {
+                    return Err("Skill requires filesystem access but no project is open".into());
+                }
+            }
+            "shell" => {
+                // Shell execution allowed with timeout
+            }
+            "network" => {
+                // Network access allowed
+            }
+            _ => {}
+        }
+    }
+    Ok(())
 }
 
 pub fn install_local_skill(skills_dir: &Path, source_dir: &Path) -> Result<SkillManifest, String> {

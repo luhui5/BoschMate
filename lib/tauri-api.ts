@@ -14,7 +14,6 @@ import type {
   GitCommit,
   Memory,
   Note,
-  Skill,
   UpdateInfo,
   FileNode,
   ChangeRecord,
@@ -318,6 +317,32 @@ export async function deleteMemory(id: string): Promise<void> {
   return invoke<void>('delete_memory', { id });
 }
 
+// ── Memory Links ──
+
+export interface MemoryLink {
+  id: string;
+  source_id: string;
+  target_id: string;
+  link_type: string;
+  created_at: string;
+}
+
+export async function listMemoryLinks(memoryId: string): Promise<MemoryLink[]> {
+  return invoke<MemoryLink[]>('list_memory_links', { memoryId });
+}
+
+export async function createMemoryLink(
+  sourceId: string,
+  targetId: string,
+  linkType: string
+): Promise<void> {
+  return invoke<void>('create_memory_link', { sourceId, targetId, linkType });
+}
+
+export async function deleteMemoryLink(linkId: string): Promise<void> {
+  return invoke<void>('delete_memory_link', { linkId });
+}
+
 // ── Notes ──
 
 export async function listNotes(projectId: string): Promise<Note[]> {
@@ -336,8 +361,49 @@ export async function saveNote(
 
 // ── Skills / Settings / Update ──
 
-export async function listSkills(): Promise<Skill[]> {
-  return invoke<Skill[]>('list_skills');
+export interface BackendSkill {
+  name: string;
+  description: string;
+  command?: string | null;
+  version?: string | null;
+  enabled?: boolean | null;
+}
+
+export async function listSkills(): Promise<BackendSkill[]> {
+  return invoke<BackendSkill[]>('list_skills');
+}
+
+export async function uninstallSkill(skillName: string): Promise<void> {
+  return invoke<void>('uninstall_skill', { skillName });
+}
+
+export async function enableSkill(skillName: string): Promise<void> {
+  return invoke<void>('enable_skill', { skillName });
+}
+
+export async function disableSkill(skillName: string): Promise<void> {
+  return invoke<void>('disable_skill', { skillName });
+}
+
+export async function generatePrDraft(projectId: string, baseBranch?: string): Promise<PrDraftOutput> {
+  return invoke<PrDraftOutput>('generate_pr_draft', { projectId, baseBranch });
+}
+
+export interface PrDraftOutput {
+  title: string;
+  description: string;
+  branch?: string | null;
+  baseBranch?: string | null;
+  fileCount: number;
+  commitCount: number;
+}
+
+export async function confirmGitPush(callbackId: string): Promise<string> {
+  return invoke<string>('confirm_git_push', { callbackId });
+}
+
+export async function cancelGitPush(callbackId: string): Promise<string> {
+  return invoke<string>('cancel_git_push', { callbackId });
 }
 
 export async function getSetting(key: string): Promise<string | null> {
@@ -349,7 +415,36 @@ export async function setSetting(key: string, value: string): Promise<void> {
 }
 
 export async function getUpdateInfo(): Promise<UpdateInfo> {
-  return invoke<UpdateInfo>('get_update_info');
+  const raw = await invoke<{
+    current_version: string;
+    latest_version?: string | null;
+    download_url?: string | null;
+    size_bytes?: number | null;
+    changelog?: string | null;
+  }>('get_update_info');
+  return {
+    currentVersion: raw.current_version,
+    latestVersion: raw.latest_version ?? undefined,
+    downloadUrl: raw.download_url ?? undefined,
+    sizeBytes: raw.size_bytes ?? undefined,
+    changelog: raw.changelog ?? undefined,
+  };
+}
+
+// ── System / Database ──
+
+export interface VectorIndexMeta {
+  id: string;
+  projectId?: string | null;
+  dimension: number;
+  entryCount: number;
+  backend: string;
+  lastRebuildAt?: string | null;
+  status: string;
+}
+
+export async function getVectorIndexMeta(): Promise<VectorIndexMeta[]> {
+  return invoke<VectorIndexMeta[]>('get_vector_index_meta');
 }
 
 // ── AI Chat ──
@@ -837,6 +932,11 @@ export interface LoopActivityEvent {
   step: RawActivityStep;
 }
 
+export interface LoopCompletedEvent {
+  session_id: string;
+  message_id: string;
+}
+
 export function mapActivityStep(raw: RawActivityStep): import('./types').ActivityStep {
   return {
     id: raw.id,
@@ -857,36 +957,72 @@ export function onLoopActivity(callback: (event: LoopActivityEvent) => void): ()
   if (!isTauri()) return () => {};
   const { listen } = require('@tauri-apps/api/event');
   let unlisten: (() => void) | null = null;
+  let disposed = false;
   listen('loop-activity', (event: { payload: LoopActivityEvent }) => {
+    if (disposed) return;
     callback(event.payload);
   }).then((fn: () => void) => {
-    unlisten = fn;
+    if (disposed) fn();
+    else unlisten = fn;
   });
-  return () => { if (unlisten) unlisten(); };
+  return () => {
+    disposed = true;
+    if (unlisten) unlisten();
+  };
+}
+
+export function onLoopCompleted(callback: (event: LoopCompletedEvent) => void): () => void {
+  if (!isTauri()) return () => {};
+  const { listen } = require('@tauri-apps/api/event');
+  let unlisten: (() => void) | null = null;
+  let disposed = false;
+  listen('loop-completed', (event: { payload: LoopCompletedEvent }) => {
+    if (disposed) return;
+    callback(event.payload);
+  }).then((fn: () => void) => {
+    if (disposed) fn();
+    else unlisten = fn;
+  });
+  return () => {
+    disposed = true;
+    if (unlisten) unlisten();
+  };
 }
 
 export function onToolCallStart(callback: (event: ToolCallEvent) => void): () => void {
   if (!isTauri()) return () => {};
   const { listen } = require('@tauri-apps/api/event');
   let unlisten: (() => void) | null = null;
+  let disposed = false;
   listen('tool-call-start', (event: { payload: ToolCallEvent }) => {
+    if (disposed) return;
     callback(event.payload);
   }).then((fn: () => void) => {
-    unlisten = fn;
+    if (disposed) fn();
+    else unlisten = fn;
   });
-  return () => { if (unlisten) unlisten(); };
+  return () => {
+    disposed = true;
+    if (unlisten) unlisten();
+  };
 }
 
 export function onToolCallEnd(callback: (event: ToolCallEvent) => void): () => void {
   if (!isTauri()) return () => {};
   const { listen } = require('@tauri-apps/api/event');
   let unlisten: (() => void) | null = null;
+  let disposed = false;
   listen('tool-call-end', (event: { payload: ToolCallEvent }) => {
+    if (disposed) return;
     callback(event.payload);
   }).then((fn: () => void) => {
-    unlisten = fn;
+    if (disposed) fn();
+    else unlisten = fn;
   });
-  return () => { if (unlisten) unlisten(); };
+  return () => {
+    disposed = true;
+    if (unlisten) unlisten();
+  };
 }
 
 export async function listSshConnections(): Promise<Array<{ host: string; user: string; port: number; last_connected_at?: string }>> {
@@ -899,6 +1035,10 @@ export async function saveSshConnection(host: string, user: string, port?: numbe
 
 export async function exportBackup(outputPath: string): Promise<void> {
   return invoke('export_backup', { outputPath });
+}
+
+export async function importBackup(inputPath: string): Promise<Record<string, number>> {
+  return invoke('import_backup', { inputPath });
 }
 
 // ── Knowledge Base ──

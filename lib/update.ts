@@ -20,7 +20,41 @@ export interface ReleaseInfo {
 
 export const CURRENT_VERSION = "0.3.1"
 
-export const MOCK_RELEASE: ReleaseInfo | null = null
+/** true if `latest` is a strictly newer dotted version than `current`. */
+export function isNewerVersion(latest: string, current: string): boolean {
+  const a = latest.split(".").map((n) => parseInt(n, 10) || 0)
+  const b = current.split(".").map((n) => parseInt(n, 10) || 0)
+  const len = Math.max(a.length, b.length)
+  for (let i = 0; i < len; i++) {
+    const x = a[i] ?? 0
+    const y = b[i] ?? 0
+    if (x !== y) return x > y
+  }
+  return false
+}
+
+/** Map backend UpdateInfo to ReleaseInfo; null when already up to date. */
+export function releaseFromUpdateInfo(info: {
+  currentVersion: string
+  latestVersion?: string
+  downloadUrl?: string
+  sizeBytes?: number
+  changelog?: string
+}): ReleaseInfo | null {
+  if (!info.latestVersion || !isNewerVersion(info.latestVersion, info.currentVersion)) return null
+  const changelog = (info.changelog ?? "")
+    .split("\n")
+    .map((line) => line.replace(/^[-*]\s*/, "").trim())
+    .filter(Boolean)
+    .slice(0, 8)
+  return {
+    latestVersion: info.latestVersion,
+    sizeBytes: info.sizeBytes ?? 0,
+    changelog: changelog.length ? changelog : ["查看发布页了解更新内容"],
+    changelogUrl: info.downloadUrl ?? "",
+    minPreviousVersion: "",
+  }
+}
 
 export function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`

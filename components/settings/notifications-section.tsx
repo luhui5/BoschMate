@@ -9,6 +9,8 @@ export function NotificationsSection() {
   const [needsInput, setNeedsInput] = useSetting("notif_needs_input", true)
   const [errors, setErrors] = useSetting("notif_errors", true)
   const [sound, setSound] = useSetting("notif_sound", false)
+  const [threshold, setThreshold] = useSetting("notif_threshold_secs", "30")
+  const [channel, setChannel] = useSetting("notif_channel", "system")
 
   return (
     <div className="space-y-6">
@@ -35,8 +37,8 @@ export function NotificationsSection() {
       <SettingsCard>
         <SettingRow title="勿扰阈值" desc="任务运行时长超过该值才发送系统通知">
           <Select
-            value="30"
-            onChange={() => {}}
+            value={threshold}
+            onChange={setThreshold}
             options={[
               { value: "10", label: "10 秒" },
               { value: "30", label: "30 秒" },
@@ -46,8 +48,8 @@ export function NotificationsSection() {
         </SettingRow>
         <SettingRow title="通知方式" desc="系统通知中心或仅应用内提示">
           <Select
-            value="system"
-            onChange={() => {}}
+            value={channel}
+            onChange={setChannel}
             options={[
               { value: "system", label: "系统通知" },
               { value: "in-app", label: "仅应用内" },

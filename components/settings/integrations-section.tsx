@@ -1,24 +1,59 @@
 "use client"
 
-import { useState } from "react"
-import { GitBranch, Terminal, Boxes, Puzzle } from "lucide-react"
+import { useEffect, useState, useCallback } from "react"
+import { GitBranch, Terminal, Boxes, Puzzle, Loader2, Trash2, Power, PowerOff } from "lucide-react"
 import { cn } from "@/lib/utils"
-import { skills as seedSkills } from "@/lib/mock-data"
-import type { Skill } from "@/lib/types"
+import { isTauri, listSkills, enableSkill, disableSkill, uninstallSkill, type BackendSkill } from "@/lib/tauri-api"
 import { SectionHeader, SettingsCard } from "./primitives"
-import { Switch } from "@/components/ui/switch"
-
-const SOURCE_LABEL: Record<Skill["source"], string> = {
-  builtin: "内置",
-  registry: "注册表",
-  local: "本地",
-}
 
 export function IntegrationsSection() {
-  const [skills, setSkills] = useState<Skill[]>(seedSkills)
+  const [skills, setSkills] = useState<BackendSkill[]>([])
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
+  const [actionLoading, setActionLoading] = useState<string | null>(null)
 
-  function toggle(id: string) {
-    setSkills((prev) => prev.map((s) => (s.id === id ? { ...s, enabled: !s.enabled } : s)))
+  const refresh = useCallback(() => {
+    if (!isTauri()) {
+      setLoading(false)
+      return
+    }
+    setLoading(true)
+    listSkills()
+      .then((s) => { setSkills(s); setError(null) })
+      .catch((e) => setError(String(e)))
+      .finally(() => setLoading(false))
+  }, [])
+
+  useEffect(() => { refresh() }, [refresh])
+
+  const handleToggle = async (skill: BackendSkill) => {
+    if (!isTauri()) return
+    setActionLoading(skill.name)
+    try {
+      if (skill.enabled) {
+        await disableSkill(skill.name)
+      } else {
+        await enableSkill(skill.name)
+      }
+      await refresh()
+    } catch (e) {
+      setError(String(e))
+    } finally {
+      setActionLoading(null)
+    }
+  }
+
+  const handleUninstall = async (skill: BackendSkill) => {
+    if (!isTauri()) return
+    setActionLoading(skill.name)
+    try {
+      await uninstallSkill(skill.name)
+      await refresh()
+    } catch (e) {
+      setError(String(e))
+    } finally {
+      setActionLoading(null)
+    }
   }
 
   return (
@@ -30,47 +65,111 @@ export function IntegrationsSection() {
           连接
         </p>
         <SettingsCard>
-          <ConnectionRow icon={GitBranch} title="Git" detail="已连接 · origin/main" connected />
-          <ConnectionRow icon={Terminal} title="集成终端" detail="zsh · /Users/dev" connected />
-          <ConnectionRow icon={Boxes} title="MCP 服务器" detail="2 个已连接" connected />
+          <ConnectionRow icon={GitBranch} title="Git" detail="随项目工作区自动检测" connected />
+          <ConnectionRow icon={Terminal} title="集成终端" detail="Agent 沙箱内执行 shell 命令" connected />
+          <ConnectionRow icon={Boxes} title="MCP 服务器" detail="即将推出" />
         </SettingsCard>
       </div>
 
       <div>
         <p className="mb-2 flex items-center gap-2 text-xs font-medium uppercase tracking-wider text-muted-foreground">
-          <Puzzle className="h-3.5 w-3.5" /> 技能 ({skills.filter((s) => s.enabled).length}/{skills.length} 启用)
+          <Puzzle className="h-3.5 w-3.5" /> 技能 ({skills.length})
         </p>
         <SettingsCard>
-          {skills.map((s) => (
-            <div
-              key={s.id}
-              className="flex items-center justify-between gap-4 border-b border-border px-4 py-3 last:border-b-0"
-            >
-              <div className="min-w-0">
-                <div className="flex items-center gap-2">
-                  <code className="font-mono text-sm font-medium">{s.name}</code>
-                  <span className="rounded bg-muted px-1.5 py-0.5 text-[11px] text-muted-foreground">
-                    {SOURCE_LABEL[s.source]}
-                  </span>
-                  <span className="text-[11px] text-muted-foreground">v{s.version}</span>
-                </div>
-                <p className="mt-0.5 truncate text-xs text-muted-foreground">{s.description}</p>
-                <div className="mt-1.5 flex flex-wrap gap-1">
-                  {s.permissions.map((p) => (
-                    <span
-                      key={p}
-                      className="rounded bg-amber-500/10 px-1.5 py-0.5 text-[10px] text-amber-400"
-                    >
-                      {p}
-                    </span>
-                  ))}
-                </div>
-              </div>
-              <Switch checked={s.enabled} onCheckedChange={() => toggle(s.id)} />
+          {loading ? (
+            <div className="flex items-center justify-center gap-2 px-4 py-8 text-xs text-muted-foreground">
+              <Loader2 className="h-4 w-4 animate-spin" />
+              加载技能列表…
             </div>
-          ))}
+          ) : error ? (
+            <p className="px-4 py-8 text-center text-xs text-destructive">加载技能失败：{error}</p>
+          ) : skills.length === 0 ? (
+            <p className="px-4 py-8 text-center text-xs text-muted-foreground">
+              {isTauri() ? "暂无已安装技能。" : "浏览器预览模式下无法加载技能，请使用桌面应用。"}
+            </p>
+          ) : (
+            skills.map((s) => (
+              <SkillRow
+                key={s.name}
+                skill={s}
+                loading={actionLoading === s.name}
+                onToggle={() => handleToggle(s)}
+                onUninstall={() => handleUninstall(s)}
+              />
+            ))
+          )}
         </SettingsCard>
       </div>
+    </div>
+  )
+}
+
+function SkillRow({
+  skill,
+  loading,
+  onToggle,
+  onUninstall,
+}: {
+  skill: BackendSkill
+  loading: boolean
+  onToggle: () => void
+  onUninstall: () => void
+}) {
+  const enabled = skill.enabled !== false
+
+  return (
+    <div
+      className={cn(
+        "flex items-center gap-3 border-b border-border px-4 py-3 last:border-b-0",
+        !enabled && "opacity-50",
+      )}
+    >
+      <button
+        type="button"
+        disabled={loading}
+        onClick={onToggle}
+        className={cn(
+          "shrink-0 rounded p-1 transition-colors hover:bg-muted",
+          enabled ? "text-emerald-400" : "text-muted-foreground",
+        )}
+        title={enabled ? "禁用技能" : "启用技能"}
+      >
+        {loading ? (
+          <Loader2 className="h-4 w-4 animate-spin" />
+        ) : enabled ? (
+          <Power className="h-4 w-4" />
+        ) : (
+          <PowerOff className="h-4 w-4" />
+        )}
+      </button>
+
+      <div className="min-w-0 flex-1">
+        <div className="flex items-center gap-2">
+          <code className="font-mono text-sm font-medium">{skill.name}</code>
+          {skill.version && (
+            <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground">
+              v{skill.version}
+            </span>
+          )}
+        </div>
+        <p className="mt-0.5 truncate text-xs text-muted-foreground">{skill.description}</p>
+      </div>
+
+      {skill.command && (
+        <code className="shrink-0 rounded bg-muted px-1.5 py-0.5 font-mono text-[11px] text-muted-foreground">
+          {skill.command}
+        </code>
+      )}
+
+      <button
+        type="button"
+        disabled={loading}
+        onClick={onUninstall}
+        className="shrink-0 rounded p-1 text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive"
+        title="卸载技能"
+      >
+        <Trash2 className="h-3.5 w-3.5" />
+      </button>
     </div>
   )
 }
@@ -104,7 +203,7 @@ function ConnectionRow({
         )}
       >
         <span className={cn("h-1.5 w-1.5 rounded-full", connected ? "bg-emerald-400" : "bg-muted-foreground")} />
-        {connected ? "已连接" : "未连接"}
+        {connected ? "可用" : "未启用"}
       </span>
     </div>
   )

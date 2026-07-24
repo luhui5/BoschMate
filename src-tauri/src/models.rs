@@ -198,6 +198,18 @@ pub struct Skill {
     pub name: String,
     pub description: String,
     pub command: Option<String>,
+    pub version: Option<String>,
+    pub enabled: Option<bool>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PrDraftOutput {
+    pub title: String,
+    pub description: String,
+    pub branch: Option<String>,
+    pub base_branch: Option<String>,
+    pub file_count: usize,
+    pub commit_count: usize,
 }
 
 // ── Knowledge Base ──
