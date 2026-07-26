@@ -286,7 +286,7 @@ pub fn stash_push(
     let sig = repo
         .signature()
         .map_err(|e| format!("Git signature error: {}", e))?;
-    let msg = message.unwrap_or("BoschCode auto-stash");
+    let msg = message.unwrap_or("BoschMate auto-stash");
     let mut opts = git2::StashFlags::empty();
     if include_untracked {
         opts.insert(git2::StashFlags::INCLUDE_UNTRACKED);
@@ -326,7 +326,7 @@ pub fn stash_untracked_if_needed(repo_path: &Path) -> Result<Option<String>, Str
     if !has_untracked {
         return Ok(None);
     }
-    let msg = stash_push(repo_path, true, Some("BoschCode: protect untracked files"))?;
+    let msg = stash_push(repo_path, true, Some("BoschMate: protect untracked files"))?;
     Ok(Some(msg))
 }
 

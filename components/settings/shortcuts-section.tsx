@@ -162,7 +162,7 @@ export function ShortcutsSection() {
 
   useEffect(() => {
     try {
-      const stored = localStorage.getItem("boschcode-custom-shortcuts")
+      const stored = localStorage.getItem("boschmate-custom-shortcuts")
       if (stored) {
         const parsed = JSON.parse(stored)
         setCustomBindings(new Map(Object.entries(parsed)))
@@ -175,7 +175,7 @@ export function ShortcutsSection() {
     next.set(label, { label, keys })
     setCustomBindings(next)
     setRecording(null)
-    localStorage.setItem("boschcode-custom-shortcuts", JSON.stringify(Object.fromEntries(next)))
+    localStorage.setItem("boschmate-custom-shortcuts", JSON.stringify(Object.fromEntries(next)))
   }, [customBindings])
 
   const lookupKeys = mounted ? formatShortcut(settings.shortcut) : ["Ctrl", "Shift", "K"]

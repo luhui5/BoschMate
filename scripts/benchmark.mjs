@@ -1,6 +1,6 @@
-#!/usr/bin/env node
+﻿#!/usr/bin/env node
 /**
- * BoschCode Performance Benchmark Script (R6-1)
+ * BoschMate Performance Benchmark Script (R6-1)
  *
  * Measures:
  * 1. Vector store search performance (cold/warm cache)
@@ -11,7 +11,7 @@
  */
 
 const metadata = {
-  name: "BoschCode Benchmarks",
+  name: "BoschMate Benchmarks",
   version: "0.4.0",
   date: new Date().toISOString().split("T")[0],
 }
@@ -57,7 +57,7 @@ function benchmarkVectorSearch(entryCount, dims = 768) {
 // ── Run Benchmarks ──
 
 console.log("=".repeat(60))
-console.log(`  BoschCode Performance Benchmarks v${metadata.version}`)
+console.log(`  BoschMate Performance Benchmarks v${metadata.version}`)
 console.log(`  Date: ${metadata.date}`)
 console.log("=".repeat(60))
 

@@ -27,7 +27,7 @@ export function AboutSection() {
           {"</>"}
         </span>
         <div className="min-w-0 flex-1">
-          <p className="text-base font-semibold">BoschCode</p>
+          <p className="text-base font-semibold">BoschMate</p>
           <p className="font-mono text-sm text-muted-foreground">v{CURRENT_VERSION}</p>
         </div>
         {hasUpdate ? (

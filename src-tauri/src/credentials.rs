@@ -1,7 +1,7 @@
 /// OS keychain storage for API keys and secrets.
 /// Uses the `keyring` crate (Windows Credential Manager / macOS Keychain / Linux Secret Service).
 
-const SERVICE: &str = "com.boschcode.app";
+const SERVICE: &str = "com.boschmate.app";
 
 pub fn save_secret(key: &str, value: &str) -> Result<(), String> {
     let entry = keyring::Entry::new(SERVICE, key).map_err(|e| e.to_string())?;

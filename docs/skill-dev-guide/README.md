@@ -1,21 +1,21 @@
-# Skill 开发指南
+﻿# Skill 开发指南
 
 > 版本: 0.4.0 | 更新: 2026-07-18
 
-Skill 是 BoschCode 的扩展机制，允许用户为 AI Agent 添加自定义能力。
+Skill 是 BoschMate 的扩展机制，允许用户为 AI Agent 添加自定义能力。
 
 ## Skill 结构
 
-一个 Skill 是一个包含 `boschcode.skill.json` 清单文件的目录：
+一个 Skill 是一个包含 `BoschMate.skill.json` 清单文件的目录：
 
 ```
 my-skill/
-├── boschcode.skill.json    # 必需：Skill 清单
+├── BoschMate.skill.json    # 必需：Skill 清单
 ├── index.js                # 必需：入口脚本（Node.js）
 └── ...                     # 其他文件
 ```
 
-## 清单格式 (boschcode.skill.json)
+## 清单格式 (BoschMate.skill.json)
 
 ```json
 {
@@ -142,7 +142,7 @@ AI 调用示例:
 
 ### 版本升级
 
-替换 Skill 目录中的文件后，重启 BoschCode 即可生效。
+替换 Skill 目录中的文件后，重启 BoschMate 即可生效。
 
 ## 最佳实践
 

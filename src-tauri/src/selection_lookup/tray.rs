@@ -8,7 +8,7 @@ use tauri::{
     AppHandle, Manager, WebviewWindow, WebviewWindowBuilder,
 };
 
-const TRAY_ID: &str = "boschcode-tray";
+const TRAY_ID: &str = "boschmate-tray";
 const MAIN_WINDOW_LABEL: &str = "main";
 const POPUP_WINDOW_LABEL: &str = "selection-popup";
 const MENU_TOGGLE_ID: &str = "selection_lookup_toggle";
@@ -72,7 +72,7 @@ fn build_tray_menu(app: &AppHandle, enabled: bool) -> Result<Menu<tauri::Wry>, S
         None::<&str>,
     )
     .map_err(|e| e.to_string())?;
-    let open = MenuItem::with_id(app, MENU_OPEN_ID, "打开 BoschCode", true, None::<&str>)
+    let open = MenuItem::with_id(app, MENU_OPEN_ID, "打开 BoschMate", true, None::<&str>)
         .map_err(|e| e.to_string())?;
     let quit = MenuItem::with_id(app, MENU_QUIT_ID, "退出", true, None::<&str>)
         .map_err(|e| e.to_string())?;
