@@ -3,7 +3,7 @@ import { test, expect } from "@playwright/test"
 test.describe("E2E-1 新用户引导", () => {
   test("主页与设置可访问", async ({ page }) => {
     await page.goto("/")
-    await expect(page).toHaveTitle(/BoschMate/i)
+    await expect(page).toHaveTitle(/YourMate/i)
     await page.goto("/settings")
     await expect(page.getByText(/设置|Settings/i)).toBeVisible()
   })

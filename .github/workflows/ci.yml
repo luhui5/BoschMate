@@ -105,5 +105,5 @@ jobs:
       - run: npx tauri build --ci
       - uses: actions/upload-artifact@v4
         with:
-          name: BoschMate-${{ matrix.os }}
+          name: YourMate-${{ matrix.os }}
           path: src-tauri/target/release/bundle/

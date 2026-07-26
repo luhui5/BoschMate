@@ -129,7 +129,7 @@ pub fn parse_document_bytes(name: &str, kind: &str, bytes: &[u8]) -> Result<Stri
     }
 
     let tmp_dir = std::env::temp_dir().join(format!(
-        "boschmate-knowledge-{}",
+        "yourmate-knowledge-{}",
         uuid::Uuid::new_v4()
     ));
     std::fs::create_dir_all(&tmp_dir).map_err(|e| e.to_string())?;
