@@ -281,8 +281,6 @@ pub struct RetrieveKnowledgeContextInput {
     pub query: String,
     #[serde(default)]
     pub top_k: Option<usize>,
-    #[serde(default)]
-    pub ollama_url: Option<String>,
 }
 
 // ── Update ──

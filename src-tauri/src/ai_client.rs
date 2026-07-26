@@ -23,14 +23,14 @@ pub struct AiToolDef {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChatRequest {
-    pub provider: String,           // "anthropic" | "openai" | "ollama"
+    pub provider: String,           // "anthropic" | "openai"
     pub model: String,              // "claude-sonnet-4-6" | "gpt-4o" | "qwen2.5-coder"
     pub messages: Vec<AiMessage>,
     pub tools: Option<Vec<AiToolDef>>,
     pub temperature: Option<f32>,
     pub max_tokens: Option<u32>,
     pub api_key: Option<String>,    // for anthropic/openai
-    pub base_url: Option<String>,   // for ollama / custom endpoints
+    pub base_url: Option<String>,   // for custom endpoints
     pub system: Option<String>,
     /// When true, skip TLS certificate validation (for self-signed / internal CAs).
     #[serde(default)]
@@ -166,9 +166,6 @@ pub async fn stream_chat(
             }
             "openai" => {
                 stream_openai(app.clone(), req.clone(), session_id.clone(), message_id.clone(), cancel.clone()).await
-            }
-            "ollama" => {
-                stream_ollama(app.clone(), req.clone(), session_id.clone(), message_id.clone(), cancel.clone()).await
             }
             _ => return Err(format!("Unknown provider: {}", req.provider)),
         };
@@ -583,50 +580,4 @@ async fn stream_openai(
         activity_log: None,
         pending_questions: None,
     })
-}
-
-// ── Ollama (local, OpenAI-compatible) ──
-
-async fn stream_ollama(
-    app: AppHandle,
-    mut req: ChatRequest,
-    session_id: String,
-    message_id: String,
-    cancel: Arc<AtomicBool>,
-) -> Result<ChatResponse, String> {
-    // Ollama's /v1 endpoint is OpenAI-compatible; reuse the OpenAI streaming
-    // path so tool calls and usage are parsed identically.
-    if req.base_url.is_none() {
-        req.base_url = Some("http://localhost:11434/v1".into());
-    }
-    if req.model.is_empty() {
-        req.model = "qwen2.5-coder".into();
-    }
-    stream_openai(app, req, session_id, message_id, cancel)
-        .await
-        .map_err(|e| {
-            e.replace("OpenAI request failed", "Ollama request failed (is it running?)")
-                .replace("OpenAI error", "Ollama error")
-        })
-}
-
-// ── Get available models ──
-
-pub async fn list_ollama_models(base_url: &str) -> Result<Vec<String>, String> {
-    let client = reqwest::Client::new();
-    let resp = client
-        .get(format!("{}/api/tags", base_url))
-        .send()
-        .await
-        .map_err(|e| format!("Ollama not reachable: {}", e))?;
-
-    let json: Value = resp.json().await.map_err(|e| format!("Parse error: {}", e))?;
-    let models = json["models"]
-        .as_array()
-        .unwrap_or(&vec![])
-        .iter()
-        .filter_map(|m| m["name"].as_str().map(|s| s.to_string()))
-        .collect();
-
-    Ok(models)
 }

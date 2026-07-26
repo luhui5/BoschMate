@@ -633,8 +633,8 @@ export interface SystemHealth {
   subsystems: Array<{ name: string; healthy: boolean; message?: string }>;
 }
 
-export async function healthCheck(ollamaUrl?: string): Promise<SystemHealth> {
-  return invoke<SystemHealth>('health_check', { ollamaUrl });
+export async function healthCheck(): Promise<SystemHealth> {
+  return invoke<SystemHealth>('health_check', {});
 }
 
 export async function listChanges(sessionId: string): Promise<ChangeRecord[]> {

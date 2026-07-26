@@ -167,7 +167,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
       const poll = async () => {
         try {
-          const health = await healthCheck("http://localhost:11434")
+          const health = await healthCheck()
           setRunMode(health.mode as RunMode)
         } catch {
           setRunMode("offline")

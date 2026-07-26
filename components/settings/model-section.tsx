@@ -35,7 +35,7 @@ function createEmptyDraft(providers: ModelProviderConfig[]): ModelConfig {
     id: "",
     name: "",
     protocol: "openai",
-    backend: "ollama",
+    backend: "openai",
     providerId: providers[0]?.id ?? "",
     detail: "",
     endpoint: "",
@@ -345,7 +345,7 @@ export function ModelSection() {
       <div className="flex items-start gap-2 rounded-lg border border-border bg-muted/30 px-3 py-2.5 text-xs text-muted-foreground">
         <Cpu className="mt-0.5 h-3.5 w-3.5 shrink-0" />
         <span>
-          当前已配置 {providers.length} 个提供商、{models.length} 个模型。使用本地服务（Ollama / llama.cpp）时需确保对应服务已启动。
+          当前已配置 {providers.length} 个提供商、{models.length} 个模型。使用本地服务时需确保对应服务已启动。
         </span>
       </div>
 
@@ -453,7 +453,6 @@ export function ModelSection() {
                 value={draft.backend}
                 onChange={(v) => setDraft((d) => ({ ...d, backend: v as ModelBackend }))}
                 options={[
-                  { value: "ollama", label: "Ollama" },
                   { value: "openai", label: "OpenAI" },
                   { value: "anthropic", label: "Anthropic" },
                 ]}
@@ -544,7 +543,7 @@ export function ModelSection() {
             <Input
               value={draft.detail}
               onChange={(e) => setDraft((d) => ({ ...d, detail: e.target.value }))}
-              placeholder="例如 本地 · Ollama · 4-bit 量化"
+              placeholder="例如 本地 · OpenAI · 4-bit 量化"
             />
           </div>
         </div>

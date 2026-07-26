@@ -11,7 +11,7 @@ import { getSetting, setSetting, saveCredential, getCredential, deleteCredential
 export type ModelProtocol = "openai" | "anthropic"
 
 /** Backend streaming route — maps to Rust ChatRequest.provider */
-export type ModelBackend = "ollama" | "openai" | "anthropic"
+export type ModelBackend = "openai" | "anthropic"
 
 /** @deprecated Use ModelBackend — kept for migration only */
 export type ModelProvider = ModelBackend
@@ -39,14 +39,11 @@ export interface ModelConfig {
 
 /** Built-in provider ids — cannot be deleted from settings */
 export const BUILTIN_PROVIDER_IDS = new Set([
-  "provider-ollama",
   "provider-openai",
   "provider-anthropic",
-  "provider-bcsc",
 ])
 
 export const BACKEND_LABEL: Record<ModelBackend, string> = {
-  ollama: "Ollama",
   openai: "OpenAI",
   anthropic: "Anthropic",
 }
@@ -56,56 +53,15 @@ const UNGROUPED_PROVIDER_ID = "provider-ungrouped"
 // ── Defaults ──
 
 export const DEFAULT_PROVIDERS: ModelProviderConfig[] = [
-  { id: "provider-ollama", name: "Ollama" },
   { id: "provider-openai", name: "OpenAI" },
   { id: "provider-anthropic", name: "Anthropic" },
-  { id: "provider-bcsc", name: "BCSC" },
 ]
 
-export const DEFAULT_MODELS: ModelConfig[] = [
-  {
-    id: "bcsc-qwen",
-    name: "Qwen3.5-27B-FP16",
-    protocol: "openai",
-    backend: "openai",
-    providerId: "provider-bcsc",
-    detail: "BCSC 默认模型",
-    endpoint: "http://10.190.179.61:11600/v1",
-    contextWindow: 32768,
-    temperature: 0.2,
-  },
-]
-
-const DEFAULT_API_KEYS: Record<string, string> = {
-  "bcsc-qwen": "test",
-}
+export const DEFAULT_MODELS: ModelConfig[] = []
 
 const LEGACY_BACKEND_TO_PROVIDER_ID: Record<ModelBackend, string> = {
-  ollama: "provider-ollama",
   openai: "provider-openai",
   anthropic: "provider-anthropic",
-}
-
-const REMOVED_DEFAULT_MODEL_IDS = new Set(["ollama-local"])
-const OLD_BCSC_ENDPOINT = "http://10.190.179.61:11600"
-
-function applyDefaultModelMaintenance(models: ModelConfig[]): { models: ModelConfig[]; changed: boolean } {
-  let changed = false
-  const filtered = models.filter((m) => {
-    if (REMOVED_DEFAULT_MODEL_IDS.has(m.id)) {
-      changed = true
-      return false
-    }
-    return true
-  })
-  const patched = filtered.map((m) => {
-    if (m.id === "bcsc-qwen" && m.endpoint === OLD_BCSC_ENDPOINT) {
-      changed = true
-      return { ...m, endpoint: DEFAULT_MODELS[0].endpoint }
-    }
-    return m
-  })
-  return { models: patched, changed }
 }
 
 // ── Persistence ──
@@ -190,13 +146,6 @@ function mergeModels(existing: ModelConfig[]): ModelConfig[] {
   return ordered
 }
 
-async function seedDefaultApiKeys(): Promise<void> {
-  for (const [modelId, key] of Object.entries(DEFAULT_API_KEYS)) {
-    const existing = await loadApiKey(modelId)
-    if (!existing) await saveApiKey(modelId, key)
-  }
-}
-
 export async function loadProviders(): Promise<ModelProviderConfig[]> {
   let parsed: ModelProviderConfig[] | null = null
 
@@ -239,18 +188,14 @@ export async function loadModels(): Promise<ModelConfig[]> {
 
   if (!parsed) {
     await saveModels(DEFAULT_MODELS)
-    await seedDefaultApiKeys()
     return [...DEFAULT_MODELS]
   }
 
   let models = parsed.map(migrateModelEntry)
-  const maintained = applyDefaultModelMaintenance(models)
-  models = maintained.models
   const migrated = needsModelMigration(parsed)
   const merged = mergeModels(models)
   const changed =
     migrated ||
-    maintained.changed ||
     merged.length !== models.length ||
     merged.some((m, i) => m.id !== models[i]?.id)
 
@@ -259,7 +204,6 @@ export async function loadModels(): Promise<ModelConfig[]> {
     await saveModels(models)
   }
 
-  await seedDefaultApiKeys()
   return models
 }
 
@@ -431,13 +375,5 @@ export function isHttpsEndpoint(endpoint: string | null | undefined): boolean {
 
 export function inferBackend(protocol: ModelProtocol, endpoint: string | null): ModelBackend {
   if (protocol === "anthropic") return "anthropic"
-  if (
-    endpoint &&
-    (endpoint.includes("127.0.0.1") ||
-      endpoint.includes("localhost") ||
-      endpoint.includes(":11434"))
-  ) {
-    return "ollama"
-  }
   return "openai"
 }
