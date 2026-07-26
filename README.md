@@ -9,6 +9,7 @@ Local AI coding agent — Tauri v2 desktop app + Next.js UI.
 - **Git integration** — status, diff, commit from the sidebar
 - **Memory system** — SQLite + vector search, compress & manage in Settings
 - **Slash commands** — `/test`, `/lint`, `/format`, `/changelog`, etc.
+- **Ultra-lightweight** — ~7 MB memory footprint, runs smoothly even on resource-constrained machines
 
 ## Prerequisites
 

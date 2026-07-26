@@ -3,7 +3,6 @@
 use crate::knowledge_chunker::chunk_text;
 use crate::knowledge_parser::parse_document_bytes;
 use crate::knowledge_retriever::sync_chunk_fts;
-use crate::vector_store::generate_embedding;
 use rusqlite::{params, Connection};
 use std::sync::{Arc, Mutex};
 use tauri::{AppHandle, Emitter};
@@ -74,34 +73,17 @@ pub async fn index_document(
         return;
     }
 
-    let ollama_url = std::env::var("OLLAMA_URL").unwrap_or_else(|_| "http://localhost:11434".into());
-    let embedding_model = "nomic-embed-text";
-
     let mut indexed = 0i64;
     for (idx, chunk_content) in chunks.iter().enumerate() {
         let chunk_id = uuid::Uuid::new_v4().to_string();
         let now = chrono::Utc::now().to_rfc3339();
 
-        let embedding_blob = match generate_embedding(chunk_content, &ollama_url, embedding_model).await {
-            Ok(embedding) => {
-                let mut blob = Vec::with_capacity(embedding.len() * 4);
-                for &val in &embedding {
-                    blob.extend_from_slice(&val.to_le_bytes());
-                }
-                Some(blob)
-            }
-            Err(e) => {
-                eprintln!("[knowledge_indexer] Embedding failed for chunk {}: {}", chunk_id, e);
-                None
-            }
-        };
-
         {
             let conn = conn.lock().unwrap();
             if let Err(e) = conn.execute(
                 "INSERT INTO knowledge_chunks (id, document_id, kbase_id, chunk_index, content, embedding, created_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-                params![chunk_id, document_id, kbase_id, idx as i64, chunk_content, embedding_blob, now],
+                 VALUES (?1, ?2, ?3, ?4, ?5, NULL, ?6)",
+                params![chunk_id, document_id, kbase_id, idx as i64, chunk_content, now],
             ) {
                 set_status("failed", indexed, Some(&e.to_string()));
                 return;

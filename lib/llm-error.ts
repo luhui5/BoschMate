@@ -37,7 +37,7 @@ export function parseLlmError(raw: unknown): ParsedLlmError {
   if (/timeout|timed out|deadline/i.test(text)) {
     return {
       kind: "timeout",
-      message: "请求超时。请检查网络或 Ollama/API 端点是否可用后重试。",
+      message: "请求超时。请检查网络或 API 端点是否可用后重试。",
       retryable: true,
       canSwitchModel: true,
     }

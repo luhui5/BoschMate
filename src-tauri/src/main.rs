@@ -47,7 +47,7 @@ mod web_fetch;
 mod web_search;
 mod selection_lookup;
 
-use ai_client::{stream_chat as ai_stream_chat, list_ollama_models as ai_list_ollama_models};
+use ai_client::stream_chat as ai_stream_chat;
 use db::Database;
 use knowledge::KnowledgeStoreManager;
 use knowledge_tools::KnowledgeToolCtx;
@@ -906,23 +906,8 @@ async fn search_memories(
     project_id: String,
     query: String,
     limit: Option<usize>,
-    ollama_url: Option<String>,
 ) -> Result<Vec<Memory>, String> {
-    let url = ollama_url.unwrap_or_else(|| "http://localhost:11434".into());
     let top_k = limit.unwrap_or(10);
-
-    let corrupted = {
-        let vs = state.vector_store.lock().unwrap();
-        vs.is_corrupted()
-    };
-
-    let embedding = if corrupted {
-        None
-    } else {
-        vector_store::generate_embedding(&query, &url, "nomic-embed-text")
-            .await
-            .ok()
-    };
 
     let conn = state.db.conn.lock().unwrap();
     let vs = state.vector_store.lock().unwrap();
@@ -932,7 +917,7 @@ async fn search_memories(
         &project_id,
         &query,
         top_k,
-        embedding.as_deref(),
+        None,
     )
 }
 
@@ -942,14 +927,12 @@ async fn retrieve_memories(
     project_id: String,
     query: String,
     top_k: Option<usize>,
-    ollama_url: Option<String>,
 ) -> Result<serde_json::Value, String> {
     let memories = search_memories(
         state.clone(),
         project_id,
         query,
         top_k,
-        ollama_url,
     )
     .await?;
     Ok(serde_json::json!({
@@ -1136,30 +1119,11 @@ fn check_disk_space(state: State<AppState>) -> Result<serde_json::Value, String>
 
 #[tauri::command]
 async fn embed_memory(
-    state: State<'_, AppState>,
-    memory_id: String,
-    content: String,
-    ollama_url: Option<String>,
+    _state: State<'_, AppState>,
+    _memory_id: String,
+    _content: String,
 ) -> Result<(), String> {
-    let url = ollama_url.unwrap_or_else(|| "http://localhost:11434".into());
-    let embedding = vector_store::generate_embedding(&content, &url, "nomic-embed-text").await?;
-
-    // Store in vector store and update DB
-    {
-        let vs = state.vector_store.lock().unwrap();
-        vs.upsert(&memory_id, &embedding, 0.5)?;
-        vs.save_to_disk().ok();
-    }
-
-    // Update DB with embedding
-    let conn = state.db.conn.lock().unwrap();
-    let blob: Vec<u8> = embedding.iter().flat_map(|f| f.to_le_bytes()).collect();
-    conn.execute(
-        "UPDATE memories SET embedding = ?1 WHERE id = ?2",
-        params![blob, memory_id],
-    )
-    .map_err(|e| e.to_string())?;
-
+    // Embedding is no longer supported (Ollama removed)
     Ok(())
 }
 
@@ -1368,12 +1332,10 @@ fn decrypt_memory_content(
 #[tauri::command]
 async fn health_check(
     state: State<'_, AppState>,
-    ollama_url: Option<String>,
 ) -> Result<error_handler::SystemHealth, String> {
     let db_path = state.data_dir.join("boschcode.db");
     Ok(error_handler::check_system_health(
         &db_path,
-        ollama_url.as_deref(),
         Some(&state.data_dir),
     ).await)
 }
@@ -2767,12 +2729,8 @@ async fn stream_chat(
 }
 
 #[tauri::command]
-async fn list_models(provider: String, base_url: Option<String>) -> Result<Vec<String>, String> {
+async fn list_models(provider: String, _base_url: Option<String>) -> Result<Vec<String>, String> {
     match provider.as_str() {
-        "ollama" => {
-            let url = base_url.unwrap_or_else(|| "http://localhost:11434".into());
-            ai_list_ollama_models(&url).await
-        }
         "openai" => Ok(vec!["gpt-4o".into(), "gpt-4o-mini".into(), "gpt-4-turbo".into()]),
         "anthropic" => Ok(vec![
             "claude-fable-5".into(),

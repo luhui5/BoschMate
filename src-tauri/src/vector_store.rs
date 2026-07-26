@@ -338,49 +338,6 @@ fn now_ts() -> i64 {
         .as_secs() as i64
 }
 
-// ── Embedding client ──
-
-pub async fn generate_embedding(
-    text: &str,
-    ollama_url: &str,
-    model: &str,
-) -> Result<Vec<f32>, String> {
-    let client = reqwest::Client::new();
-    let body = serde_json::json!({
-        "model": model,
-        "prompt": text,
-    });
-
-    let response = client
-        .post(format!("{}/api/embeddings", ollama_url))
-        .json(&body)
-        .send()
-        .await
-        .map_err(|e| format!("Ollama embedding request failed: {}", e))?;
-
-    if !response.status().is_success() {
-        return Err(format!(
-            "Ollama API error {}: {}",
-            response.status(),
-            response.text().await.unwrap_or_default()
-        ));
-    }
-
-    let json: serde_json::Value = response
-        .json()
-        .await
-        .map_err(|e| format!("Parse error: {}", e))?;
-
-    let embedding: Vec<f32> = json["embedding"]
-        .as_array()
-        .ok_or("No embedding in response")?
-        .iter()
-        .map(|v| v.as_f64().unwrap_or(0.0) as f32)
-        .collect();
-
-    Ok(embedding)
-}
-
 // ── Memory compression ──
 
 pub fn compress_memories(

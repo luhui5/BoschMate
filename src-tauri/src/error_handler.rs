@@ -228,7 +228,6 @@ fn disk_available_mb(path: &std::path::Path) -> Option<u64> {
 
 pub async fn check_system_health(
     db_path: &std::path::Path,
-    ollama_url: Option<&str>,
     data_dir: Option<&std::path::Path>,
 ) -> SystemHealth {
     let mut subsystems = Vec::new();
@@ -239,22 +238,6 @@ pub async fn check_system_health(
         healthy: db_path.exists(),
         message: if db_path.exists() { None } else { Some("Database file not found".into()) },
     });
-
-    // Check Ollama if configured
-    if let Some(url) = ollama_url {
-        let client = reqwest::Client::new();
-        let healthy = client
-            .get(format!("{}/api/tags", url))
-            .send()
-            .await
-            .map(|r| r.status().is_success())
-            .unwrap_or(false);
-        subsystems.push(SubsystemHealth {
-            name: "ollama".into(),
-            healthy,
-            message: if healthy { None } else { Some("Ollama not reachable".into()) },
-        });
-    }
 
     // Check disk space
     if let Some(dir) = data_dir {
