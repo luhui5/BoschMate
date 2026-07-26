@@ -1,4 +1,4 @@
-# BoschCode
+# BoschMate
 
 Local AI coding agent — Tauri v2 desktop app + Next.js UI.
 
@@ -47,7 +47,7 @@ pnpm tauri build
 
 - **Models**: Settings → Model — add Ollama or OpenAI-compatible API (e.g. DeepSeek)
 - **API keys**: stored in OS Keychain (Windows Credential Manager / macOS Keychain)
-- **Updates**: set `BOSCHCODE_UPDATE_REPO` env to `owner/repo` for GitHub release checks
+- **Updates**: set `BOSCHMATE_UPDATE_REPO` env to `owner/repo` for GitHub release checks
 
 ## Docs
 

@@ -6,7 +6,7 @@ PROXY ?= http://127.0.0.1:17897
 # ── Development ──
 
 dev:
-	@echo "==> Starting BoschCode development environment..."
+	@echo "==> Starting BoschMate development environment..."
 	npx kill-port 3000 2>/dev/null; \
 	npx tauri dev
 
@@ -21,21 +21,21 @@ build:
 # ── Package ──
 
 package-windows:
-	@echo "==> Packaging BoschCode for Windows..."
+	@echo "==> Packaging BoschMate for Windows..."
 	npx tauri build --bundles msi,nsis
 
 package-macos:
-	@echo "==> Packaging BoschCode for macOS..."
+	@echo "==> Packaging BoschMate for macOS..."
 	npx tauri build --bundles dmg
 
 package-linux:
-	@echo "==> Packaging BoschCode for Linux..."
+	@echo "==> Packaging BoschMate for Linux..."
 	npx tauri build --bundles deb,appimage
 
 # ── All platforms (for CI) ──
 
 package-all:
-	@echo "==> Packaging BoschCode for all platforms..."
+	@echo "==> Packaging BoschMate for all platforms..."
 	pnpm build && \
 	npx tauri build
 
@@ -77,7 +77,7 @@ setup:
 # ── Help ──
 
 help:
-	@echo "BoschCode Makefile"
+	@echo "BoschMate Makefile"
 	@echo ""
 	@echo "  make dev                Start development environment"
 	@echo "  make build              Build frontend + Rust backend (release)"

@@ -136,7 +136,7 @@ mod tests {
     fn absolute_path_outside_root_denied() {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
-        let outside = std::env::temp_dir().join("boschcode-outside-test.txt");
+        let outside = std::env::temp_dir().join("boschmate-outside-test.txt");
         let abs = outside.canonicalize().unwrap_or(outside);
         assert!(resolve_under_root(root, abs.to_str().unwrap()).is_err());
     }

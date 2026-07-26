@@ -1333,7 +1333,7 @@ fn decrypt_memory_content(
 async fn health_check(
     state: State<'_, AppState>,
 ) -> Result<error_handler::SystemHealth, String> {
-    let db_path = state.data_dir.join("boschcode.db");
+    let db_path = state.data_dir.join("boschmate.db");
     Ok(error_handler::check_system_health(
         &db_path,
         Some(&state.data_dir),
@@ -2745,11 +2745,11 @@ async fn list_models(provider: String, _base_url: Option<String>) -> Result<Vec<
 #[tauri::command]
 fn get_update_info(_state: State<AppState>) -> Result<UpdateInfo, String> {
     let current = env!("CARGO_PKG_VERSION").to_string();
-    let repo = std::env::var("BOSCHCODE_UPDATE_REPO")
-        .unwrap_or_else(|_| "bosch/boschcode".into());
+    let repo = std::env::var("BOSCHMATE_UPDATE_REPO")
+        .unwrap_or_else(|_| "bosch/boschmate".into());
     let url = format!("https://api.github.com/repos/{}/releases/latest", repo);
     let client = reqwest::blocking::Client::new();
-    if let Ok(resp) = client.get(&url).header("User-Agent", "BoschCode").send() {
+    if let Ok(resp) = client.get(&url).header("User-Agent", "BoschMate").send() {
         if resp.status().is_success() {
             if let Ok(body) = resp.json::<serde_json::Value>() {
                 let latest = body["tag_name"].as_str().map(|s| s.trim_start_matches('v').to_string());
@@ -2789,10 +2789,10 @@ fn get_project_path(state: &AppState, project_id: &str) -> Result<String, String
 fn main() {
     let app_dir = dirs::data_local_dir()
         .unwrap_or_else(|| PathBuf::from("."))
-        .join("BoschCode");
+        .join("BoschMate");
 
     tracing_log::init(&app_dir);
-    tracing_log::info("app", "BoschCode starting");
+    tracing_log::info("app", "BoschMate starting");
 
     let db = Database::new(&app_dir).expect("Failed to initialize database");
     db.seed_builtin_skills().ok();

@@ -21,7 +21,7 @@ pub struct SkillToolDef {
     pub description: String,
 }
 
-const MANIFEST_FILE: &str = "boschcode.skill.json";
+const MANIFEST_FILE: &str = "boschmate.skill.json";
 
 pub fn parse_manifest(path: &Path) -> Result<SkillManifest, String> {
     let file = path.join(MANIFEST_FILE);

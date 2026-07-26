@@ -194,7 +194,7 @@ export function ProjectCard({
         open={confirmDelete}
         onClose={() => setConfirmDelete(false)}
         title="从列表移除项目？"
-        description={`「${project.name}」将从 BoschCode 中移除，本地文件夹不会被删除。`}
+        description={`「${project.name}」将从 BoschMate 中移除，本地文件夹不会被删除。`}
         footer={
           <>
             <Button variant="ghost" size="sm" onClick={() => setConfirmDelete(false)}>

@@ -2,7 +2,7 @@ import { test, expect } from "@playwright/test"
 
 test("home page loads", async ({ page }) => {
   await page.goto("/")
-  await expect(page).toHaveTitle(/BoschCode/i)
+  await expect(page).toHaveTitle(/BoschMate/i)
 })
 
 test("settings page loads", async ({ page }) => {

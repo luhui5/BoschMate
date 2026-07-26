@@ -1,4 +1,4 @@
-# BoschCode 用户手册
+﻿# BoschMate 用户手册
 
 > 版本: 0.4.0 | 更新: 2026-07-18
 
@@ -89,7 +89,7 @@ Skills 是用户可安装的扩展，为 Agent 提供额外能力。
 
 - 在设置 > 集成中管理已安装技能
 - 支持启用/禁用/卸载
-- Skill 可定义自定义 AI 工具（`boschcode.skill.json` 中的 `tools[]`）
+- Skill 可定义自定义 AI 工具（`BoschMate.skill.json` 中的 `tools[]`）
 
 ## 设置
 

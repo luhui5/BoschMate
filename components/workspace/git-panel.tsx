@@ -454,7 +454,7 @@ export function GitPanel({
             {gitError
               ? gitError.includes("Not a git repository") || gitError.includes("not a git repository")
                 ? workspaceName === "Home"
-                  ? "Home 工作区不是 Git 仓库。请在左侧切换到已打开的项目（如 BoschCode）以查看 Git 变更。"
+                  ? "Home 工作区不是 Git 仓库。请在左侧切换到已打开的项目（如 BoschMate）以查看 Git 变更。"
                   : "当前工作区不是 Git 仓库。"
                 : gitError
               : "工作区干净，没有未提交的变更。"}

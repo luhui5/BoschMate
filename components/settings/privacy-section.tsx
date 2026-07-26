@@ -51,7 +51,7 @@ export function PrivacySection() {
     <div className="space-y-6">
       <SectionHeader
         title="隐私与安全"
-        desc="BoschCode 默认完全本地运行。代码、记忆与密钥都不会离开你的设备，除非你显式启用云端模型。"
+        desc="BoschMate 默认完全本地运行。代码、记忆与密钥都不会离开你的设备，除非你显式启用云端模型。"
       />
 
       {diskWarning && (
