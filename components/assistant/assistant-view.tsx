@@ -18,7 +18,6 @@ import {
 import { cn } from "@/lib/utils"
 import { Button } from "@/components/ui/button"
 import { Modal } from "@/components/ui/modal"
-import { BoschLogo } from "@/components/bosch-logo"
 import { WorkspaceSidebar } from "@/components/assistant/workspace-sidebar"
 import {
   SEED_SESSIONS,
@@ -1626,7 +1625,7 @@ export function AssistantView({
         <header className="flex items-center justify-between gap-3 border-b border-border px-5 py-2.5">
           <div className="flex min-w-0 items-center gap-2">
             <Sparkles className="size-5 shrink-0 text-primary" />
-            <span className="truncate text-sm font-semibold">{active?.title ?? "Bosch Assistant"}</span>
+            <span className="truncate text-sm font-semibold">{active?.title ?? "Your Mate"}</span>
             {activeWorkspace && (
               <span className="hidden truncate text-xs text-muted-foreground sm:inline">
                 · {activeWorkspace.name}
@@ -1709,13 +1708,13 @@ export function AssistantView({
             {!hasChat ? (
               <div className="mx-auto flex min-h-full max-w-2xl flex-col items-start justify-center px-5 py-10">
                 <div className="mb-4 flex size-14 items-center justify-center rounded-2xl bg-foreground text-background">
-                  <BoschLogo className="size-7" />
+                  <img src="/icon.png" className="size-7 object-contain" alt="Your Mate" />
                 </div>
                 <h1 className="text-balance text-left text-2xl font-semibold tracking-tight">
                   我能帮你做什么？
                 </h1>
                 <p className="mt-2 text-pretty text-left text-sm text-muted-foreground">
-                  Bosch Assistant 是完全本地运行的智能体，可读写文件、执行命令、调用工具。选择下面的能力，或直接开始输入。
+                  Your Mate 是完全本地运行的智能体，可读写文件、执行命令、调用工具。选择下面的能力，或直接开始输入。
                 </p>
                 <div className="mt-6 grid w-full grid-cols-1 gap-2.5 sm:grid-cols-2">
                   {SUGGESTIONS.map((s) => {
@@ -1815,7 +1814,7 @@ export function AssistantView({
           placeholder={
             hasPendingQuestions
               ? "请先回答上方问题…"
-              : "给 Bosch Assistant 发送消息…"
+              : "给 Your Mate 发送消息…"
           }
           extraMenuItems={[
             {

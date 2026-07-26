@@ -1,5 +1,4 @@
 import { cn } from "@/lib/utils"
-import { BoschLogo } from "@/components/bosch-logo"
 
 export function Logo({ className }: { className?: string }) {
   return (
@@ -10,7 +9,7 @@ export function Logo({ className }: { className?: string }) {
       )}
       aria-hidden
     >
-      <BoschLogo className="size-4" />
+      <img src="/icon.png" className="size-4 object-contain" alt="Your Mate" />
     </span>
   )
 }

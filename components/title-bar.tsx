@@ -3,7 +3,6 @@
 import { useEffect, useState } from "react"
 import { Minus, Square, X } from "lucide-react"
 import { useApp } from "@/components/app-provider"
-import { BoschLogo } from "@/components/bosch-logo"
 import { BOSCH_GRADIENT } from "@/lib/bosch-brand"
 
 export function TitleBar() {
@@ -70,9 +69,9 @@ export function TitleBar() {
       >
         {/* Left: Logo + Title */}
         <div className="flex items-center gap-2 pl-3">
-          <BoschLogo className={`size-4 ${resolvedTheme === "dark" ? "text-white" : "text-zinc-900"}`} />
+          <img src="/icon.png" className="size-4" alt="Your Mate" />
           <span className="text-sm font-semibold tracking-wide">
-            Bosch Assistant
+            Your Mate
           </span>
         </div>
 
