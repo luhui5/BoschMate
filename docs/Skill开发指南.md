@@ -2,7 +2,7 @@
 
 ## Manifest
 
-在项目根目录创建 `BoschMate.skill.json`：
+在项目根目录创建 `YourMate.skill.json`：
 
 ```json
 {
@@ -19,7 +19,7 @@
 
 ## 安装
 
-将 skill 文件夹复制到 `%LOCALAPPDATA%/BoschMate/skills/` 或通过 IPC `install_skill`。
+将 skill 文件夹复制到 `%LOCALAPPDATA%/YourMate/skills/` 或通过 IPC `install_skill`。
 
 ## 运行
 

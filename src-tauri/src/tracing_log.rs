@@ -67,7 +67,7 @@ fn log_file_path() -> Option<PathBuf> {
     let config = LOG_CONFIG.lock().unwrap();
     let cfg = config.as_ref()?;
     let date = chrono::Utc::now().format("%Y-%m-%d").to_string();
-    Some(cfg.dir.join(format!("boschmate-{}.log", date)))
+    Some(cfg.dir.join(format!("yourmate-{}.log", date)))
 }
 
 fn should_log(level: LogLevel) -> bool {

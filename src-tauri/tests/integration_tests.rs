@@ -2,38 +2,38 @@
 mod crypto_tests {
     #[test]
     fn test_encrypt_decrypt_roundtrip() {
-        let salt = boschmate::crypto::generate_salt();
-        let key = boschmate::crypto::derive_key("test-password-123", &salt);
+        let salt = yourmate::crypto::generate_salt();
+        let key = yourmate::crypto::derive_key("test-password-123", &salt);
         let plaintext = "hello world test data";
-        let encrypted = boschmate::crypto::encrypt(plaintext, &key).unwrap();
-        let decrypted = boschmate::crypto::decrypt(&encrypted, &key).unwrap();
+        let encrypted = yourmate::crypto::encrypt(plaintext, &key).unwrap();
+        let decrypted = yourmate::crypto::decrypt(&encrypted, &key).unwrap();
         assert_eq!(plaintext, decrypted);
     }
 
     #[test]
     fn test_wrong_key_fails() {
-        let salt = boschmate::crypto::generate_salt();
-        let key1 = boschmate::crypto::derive_key("password1", &salt);
-        let key2 = boschmate::crypto::derive_key("password2", &salt);
-        let encrypted = boschmate::crypto::encrypt("secret", &key1).unwrap();
-        assert!(boschmate::crypto::decrypt(&encrypted, &key2).is_err());
+        let salt = yourmate::crypto::generate_salt();
+        let key1 = yourmate::crypto::derive_key("password1", &salt);
+        let key2 = yourmate::crypto::derive_key("password2", &salt);
+        let encrypted = yourmate::crypto::encrypt("secret", &key1).unwrap();
+        assert!(yourmate::crypto::decrypt(&encrypted, &key2).is_err());
     }
 
     #[test]
     fn test_empty_string() {
-        let salt = boschmate::crypto::generate_salt();
-        let key = boschmate::crypto::derive_key("test", &salt);
-        let encrypted = boschmate::crypto::encrypt("", &key).unwrap();
-        let decrypted = boschmate::crypto::decrypt(&encrypted, &key).unwrap();
+        let salt = yourmate::crypto::generate_salt();
+        let key = yourmate::crypto::derive_key("test", &salt);
+        let encrypted = yourmate::crypto::encrypt("", &key).unwrap();
+        let decrypted = yourmate::crypto::decrypt(&encrypted, &key).unwrap();
         assert_eq!(decrypted, "");
     }
 
     #[test]
     fn test_different_salts_different_keys() {
-        let salt1 = boschmate::crypto::generate_salt();
-        let salt2 = boschmate::crypto::generate_salt();
-        let key1 = boschmate::crypto::derive_key("same-password", &salt1);
-        let key2 = boschmate::crypto::derive_key("same-password", &salt2);
+        let salt1 = yourmate::crypto::generate_salt();
+        let salt2 = yourmate::crypto::generate_salt();
+        let key1 = yourmate::crypto::derive_key("same-password", &salt1);
+        let key2 = yourmate::crypto::derive_key("same-password", &salt2);
         assert_ne!(key1, key2);
     }
 }
@@ -44,7 +44,7 @@ mod sandbox_tests {
 
     #[test]
     fn test_sandbox_blocks_dangerous_commands() {
-        let config = boschmate::sandbox::SandboxConfig {
+        let config = yourmate::sandbox::SandboxConfig {
             project_root: PathBuf::from("/tmp/test"),
             allowed_dirs: vec![],
             allow_network: false,
@@ -52,7 +52,7 @@ mod sandbox_tests {
             timeout_ms: 5000,
             max_output_bytes: 1024,
         };
-        let result = boschmate::sandbox::execute_sandboxed(
+        let result = yourmate::sandbox::execute_sandboxed(
             "rm -rf /",
             "/tmp/test",
             None,
@@ -65,7 +65,7 @@ mod sandbox_tests {
 
     #[test]
     fn test_sandbox_allows_safe_commands() {
-        let config = boschmate::sandbox::SandboxConfig {
+        let config = yourmate::sandbox::SandboxConfig {
             project_root: PathBuf::from("."),
             allowed_dirs: vec![],
             allow_network: false,
@@ -73,7 +73,7 @@ mod sandbox_tests {
             timeout_ms: 5000,
             max_output_bytes: 8192,
         };
-        let result = boschmate::sandbox::execute_sandboxed(
+        let result = yourmate::sandbox::execute_sandboxed(
             "echo hello",
             ".",
             None,

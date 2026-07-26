@@ -12,7 +12,7 @@ Full doc: [CLAUDE.md](../CLAUDE.md)
 3. **Surgical edits** — match existing style; don't refactor unrelated code; every changed line traces to the request.
 4. **Goal-driven** — define verifiable success criteria; check build/tests before claiming done.
 
-## BoschMate
+## YourMate
 
 - Tauri v2 + Next.js/TS; use **pnpm**. Backend: `src-tauri/`, UI: `components/`, shared: `lib/`.
 - Full dev: `pnpm tauri dev`. Rust check: `cargo check` in `src-tauri/`.

@@ -389,58 +389,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "boschmate"
-version = "0.1.0"
-dependencies = [
- "arboard",
- "argon2",
- "base64 0.22.1",
- "calamine",
- "chrono",
- "dirs 5.0.1",
- "docx-rs",
- "enigo",
- "futures",
- "git2",
- "globset",
- "hex",
- "htmd",
- "html-escape",
- "ignore",
- "keyring",
- "notify",
- "pdf-extract",
- "proptest",
- "rayon",
- "rdev",
- "regex",
- "reqwest 0.12.28",
- "ring",
- "rusqlite",
- "serde",
- "serde_json",
- "sha2",
- "tauri",
- "tauri-build",
- "tauri-plugin-dialog",
- "tauri-plugin-fs",
- "tauri-plugin-global-shortcut",
- "tauri-plugin-opener",
- "tauri-plugin-process",
- "tauri-plugin-shell",
- "tauri-plugin-updater",
- "tempfile",
- "tokio",
- "tree-sitter",
- "tree-sitter-rust",
- "url",
- "urlencoding",
- "uuid",
- "walkdir",
- "winapi",
-]
-
-[[package]]
 name = "brotli"
 version = "8.0.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6860,6 +6808,58 @@ dependencies = [
  "quote",
  "syn 2.0.118",
  "synstructure",
+]
+
+[[package]]
+name = "yourmate"
+version = "0.1.0"
+dependencies = [
+ "arboard",
+ "argon2",
+ "base64 0.22.1",
+ "calamine",
+ "chrono",
+ "dirs 5.0.1",
+ "docx-rs",
+ "enigo",
+ "futures",
+ "git2",
+ "globset",
+ "hex",
+ "htmd",
+ "html-escape",
+ "ignore",
+ "keyring",
+ "notify",
+ "pdf-extract",
+ "proptest",
+ "rayon",
+ "rdev",
+ "regex",
+ "reqwest 0.12.28",
+ "ring",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tauri",
+ "tauri-build",
+ "tauri-plugin-dialog",
+ "tauri-plugin-fs",
+ "tauri-plugin-global-shortcut",
+ "tauri-plugin-opener",
+ "tauri-plugin-process",
+ "tauri-plugin-shell",
+ "tauri-plugin-updater",
+ "tempfile",
+ "tokio",
+ "tree-sitter",
+ "tree-sitter-rust",
+ "url",
+ "urlencoding",
+ "uuid",
+ "walkdir",
+ "winapi",
 ]
 
 [[package]]

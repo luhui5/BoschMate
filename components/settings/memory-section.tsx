@@ -94,7 +94,7 @@ export function MemorySection() {
     const url = URL.createObjectURL(blob)
     const a = document.createElement("a")
     a.href = url
-    a.download = `boschmate-memories-${Date.now()}.json`
+    a.download = `yourmate-memories-${Date.now()}.json`
     a.click()
     URL.revokeObjectURL(url)
   }

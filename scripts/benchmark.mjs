@@ -1,6 +1,6 @@
 ﻿#!/usr/bin/env node
 /**
- * BoschMate Performance Benchmark Script (R6-1)
+ * YourMate Performance Benchmark Script (R6-1)
  *
  * Measures:
  * 1. Vector store search performance (cold/warm cache)
@@ -11,7 +11,7 @@
  */
 
 const metadata = {
-  name: "BoschMate Benchmarks",
+  name: "YourMate Benchmarks",
   version: "0.4.0",
   date: new Date().toISOString().split("T")[0],
 }
@@ -57,7 +57,7 @@ function benchmarkVectorSearch(entryCount, dims = 768) {
 // ── Run Benchmarks ──
 
 console.log("=".repeat(60))
-console.log(`  BoschMate Performance Benchmarks v${metadata.version}`)
+console.log(`  YourMate Performance Benchmarks v${metadata.version}`)
 console.log(`  Date: ${metadata.date}`)
 console.log("=".repeat(60))
 

@@ -20,7 +20,7 @@ export function Wordmark({ className }: { className?: string }) {
     <span className={cn("flex items-center gap-2", className)}>
       <Logo />
       <span className="text-sm font-semibold tracking-tight">
-        Bosch<span className="text-primary">Mate</span>
+        Your<span className="text-primary">Mate</span>
       </span>
     </span>
   )

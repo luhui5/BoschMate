@@ -49,7 +49,7 @@ pub fn edit_file(
     if !dry_run {
         // Backup original for rollback
         let hash = sha2::Sha256::digest(original.as_bytes());
-        let backup_dir = root.join(".boschmate").join("backups");
+        let backup_dir = root.join(".yourmate").join("backups");
         fs::create_dir_all(&backup_dir)
             .map_err(|e| format!("Failed to create backup dir: {}", e))?;
         let backup_name = format!("{:x}_{}", hash, rel_path.replace(['/', '\\'], "_"));
@@ -116,7 +116,7 @@ pub fn apply_write(root: &Path, rel_path: &str, content: &str) -> Result<EditRes
 
     if !original.is_empty() || safe_path.exists() {
         let hash = sha2::Sha256::digest(original.as_bytes());
-        let backup_dir = root.join(".boschmate").join("backups");
+        let backup_dir = root.join(".yourmate").join("backups");
         fs::create_dir_all(&backup_dir)
             .map_err(|e| format!("Failed to create backup dir: {}", e))?;
         let backup_name = format!("{:x}_{}", hash, rel_path.replace(['/', '\\'], "_"));
@@ -220,7 +220,7 @@ pub fn search_replace(
 
 /// Rollback a previous edit by restoring from backup. Returns SHA256 of restored content.
 pub fn rollback_edit(root: &Path, backup_hash: &str, rel_path: &str) -> Result<String, String> {
-    let backup_dir = root.join(".boschmate").join("backups");
+    let backup_dir = root.join(".yourmate").join("backups");
     let backup_name = format!("{}_{}", backup_hash, rel_path.replace(['/', '\\'], "_"));
     let backup_path = backup_dir.join(&backup_name);
 
