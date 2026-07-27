@@ -80,6 +80,7 @@ import {
   onLoopCompleted,
   mapActivityStep,
   onAssistantPrefillQuery,
+  saveStreamingSnapshot,
 } from "@/lib/tauri-api"
 import { isChatCancelled } from "@/lib/chat-cancel"
 import { getCommands, parseCommand, executeCommand } from "@/lib/slash-commands"
@@ -397,8 +398,14 @@ export function AssistantView({
   const prevPinnedRef = useRef(false)
   const prevMsgCountRef = useRef(0)
   const followScrollRafRef = useRef<number | null>(null)
+  // ── Adaptive streaming throttle ──
+  // Large content produces far fewer state updates to avoid main-thread freeze.
+  const FLUSH_FAST_MS = 120   // content ≤ 8 KB
+  const FLUSH_SLOW_MS = 350   // content 8-30 KB
+  const FLUSH_LAZY_MS = 700   // content > 30 KB
   const tokenFlushTimerRef = useRef<number | null>(null)
   const pendingTokenRef = useRef<{ messageId: string; content: string } | null>(null)
+  const lastTokenFlushLenRef = useRef(0)
   const thoughtFlushTimerRef = useRef<number | null>(null)
   const pendingThoughtDetailRef = useRef<{
     messageId: string
@@ -414,6 +421,7 @@ export function AssistantView({
   const pendingActivityStepsRef = useRef<ActivityStep[]>([])
   const chatMessagesCacheRef = useRef(new Map<string, ChatMessage>())
   const streamingActiveRef = useRef(false)
+  const streamingSaveIntervalRef = useRef<number | null>(null)
 
   const scheduleFollowScroll = useCallback(() => {
     const container = scrollRef.current
@@ -747,6 +755,17 @@ export function AssistantView({
     tokenFlushTimerRef.current = null
     const pending = pendingTokenRef.current
     if (!pending) return
+    const len = pending.content.length
+    // For large content, skip flushes that added too little new text
+    if (len > 30000) {
+      const sinceLast = len - lastTokenFlushLenRef.current
+      if (sinceLast < 400) {
+        // Not enough new content — reschedule for later
+        tokenFlushTimerRef.current = window.setTimeout(flushPendingToken, FLUSH_LAZY_MS)
+        return
+      }
+    }
+    lastTokenFlushLenRef.current = len
     pendingTokenRef.current = null
     patchGeneratingMessage(pending.messageId, {
       content: pending.content,
@@ -759,9 +778,36 @@ export function AssistantView({
     (messageId: string, content: string) => {
       pendingTokenRef.current = { messageId, content }
       if (tokenFlushTimerRef.current != null) return
-      tokenFlushTimerRef.current = window.setTimeout(flushPendingToken, 150)
+      const delay =
+        content.length <= 8000 ? FLUSH_FAST_MS
+        : content.length <= 30000 ? FLUSH_SLOW_MS
+        : FLUSH_LAZY_MS
+      tokenFlushTimerRef.current = window.setTimeout(flushPendingToken, delay)
     },
     [flushPendingToken],
+  )
+
+  // ── Periodic streaming snapshot save (every 8 s) ──
+  const SNAPSHOT_SAVE_INTERVAL_MS = 8000
+
+  const stopStreamingSave = useCallback(() => {
+    if (streamingSaveIntervalRef.current != null) {
+      window.clearInterval(streamingSaveIntervalRef.current)
+      streamingSaveIntervalRef.current = null
+    }
+  }, [])
+
+  const startStreamingSave = useCallback(
+    (messageId: string, sessionId: string, mode: string) => {
+      stopStreamingSave()
+      if (!isTauri()) return
+      streamingSaveIntervalRef.current = window.setInterval(() => {
+        const content = streamContentBufferRef.current
+        if (!content) return
+        void saveStreamingSnapshot(messageId, sessionId, content, mode).catch(() => {})
+      }, SNAPSHOT_SAVE_INTERVAL_MS)
+    },
+    [stopStreamingSave],
   )
 
   const flushPendingThoughtDetail = useCallback(() => {
@@ -1250,6 +1296,7 @@ export function AssistantView({
     ])
 
     streamContentBufferRef.current = ""
+    lastTokenFlushLenRef.current = 0
     const unlistenToken = onChatToken((e) => {
       if (e.session_id !== activeId || e.message_id !== assistantMsgId) return
       if (stopRequestedRef.current) return
@@ -1260,6 +1307,7 @@ export function AssistantView({
     const unlistenReset = onChatStreamReset((e) => {
       if (e.session_id !== activeId || e.message_id !== assistantMsgId) return
       streamContentBufferRef.current = ""
+      lastTokenFlushLenRef.current = 0
       routeChatToken(assistantMsgId, "")
     })
 
@@ -1274,6 +1322,8 @@ export function AssistantView({
           if (stopRequestedRef.current) return
           handleLoopActivity(mapActivityStep(e.step))
         })
+
+    startStreamingSave(assistantMsgId, activeId, sessionAgentMode)
 
     const apiKey = (await loadApiKey(modelCfg.id)) ?? undefined
 
@@ -1367,6 +1417,7 @@ export function AssistantView({
       setLlmError(parsed)
       updateActiveMessages((msgs) => msgs.filter((m) => m.id !== assistantMsgId))
     } finally {
+      stopStreamingSave()
       flushPendingActivitySync()
       flushPendingThoughtDetailSync()
       flushStreamingTokenSync()
@@ -1452,6 +1503,7 @@ export function AssistantView({
     )
 
     streamContentBufferRef.current = ""
+    lastTokenFlushLenRef.current = 0
     const unlistenToken = onChatToken((e) => {
       if (e.session_id !== activeId || e.message_id !== messageId) return
       if (stopRequestedRef.current) return
@@ -1462,6 +1514,7 @@ export function AssistantView({
     const unlistenReset = onChatStreamReset((e) => {
       if (e.session_id !== activeId || e.message_id !== messageId) return
       streamContentBufferRef.current = ""
+      lastTokenFlushLenRef.current = 0
       routeChatToken(messageId, "")
     })
 
@@ -1478,6 +1531,9 @@ export function AssistantView({
           handleLoopActivity(mapActivityStep(e.step))
         })
       : () => {}
+
+    const questionMode = active?.messages.find((m) => m.id === messageId)?.mode ?? "edit"
+    startStreamingSave(messageId, activeId, questionMode)
 
     try {
       const response = await continueAiLoop(activeId, messageId, answers)
@@ -1531,6 +1587,7 @@ export function AssistantView({
         ),
       )
     } finally {
+      stopStreamingSave()
       flushPendingActivitySync()
       flushPendingThoughtDetailSync()
       flushStreamingTokenSync()

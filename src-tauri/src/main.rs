@@ -389,6 +389,33 @@ fn save_assistant_message(
     })
 }
 
+/// Periodic snapshot during streaming — upsert so the frontend can recover
+/// partial content if the app crashes before the loop finishes.
+#[tauri::command]
+fn save_streaming_snapshot(
+    state: State<AppState>,
+    id: String,
+    session_id: String,
+    content: String,
+    mode: Option<String>,
+) -> Result<(), String> {
+    let now = chrono::Utc::now().to_rfc3339();
+    let conn = state.db.conn.lock().unwrap();
+    conn.execute(
+        "INSERT INTO messages (id, session_id, role, content, mode, created_at) \
+         VALUES (?1, ?2, 'assistant', ?3, ?4, ?5) \
+         ON CONFLICT(id) DO UPDATE SET content = excluded.content, mode = excluded.mode",
+        params![id, session_id, content, mode, now],
+    )
+    .map_err(|e| e.to_string())?;
+    conn.execute(
+        "UPDATE sessions SET updated_at = ?1 WHERE id = ?2",
+        params![now, session_id],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 // ── File system commands ──
 
 #[tauri::command]
@@ -2871,6 +2898,7 @@ fn main() {
             list_messages,
             send_message,
             save_assistant_message,
+            save_streaming_snapshot,
             // File system
             list_directory,
             read_file,

@@ -7,8 +7,11 @@ on:
 
 jobs:
   release:
-    name: Build & Publish
-    runs-on: ubuntu-24.04
+    name: Build & Publish (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [windows-latest, macos-latest, ubuntu-24.04]
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -16,13 +19,22 @@ jobs:
         with: { node-version: '22' }
       - uses: pnpm/action-setup@v4
         with: { version: '10' }
-      - run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libssl-dev libsoup-3.0-dev libjavascriptcoregtk-4.1-dev
+
+      - name: Install Linux system dependencies
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libssl-dev libsoup-3.0-dev libjavascriptcoregtk-4.1-dev
+
+      - name: Inject version from tag
+        run: node -e "const v='${{ github.ref_name }}'.replace(/^v/,'');['src-tauri/Cargo.toml','src-tauri/tauri.conf.json'].forEach(f=>require('fs').writeFileSync(f,require('fs').readFileSync(f,'utf8').replace(/^version = \"[^\"]*\"/m,'version = \"'+v+'\"').replace(/\"version\": \"[^\"]*\"/,'\"version\": \"'+v+'\"')))"
+
       - run: pnpm install --frozen-lockfile
       - run: pnpm build
       - run: npx tauri build --ci
+
       - name: Upload release artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: YourMate-release
+          name: YourMate-release-${{ matrix.os }}
           path: src-tauri/target/release/bundle/
+
       # Code signing: configure TAURI_SIGNING_PRIVATE_KEY in repo secrets for production builds.

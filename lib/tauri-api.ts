@@ -178,6 +178,16 @@ export async function saveAssistantMessage(
   return mapChatMessage(raw);
 }
 
+/** Periodic snapshot during streaming — upserts so partial content survives crashes. */
+export async function saveStreamingSnapshot(
+  messageId: string,
+  sessionId: string,
+  content: string,
+  mode?: string,
+): Promise<void> {
+  await invoke('save_streaming_snapshot', { id: messageId, sessionId, content, mode });
+}
+
 // ── File System ──
 
 export async function listDirectoryTree(
