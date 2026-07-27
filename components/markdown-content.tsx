@@ -11,6 +11,10 @@ import type { MarkdownBlock } from "@/lib/markdown-blocks"
 const STABLE_PARSE_DEBOUNCE_MS = 250
 /** Beyond this length, freeze stable parse during stream; tail stays plain until done. */
 const STREAM_PARSE_FREEZE_LEN = 4500
+/** Max content length to render without truncation (non-streaming). */
+const MAX_RENDER_LENGTH = 30_000
+/** Max tail length shown during streaming to keep DOM light. */
+const MAX_STREAMING_TAIL_LEN = 12_000
 
 function inline(text: string, onOpenFile?: (path: string) => void) {
   const parts = text.split(/(`[^`]+`|\*\*[^*]+\*\*|@[^\s`,]+)/g)
@@ -208,6 +212,12 @@ export function MarkdownContent({
   /** When true, complete blocks are formatted (debounced); pending tail stays plain text. */
   streaming?: boolean
 }) {
+  const [expanded, setExpanded] = useState(false)
+  // Reset expanded when content changes (new message)
+  useEffect(() => {
+    setExpanded(false)
+  }, [content])
+
   const liveSplit = useMemo(() => {
     if (!streaming) return { stableText: content, tail: "" }
     return splitStreamingMarkdown(content)
@@ -221,18 +231,38 @@ export function MarkdownContent({
 
   const pendingPlain = useMemo(() => {
     if (!streaming) return ""
-    return streamingPendingPlain(content, debouncedStable)
+    const raw = streamingPendingPlain(content, debouncedStable)
+    // Limit streaming tail length to avoid huge DOM nodes
+    if (raw.length <= MAX_STREAMING_TAIL_LEN) return raw
+    return raw.slice(raw.length - MAX_STREAMING_TAIL_LEN)
   }, [content, debouncedStable, streaming])
 
+  const truncated = !streaming && !expanded && content.length > MAX_RENDER_LENGTH
+
+  const renderContent = useMemo(() => {
+    if (!streaming && !truncated) return content
+    if (truncated) return content.slice(0, MAX_RENDER_LENGTH)
+    return ""
+  }, [content, streaming, truncated])
+
   const completeBlocks = useMemo(
-    () => (streaming ? null : parseBlocks(content)),
-    [content, streaming],
+    () => (!streaming ? parseBlocks(renderContent) : null),
+    [renderContent, streaming],
   )
 
   if (!streaming) {
     return (
       <div className={cn("flex flex-col gap-1.5 text-left", className)}>
         {completeBlocks!.map((block, i) => renderBlock(block, i, onOpenFile))}
+        {truncated && (
+          <button
+            type="button"
+            onClick={() => setExpanded(true)}
+            className="self-start rounded-md border border-border bg-muted/40 px-3 py-1.5 text-xs font-medium text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+          >
+            展开全部（共 {Math.round(content.length / 1024)} KB）
+          </button>
+        )}
       </div>
     )
   }
