@@ -21,8 +21,11 @@ jobs:
       - run: pnpm build
       - run: npx tauri build --ci
 
+      - name: Sanitize branch name
+        run: echo "SAFE_REF=${{ github.ref_name }}" | sed 's/\//-/g' >> $env:GITHUB_ENV
+
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: YourMate-windows-${{ github.ref_name }}-${{ github.sha }}
+          name: YourMate-windows-${{ env.SAFE_REF }}-${{ github.sha }}
           path: src-tauri/target/release/bundle/
