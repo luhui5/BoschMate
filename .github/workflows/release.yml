@@ -24,8 +24,16 @@ jobs:
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libssl-dev libsoup-3.0-dev libjavascriptcoregtk-4.1-dev
 
+      - name: Sanitize tag name
+        id: sanitize
+        shell: bash
+        run: echo "tag=${TAG//\//-}" >> $GITHUB_OUTPUT
+        env:
+          TAG: ${{ github.ref_name }}
+
       - name: Inject version from tag
-        run: node -e "const v='${{ github.ref_name }}'.replace(/^v/,'');['src-tauri/Cargo.toml','src-tauri/tauri.conf.json'].forEach(f=>require('fs').writeFileSync(f,require('fs').readFileSync(f,'utf8').replace(/^version = \"[^\"]*\"/m,'version = \"'+v+'\"').replace(/\"version\": \"[^\"]*\"/,'\"version\": \"'+v+'\"')))"
+        run: |
+          node -e 'const v="${{ steps.sanitize.outputs.tag }}".replace(/^v/,"");const fs=require("fs");for(const f of ["src-tauri/Cargo.toml","src-tauri/tauri.conf.json"]){let c=fs.readFileSync(f,"utf8");c=c.replace(/^version = ".*?"/m,"version = \""+v+"\"");c=c.replace(/"version": ".*?"/,"\"version\": \""+v+"\"");fs.writeFileSync(f,c)}'
 
       - run: pnpm install --frozen-lockfile
       - run: pnpm build

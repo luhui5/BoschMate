@@ -11,6 +11,7 @@ Local AI coding agent — Tauri v2 desktop app + Next.js UI.
 - **Slash commands** — `/test`, `/lint`, `/format`, `/changelog`, etc.
 - **Ultra-lightweight** — ~7 MB memory footprint, runs smoothly even on resource-constrained machines
 
+
 ## Prerequisites
 
 - Node.js 22+, pnpm 10+
