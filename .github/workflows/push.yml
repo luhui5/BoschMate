@@ -17,13 +17,6 @@ jobs:
       - uses: pnpm/action-setup@v4
         with: { version: '10' }
 
-      - name: Inject version from branch/commit
-        env:
-          REF: ${{ github.ref_name }}
-          SHA: ${{ github.sha }}
-        run: |
-          node -e 'const sha=process.env.SHA.substring(0,7);const branch=process.env.REF.replace(/\//g,"-");const v="0.1.0-"+branch+"+"+sha;const fs=require("fs");for(const f of ["src-tauri/Cargo.toml","src-tauri/tauri.conf.json"]){let c=fs.readFileSync(f,"utf8");c=c.replace(/^version = ".*?"/m,"version = \""+v+"\"");c=c.replace(/"version": ".*?"/,"\"version\": \""+v+"\"");fs.writeFileSync(f,c)}'
-
       - run: pnpm install --frozen-lockfile
       - run: pnpm build
       - run: npx tauri build --ci
