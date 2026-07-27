@@ -4,7 +4,7 @@ Local AI coding agent — Tauri v2 desktop app + Next.js UI.
 
 ## Features
 
-- **Bosch Assistant** — standalone chat with optional workspace folder binding
+- **Your Mate** — standalone chat with optional workspace folder binding
 - **Project workspace** — Ask / Plan / Edit / Auto agent modes with tool calling
 - **Git integration** — status, diff, commit from the sidebar
 - **Memory system** — SQLite + vector search, compress & manage in Settings
