@@ -9,10 +9,9 @@ import {
   type UpdateChannel,
   type UpdatePhase,
 } from "@/lib/update"
-import { projectPath } from "@/lib/project-route"
 import { UpdateManager } from "@/components/update/update-manager"
-import { RecoveryDialog, type RecoverySnapshotItem } from "@/components/recovery-dialog"
-import { isTauri, getSetting, setSetting as tauriSetSetting, loadRecoverySnapshots, clearRecoverySnapshot, healthCheck, getUpdateInfo } from "@/lib/tauri-api"
+import { isTauri, getSetting, setSetting as tauriSetSetting, loadRecoverySnapshots, clearAllRecoverySnapshots, restoreSessionFromSnapshot, healthCheck, getUpdateInfo } from "@/lib/tauri-api"
+import { deriveTitle } from "@/lib/assistant-sessions"
 
 type ThemeMode = "dark" | "light" | "system"
 type FontSize = "sm" | "md" | "lg"
@@ -76,7 +75,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [editorFont, setEditorFontState] = useState<EditorFont>("geist-mono")
   const [runMode, setRunMode] = useState<RunMode>("full")
   const [isDesktop, setIsDesktop] = useState(false)
-  const [recoverySnapshots, setRecoverySnapshots] = useState<RecoverySnapshotItem[]>([])
+  const [recoveryLoading, setRecoveryLoading] = useState(true)
 
   const [update, setUpdate] = useState<UpdateState>({
     phase: "idle",
@@ -127,9 +126,33 @@ export function AppProvider({ children }: { children: ReactNode }) {
       if (desktop) {
         try {
           const snaps = await loadRecoverySnapshots()
-          if (snaps.length) setRecoverySnapshots(snaps)
+          if (snaps.length > 0) {
+            for (const snap of snaps) {
+              try {
+                // Derive title from first user message in snapshot
+                let title = "新对话"
+                let mode = "auto"
+                try {
+                  const msgs = JSON.parse(snap.messagesJson) as Array<{ role: string; content: string; mode?: string }>
+                  const firstUser = msgs.find((m) => m.role === "user")
+                  if (firstUser?.content) title = deriveTitle(firstUser.content)
+                  const firstAsst = msgs.find((m) => m.role === "assistant")
+                  if (firstAsst?.mode) mode = firstAsst.mode
+                } catch { /* keep defaults */ }
+                await restoreSessionFromSnapshot({
+                  session_id: snap.sessionId,
+                  project_id: snap.projectId ?? "default",
+                  title,
+                  mode,
+                  messages_json: snap.messagesJson,
+                })
+              } catch { /* skip failed restores */ }
+            }
+            await clearAllRecoverySnapshots().catch(() => {})
+          }
         } catch { /* ignore */ }
       }
+      setRecoveryLoading(false)
 
       setSystemTheme(getSystemTheme())
       const mq = window.matchMedia("(prefers-color-scheme: dark)")
@@ -298,17 +321,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     }))
   }
 
-  const discardRecovery = async (sessionId: string) => {
-    if (isDesktop) await clearRecoverySnapshot(sessionId).catch(() => {})
-    setRecoverySnapshots((prev) => prev.filter((s) => s.sessionId !== sessionId))
-  }
-
-  const discardAllRecovery = async () => {
-    for (const s of recoverySnapshots) {
-      if (isDesktop) await clearRecoverySnapshot(s.sessionId).catch(() => {})
-    }
-    setRecoverySnapshots([])
-  }
+  if (recoveryLoading) return null
 
   return (
     <AppContext.Provider
@@ -340,19 +353,6 @@ export function AppProvider({ children }: { children: ReactNode }) {
     >
       {children}
       <UpdateManager />
-      {recoverySnapshots.length > 0 && (
-        <RecoveryDialog
-          snapshots={recoverySnapshots}
-          onRestore={(snap) => {
-            void discardRecovery(snap.sessionId)
-            if (snap.projectId) {
-              window.location.href = projectPath(snap.projectId)
-            }
-          }}
-          onDiscard={(id) => void discardRecovery(id)}
-          onDiscardAll={() => void discardAllRecovery()}
-        />
-      )}
     </AppContext.Provider>
   )
 }
