@@ -717,7 +717,8 @@ pub fn without_knowledge_tools(tools: Vec<AiToolDef>) -> Vec<AiToolDef> {
         .collect()
 }
 
-/// Knowledge-only session tools when a kbase is selected in the UI.
+/// Knowledge-only session tools when a kbase is selected in the UI (kept for direct use / testing).
+#[allow(dead_code)]
 pub fn get_knowledge_only_tools() -> Vec<AiToolDef> {
     get_tools()
         .into_iter()

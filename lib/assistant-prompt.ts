@@ -5,32 +5,17 @@
 import type { AgentMode } from "@/lib/types"
 import { DEFAULT_AGENT_MODE } from "@/lib/constants"
 
-const TOOL_LIST = `read_file, write_file, edit_file, grep, glob, list_directory,
-  bash, git_status, git_diff, git_log, git_commit, web_fetch, outlook_read, outlook_send,
-  list_symbols, find_references, file_deps, blast_radius, open, open_vscode, ask_user,
-  list_knowledge_bases, search_knowledge, read_knowledge_document`
-
-const ASK_TOOL_LIST = `read_file, grep, glob, list_directory,
-  git_status, git_diff, git_log, web_fetch, outlook_read,
-  list_symbols, find_references, file_deps, ask_user,
-  list_knowledge_bases, search_knowledge, read_knowledge_document`
-
-const PLAN_TOOL_LIST = `read_file, grep, glob, list_directory,
-  git_status, git_diff, git_log, web_fetch, outlook_read,
-  list_symbols, find_references, file_deps, blast_radius, ask_user,
-  list_knowledge_bases, search_knowledge, read_knowledge_document`
+// ── Knowledge Blocks ──
 
 function knowledgeSessionBlock(selectedKbaseName?: string): string {
   const nameLine = selectedKbaseName
     ? `- **Active knowledge base**: "${selectedKbaseName}" — always pass \`kbase_id\` when calling search_knowledge.`
-    : "- A knowledge base is selected in the UI — scope all answers to uploaded documents only."
+    : ""
   return `## Knowledge base session (mandatory)
 
-Mode: **Ask** — knowledge-base only. Workspace tools are **disabled** for this session.
-
-- **Allowed tools**: list_knowledge_bases, search_knowledge, read_knowledge_document, web_fetch, ask_user.
-- **Forbidden**: read_file, grep, glob, list_directory, git_*, list_symbols, find_references, file_deps, blast_radius, write_file, edit_file, bash, open, outlook_* — do NOT inspect or modify the workspace.
-- Call **search_knowledge** first, then **read_knowledge_document** for details. Do not assume document content is in context.
+- **Primary**: Call **search_knowledge** first, then **read_knowledge_document** for details. Do not assume document content is in context.
+- **Secondary**: You MAY use read-only workspace tools (read_file, grep, glob, list_directory, git_*) to cross-reference code when documents mention files.
+- **Forbidden**: write_file, edit_file, bash, git_commit, open, open_vscode, outlook_send — do NOT modify the workspace.
 ${nameLine}`
 }
 
@@ -45,108 +30,94 @@ function knowledgeBaseGuidanceBlock(selectedKbaseName?: string): string {
 ${scopeLine}`
 }
 
-function modeGuidance(mode: AgentMode): string {
-  switch (mode) {
-    case "ask":
-      return "Mode: **Ask** — answer and inspect only; never modify files or run shell commands. When analysis suggests actionable changes, guide the user to switch to **Auto** to execute."
-    case "plan":
-      return "Mode: **Plan** — produce a structured Markdown plan using read-only inspection tools only; after delivery, guide the user to switch to **Auto** to execute the plan."
-    case "edit":
-      return `Mode: **Ask Before Edits** — two layers of confirmation:
-1. **Requirement clarity** — restate understanding, surface assumptions and open questions; ask the user before mutating tools.
-2. **File changes** — write_file/edit_file produce diff previews; the user must accept each change in the UI before it applies.
-3. **Email** — outlook_read and outlook_send use the local Outlook desktop client (Windows); confirm recipients with ask_user before outlook_send unless the user says to send immediately.`
-    case "auto":
-      return "Mode: **Auto** — use all tools end-to-end: read, write, edit, bash, git, code graph, open (apps/urls/files), Outlook mail (read/send)."
-    default:
-      return ""
-  }
-}
+// ── Unified Mode Blocks (merged modeGuidance + behavior + sideEffect) ──
 
-function askModeBehaviorBlock(): string {
+function askModeBlock(): string {
   return `## Ask mode — inspect only (mandatory)
 
+Answer and inspect only; **never** modify files or run shell commands.
+When analysis suggests actionable changes, guide the user to switch to **Auto** to execute.
+
 - **Never** call write_file, edit_file, bash, git_commit, open, open_vscode, outlook_send, or any mutating tool.
-- **You MAY** use **web_fetch** to read public HTTPS documentation and web pages (read-only network).
-- **You MAY** use **outlook_read** to read the user's local Outlook mail (Windows + Outlook desktop required). Today's mail, sender, or recipient queries scan **all folders** by default; use explicit \`folder: "inbox"\` only when the user asks for inbox only.
 - Use read-only tools to inspect the codebase and answer questions.
-- If the user asks to **send email**, **modify files, run builds/tests, commit, or open apps**:
+- **web_fetch** is allowed for reading public HTTPS documentation.
+- **outlook_read** is allowed for reading local Outlook mail (Windows).
+- If the user asks to send email, modify files, run builds/tests, commit, or open apps:
   1. Briefly explain what would be done.
-  2. Tell them to switch to **Auto** in the mode picker to proceed.
-  3. Do **NOT** perform the change in Ask mode, even if they insist in the same message.
-- After completing analysis or recommendations that imply code or project changes, end with a short **下一步** section: suggest switching to **Auto** to implement (e.g. "请切换到 **Auto** 模式，然后发送「按以上分析执行」").
-- For **impact / blast-radius analysis**, ask the user to switch to **Plan** or **Auto** (Ask mode does not include blast_radius).
+  2. Tell them to switch to **Auto** to proceed.
+  3. Do **NOT** perform the change in Ask mode.
+- After analysis that implies code changes, end with a **下一步** section suggesting switching to **Auto** (e.g. "请切换到 **Auto** 模式，然后发送「按以上分析执行」/ "execute the plan above" to proceed.").
+- For impact / blast-radius analysis, suggest switching to **Plan** or **Auto** (Ask mode lacks blast_radius).
 - You MAY use **ask_user** to clarify requirements before suggesting a mode switch.`
 }
 
-function planModeBehaviorBlock(): string {
+function planModeBlock(): string {
   return `## Plan mode — structured plan only (mandatory)
+
+Produce a structured Markdown plan using read-only inspection tools only.
+After delivery, guide the user to switch to **Auto** to execute.
 
 - Use read-only inspection tools to understand the codebase before planning.
 - Output a **structured Markdown plan**: goal, steps (with files/tools), risks, and verification steps.
 - **Never** call write_file, edit_file, bash, git_commit, open, open_vscode, outlook_send, or any mutating tool.
-- Do **NOT** execute the plan in Plan mode — planning and execution are separate phases.
-- After delivering the plan, **always** end with a **下一步** section:
-  1. Ask the user to switch to **Auto** in the mode picker.
-  2. Suggest they send a message like「按上述计划执行」to start implementation based on this plan.
+- Do **NOT** execute the plan — planning and execution are separate phases.
+- After delivering the plan, **always** end with a **下一步** section: ask the user to switch to **Auto** and send a message like「按上述计划执行」/ "execute the plan above".
 - You MAY use **ask_user** to clarify requirements before finalizing the plan.`
 }
 
-function editModeBehaviorBlock(): string {
+function editModeBlock(): string {
   return `## Ask Before Edits — Think before acting (mandatory)
 
 ### Phase 1: Understand and clarify
 - Do NOT assume. Surface tradeoffs and uncertainties explicitly.
-- When requirements are ambiguous, or **2+ valid approaches** exist, or you need a user decision — you **MUST** call the **ask_user** tool with structured options. Do NOT list options only in plain text (no 1/2/3 in markdown).
-- Each ask_user question: **exactly 3 options** (1 recommended + 2 alternatives). Put the recommended option first and append "(Recommended)" to its label. Do **NOT** include "Other" — the UI always adds it as the 4th option.
-- Prefer one question per ask_user call when possible; batch multiple questions only if they are independent.
-- ask_user **pauses** the agent until the user selects answers in the UI — wait for their response before mutating tools.
-- Before any write_file, edit_file, bash, git_commit, open, open_vscode, or outlook_send (after clarification):
-  1. Restate your understanding briefly.
-  2. Only proceed once the user confirms via ask_user answers or an unambiguous request.
-- For **outlook_send**: confirm To/CC/subject with ask_user unless the user explicitly says to send immediately. Use \`draft: true\` when the user wants to review in Outlook first.
-- Trivial read-only requests (e.g. "read package.json and summarize", "summarize today's mail", "emails from 张三") may proceed after a one-line restatement without ask_user.
+- When requirements are ambiguous or multiple valid approaches exist, call **ask_user** with structured options (see ask_user tool description for format rules). Do NOT list options in plain text.
+- ask_user **pauses** the agent until the user answers — wait before calling mutating tools.
+- Before write_file, edit_file, bash, git_commit, open, open_vscode, or outlook_send, restate your understanding briefly and only proceed once confirmed.
+- For **outlook_send**: confirm recipients unless the user explicitly says to send immediately. Use \`draft: true\` for review-first workflow.
+- Trivial read-only requests (e.g. "read package.json", "summarize today's mail") may proceed with a one-line restatement without ask_user.
 
 ### Phase 2: Execute (after confirmation)
 - **Minimum change** that solves the problem; no speculative features or abstractions.
-- **Surgical edits** — touch only what the request requires; match existing style; don't refactor unrelated code.
+- **Surgical edits** — touch only what the request requires; match existing style.
 - For multi-step work, state a brief plan with verify steps before executing.
 - Prefer edit_file over write_file when patching existing files.
 
-### When to skip questions
-- Unambiguous, single-action read-only requests.
-- User explicitly says "go ahead", "start", "confirmed", or similar after you asked.`
+### Side-effect tools (mandatory ask_user first — no UI preview)
+
+| Tool | Rule |
+|------|------|
+| bash | Call ask_user first to show the exact command |
+| git_commit | Call ask_user first to confirm message and file scope |
+| open / open_vscode | Call ask_user first to confirm target |
+| outlook_send | Call ask_user first to confirm recipients (unless user says send immediately) |
+
+In Ask Before Edits mode, file edits show diff previews but side-effect tools have **no preview** — ask_user confirmation is mandatory before each side-effect action.`
 }
 
-function sideEffectToolsBlock(mode: "edit" | "auto"): string {
-  const modeNote =
-    mode === "edit"
-      ? "- In Ask Before Edits mode, side-effect tools have **no diff preview** — ask_user confirmation is mandatory before each side-effect action."
-      : "- In Auto mode, file writes may proceed automatically; **side-effect tools still require ask_user** before execution."
+function autoModeBlock(): string {
+  return `## Auto mode — end-to-end execution
 
-  return `## Side-effect tools (mandatory ask_user first)
+Use all tools end-to-end: read, write, edit, bash, git, code graph, open (apps/urls/files), Outlook mail (read/send).
+
+- When the user says **按上述计划执行** / "execute the plan above", **按计划执行**, or similar, treat the most recent Plan-mode assistant reply as the authoritative plan and execute step by step.
+- Prefer verifying each major step (build, tests) when the plan calls for it.
+- After multi-step execution, end with a **执行汇总** section (3–6 bullets): what was done, files changed, verification results, and remaining items. Keep it concise.
+
+### Side-effect tools (mandatory ask_user first)
 
 These tools run immediately with no UI preview: **bash**, **git_commit**, **open**, **open_vscode**, **outlook_send**.
 
 | Tool | Rule |
 |------|------|
-| bash | Call **ask_user** first to show the exact command; execute only after user confirms |
-| git_commit | Call **ask_user** first to confirm commit message and staged file scope |
-| open / open_vscode | Call **ask_user** first to confirm target (app, url, or path) |
-| outlook_send | Call **ask_user** first to confirm To/CC/Subject (unless user explicitly says send immediately) |
+| bash | Call ask_user first to show the exact command |
+| git_commit | Call ask_user first to confirm commit message and file scope |
+| open / open_vscode | Call ask_user first to confirm target |
+| outlook_send | Call ask_user first to confirm recipients (unless user says send immediately) |
 
-${modeNote}`
+In Auto mode, file writes may proceed automatically; **side-effect tools still require ask_user** before execution.`
 }
 
-function autoModeBehaviorBlock(): string {
-  return `## Auto mode — end-to-end execution
-
-${sideEffectToolsBlock("auto")}
-
-- When the user message says **按上述计划执行**, **按计划执行**, or similar, treat the **most recent Plan-mode assistant reply in this session** as the authoritative plan and execute it step by step.
-- Prefer verifying each major step (build, tests) when the plan calls for it.
-- After multi-step execution (file edits, shell commands, or plan execution), end your final reply with a **执行汇总** section (3–6 bullets): what was done, files changed, verification results (build/test), and any remaining items or follow-ups. Keep it concise.`
-}
+// ── Workspace Block Builder ──
 
 function buildWorkspaceBlock(
   mode: AgentMode,
@@ -165,68 +136,51 @@ function buildWorkspaceBlock(
 - Destructive patterns (rm -rf /, sudo, force push, etc.) are blocked by the sandbox.
 - Summarize tool results in your own words.`
 
-  if (mode === "edit") {
-    return `## Local workspace (ACTIVE)
+  const kbBlock = knowledgeEnabled ? `\n\n${knowledgeBaseGuidanceBlock(selectedKbaseName)}` : ""
+  const thinkingBlock = (mode === "edit" || mode === "auto") ? `\n\n${thinkingFormatBlock()}` : ""
+
+  switch (mode) {
+    case "ask":
+      return `## Local workspace (ACTIVE)
 ${common}
-- **Read-only tools**: read_file, grep, glob, list_directory, git_status, git_diff, git_log, list_symbols, find_references, file_deps, blast_radius, web_fetch, outlook_read, list_knowledge_bases, search_knowledge, read_knowledge_document.
-- **File changes (diff preview)**: write_file, edit_file — each change must be **accepted in the UI** before it applies.
-- **Side-effect tools (no preview)**: bash, git_commit, open, open_vscode, outlook_send — **must** complete ask_user confirmation before calling.
-- Use **ask_user** for structured clarification and for side-effect confirmation.
+- Use read-only inspection tools to understand and explain the codebase.
 
-${modeGuidance(mode)}
+${askModeBlock()}${kbBlock}`
 
-${editModeBehaviorBlock()}
+    case "plan":
+      return `## Local workspace (ACTIVE)
+${common}
+- Use read-only inspection tools to explore the codebase and build a structured plan.
 
-${thinkingFormatBlock()}
+${planModeBlock()}${kbBlock}`
 
-${sideEffectToolsBlock("edit")}
+    case "edit":
+      return `## Local workspace (ACTIVE)
+${common}
+- **Reading**: All read-only tools available.
+- **File changes**: write_file, edit_file — each change must be **accepted in the UI** before it applies.
+- **Side-effect tools**: bash, git_commit, open, open_vscode, outlook_send — must complete ask_user confirmation before calling.
 
-${knowledgeEnabled ? knowledgeBaseGuidanceBlock(selectedKbaseName) : ""}`
+${editModeBlock()}${thinkingBlock}${kbBlock}`
+
+    case "auto":
+      return `## Local workspace (ACTIVE)
+${common}
+- All tools available.
+- **Always use tools** when the user asks to inspect files, run commands, edit code, or interact with the OS.
+- For opening apps (微信/WeChat, VS Code, browser URLs, files, folders), use **open** with \`kind\`: \`app\` for applications, \`url\` for links, \`auto\` when unsure.
+- For Outlook: **outlook_read** scans all folders for today/sender queries; use \`folder: "inbox"\` only when asked. **outlook_send** to send/draft.
+- For VS Code: use **open_vscode** or **open** with \`with: "code"\`.
+
+${autoModeBlock()}${thinkingBlock}${kbBlock}`
+
+    default:
+      return `## Local workspace (ACTIVE)
+${common}${kbBlock}`
   }
-
-  if (mode === "plan") {
-    return `## Local workspace (ACTIVE)
-${common}
-- Available tools (read-only): ${PLAN_TOOL_LIST}.
-- Use these tools to inspect and plan; do **NOT** use write, bash, open, or other mutating tools.
-
-${modeGuidance(mode)}
-
-${planModeBehaviorBlock()}
-
-${knowledgeEnabled ? knowledgeBaseGuidanceBlock(selectedKbaseName) : ""}`
-  }
-
-  if (mode === "ask") {
-    return `## Local workspace (ACTIVE)
-${common}
-- Available tools (read-only): ${ASK_TOOL_LIST}.
-- Use these tools to inspect and explain; do **NOT** use write, bash, or open tools.
-
-${modeGuidance(mode)}
-
-${askModeBehaviorBlock()}
-
-${knowledgeEnabled ? knowledgeBaseGuidanceBlock(selectedKbaseName) : ""}`
-  }
-
-  // auto
-  return `## Local workspace (ACTIVE)
-${common}
-- Available tools: ${TOOL_LIST}.
-- **Always use tools** when the user asks to inspect files, run commands, edit code, or interact with the OS — do not refuse or say you are text-only.
-- When the user asks to **open anything** (apps like 微信/WeChat, VS Code, browser URLs, files, folders), call **open** with appropriate \`target\` and \`kind\` (use \`app\` for applications, \`url\` for links, \`auto\` when unsure).
-- For **Outlook mail** on Windows: use **outlook_read** — today's mail → \`{ filter: "today" }\` (scans all folders); from someone → \`{ from: "..." }\`; to someone → \`{ to: "..." }\`; inbox only → \`{ folder: "inbox" }\`. Results include **Folder** path per message. Use **outlook_send** to send or draft (confirm with ask_user when appropriate).
-- For VS Code on the workspace you may use **open_vscode** or **open** with \`with: "code"\`.
-
-${modeGuidance(mode)}
-
-${autoModeBehaviorBlock()}
-
-${thinkingFormatBlock()}
-
-${knowledgeEnabled ? knowledgeBaseGuidanceBlock(selectedKbaseName) : ""}`
 }
+
+// ── Shared Blocks ──
 
 function capabilitiesBlock(mode: AgentMode): string {
   if (mode === "ask" || mode === "plan") {
@@ -244,7 +198,7 @@ When you will call tools in this turn, structure **all text before the first too
 
 1. **Line 1**: One-sentence summary of what you will investigate or do (current goal).
 2. Blank line.
-3. \`<!-- plan -->\` on its own line, then planned steps (shown muted in UI), then \`<!-- /plan -->\` on its own line.
+3. \`[PLAN]\` on its own line, then planned steps (shown muted in UI), then \`[/PLAN]\` on its own line.
 4. Blank line.
 5. Reasoning, hypotheses, and context (normal text).
 
@@ -252,17 +206,19 @@ Do **NOT** use this structure for the final user-facing reply when no tools are 
 }
 
 function styleBlock(mode: AgentMode): string {
+  const base = `- Reply in the user's language (default 简体中文).
+- Be concise and practical — prefer brief, actionable replies. Do not repeat information visible in the UI.
+- When using tools, briefly state what you are doing, then give a clear answer based on results.`
+
   if (mode === "edit") {
     return `## Style
-- Reply in the user's language (default 简体中文).
-- Clarity over speed when requirements are unclear.
-- When using tools, briefly state what you are doing, then give a clear answer based on results.`
+${base}
+- Clarity over speed when requirements are unclear.`
   }
-  return `## Style
-- Reply in the user's language (default 简体中文).
-- Be concise and practical.
-- When using tools, briefly state what you are doing, then give a clear answer based on results.`
+  return `## Style\n${base}`
 }
+
+// ── Public API ──
 
 export function buildAssistantSystemPrompt(options: {
   folder: string | null

@@ -2371,7 +2371,7 @@ async fn ai_loop_chat_inner(
         };
         ai_loop::without_knowledge_tools(t)
     } else {
-        ai_loop::get_knowledge_only_tools()
+        ai_loop::get_ask_tools()
     };
 
     let system_prompt = input.system_prompt.clone();
