@@ -6812,7 +6812,7 @@ dependencies = [
 
 [[package]]
 name = "yourmate"
-version = "0.1.0"
+version = "26.7.6"
 dependencies = [
  "arboard",
  "argon2",

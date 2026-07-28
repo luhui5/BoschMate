@@ -2100,7 +2100,7 @@ async fn handle_loop_outcome(
                 .map(|log| serde_json::to_string(log).unwrap_or_default());
             let q_json = questions_json(&response);
             conn.execute(
-                "INSERT INTO messages (id, session_id, role, content, mode, tool_calls, diffs, token_usage, questions, created_at) VALUES (?1, ?2, 'assistant', ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                "INSERT INTO messages (id, session_id, role, content, mode, tool_calls, diffs, token_usage, questions, created_at) VALUES (?1, ?2, 'assistant', ?3, ?4, ?5, ?6, ?7, ?8, ?9) ON CONFLICT(id) DO UPDATE SET content = excluded.content, mode = excluded.mode, tool_calls = excluded.tool_calls, diffs = excluded.diffs, token_usage = excluded.token_usage, questions = excluded.questions",
                 params![
                     msg_id,
                     session_id,
@@ -2150,7 +2150,7 @@ async fn handle_loop_outcome(
                 });
             let q_json = questions_json(&response);
             conn.execute(
-                "INSERT INTO messages (id, session_id, role, content, mode, tool_calls, diffs, token_usage, questions, created_at) VALUES (?1, ?2, 'assistant', ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                "INSERT INTO messages (id, session_id, role, content, mode, tool_calls, diffs, token_usage, questions, created_at) VALUES (?1, ?2, 'assistant', ?3, ?4, ?5, ?6, ?7, ?8, ?9) ON CONFLICT(id) DO UPDATE SET content = excluded.content, mode = excluded.mode, tool_calls = excluded.tool_calls, diffs = excluded.diffs, token_usage = excluded.token_usage, questions = excluded.questions",
                 params![
                     msg_id,
                     session_id,
@@ -2727,7 +2727,7 @@ async fn stream_chat(
     });
 
     conn.execute(
-        "INSERT INTO messages (id, session_id, role, content, mode, tool_calls, token_usage, created_at) VALUES (?1, ?2, 'assistant', ?3, 'ask', ?4, ?5, ?6)",
+        "INSERT INTO messages (id, session_id, role, content, mode, tool_calls, token_usage, created_at) VALUES (?1, ?2, 'assistant', ?3, 'ask', ?4, ?5, ?6) ON CONFLICT(id) DO UPDATE SET content = excluded.content, mode = excluded.mode, tool_calls = excluded.tool_calls, token_usage = excluded.token_usage",
         params![msg_id, session_id, response.content, tool_calls_json, usage_json.to_string(), now],
     )
     .map_err(|e| e.to_string())?;
