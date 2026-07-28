@@ -6,6 +6,7 @@ use std::process::Command;
 // winapi v0.3 doesn't expose jobapi2 types, so we define them directly.
 
 #[cfg(windows)]
+#[allow(non_camel_case_types)]
 mod ffi {
     pub type BOOL = i32;
     pub type HANDLE = *mut std::ffi::c_void;

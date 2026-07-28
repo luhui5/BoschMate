@@ -2,9 +2,9 @@
 //! Provides precise AST-based symbol extraction and cross-file callee tracing (R2-3).
 
 use crate::code_graph::{Symbol, SymbolKind};
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashSet, VecDeque};
 use std::path::Path;
-use tree_sitter::{Parser, Query};
+use tree_sitter::Parser;
 
 /// Extract symbols from a Rust source file using tree-sitter.
 pub fn parse_rust_symbols(file_path: &str, source: &str) -> Vec<Symbol> {

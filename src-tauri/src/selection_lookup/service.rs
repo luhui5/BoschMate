@@ -4,7 +4,7 @@ use super::capture::{capture_selection_text, read_clipboard_selection};
 use super::settings::{self, SelectionLookupSettings};
 use crate::AppState;
 use serde::Serialize;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};

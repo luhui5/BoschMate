@@ -6,6 +6,7 @@ use std::process::Command;
 const CREATE_NO_WINDOW: u32 = 0x08000000;
 
 /// Prevent `cmd`, `powershell`, `git`, etc. from opening a visible console window.
+#[cfg_attr(not(windows), allow(unused_variables))]
 pub fn hide_console(cmd: &mut Command) {
     #[cfg(windows)]
     {

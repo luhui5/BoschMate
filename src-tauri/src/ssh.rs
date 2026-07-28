@@ -1,7 +1,6 @@
 //! SSH remote project connection using system `ssh` command (R4-2).
 
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SshConnection {
@@ -60,7 +59,7 @@ pub fn test_connection(conn: &SshConnection) -> Result<String, String> {
 pub fn execute_remote(
     conn: &SshConnection,
     command: &str,
-    timeout_secs: u64,
+    _timeout_secs: u64,
 ) -> Result<(String, String, i32), String> {
     let mut args = ssh_base_args(conn);
     args.push(command.to_string());
