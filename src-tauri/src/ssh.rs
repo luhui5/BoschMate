@@ -1,7 +1,6 @@
 //! SSH remote project connection using system `ssh` command (R4-2).
 
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SshConnection {
