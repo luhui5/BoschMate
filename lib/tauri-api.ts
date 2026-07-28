@@ -784,6 +784,16 @@ export async function clearAllRecoverySnapshots(): Promise<void> {
   return invoke('clear_all_recovery_snapshots');
 }
 
+export async function restoreSessionFromSnapshot(snapshot: {
+  session_id: string;
+  project_id: string;
+  title: string;
+  mode: string;
+  messages_json: string;
+}): Promise<void> {
+  return invoke('restore_session_from_snapshot', { input: snapshot });
+}
+
 export async function watchProjectDir(projectId: string): Promise<void> {
   return invoke('watch_project_dir', { projectId });
 }

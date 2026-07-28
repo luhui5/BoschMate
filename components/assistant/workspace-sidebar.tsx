@@ -1,7 +1,8 @@
 "use client"
 
-import { useMemo, useState, type ReactNode } from "react"
+import { useCallback, useMemo, useState, type ReactNode } from "react"
 import Link from "next/link"
+import { useRouter } from "next/navigation"
 import {
   Plus,
   ChevronDown,
@@ -126,6 +127,7 @@ export function WorkspaceSidebar({
   onToggleCollapse?: () => void
 }) {
   const { resolvedTheme, toggleTheme } = useApp()
+  const router = useRouter()
   const [foldedWorkspaceIds, setFoldedWorkspaceIds] = useState<Set<string>>(() => new Set())
   const [addMenuOpen, setAddMenuOpen] = useState(false)
   const [sshOpen, setSshOpen] = useState(false)
@@ -228,6 +230,11 @@ export function WorkspaceSidebar({
               href="/settings"
               title="设置"
               aria-label="设置"
+              onClick={(e) => {
+                console.log("[Sidebar] settings clicked (collapsed)")
+                e.preventDefault()
+                router.push("/settings")
+              }}
               className="flex size-10 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
             >
               <Settings className="size-5" />
@@ -430,6 +437,11 @@ export function WorkspaceSidebar({
           </button>
           <Link
             href="/settings"
+            onClick={(e) => {
+              console.log("[Sidebar] settings clicked (expanded)")
+              e.preventDefault()
+              router.push("/settings")
+            }}
             className="flex w-full items-center gap-2 rounded-md px-2.5 py-2 text-sm text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
           >
             <Settings className="size-5" />

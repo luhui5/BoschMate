@@ -42,6 +42,11 @@ export function SettingsView() {
   const { t } = useApp()
   const [active, setActive] = useState<SectionId>("appearance")
 
+  // Diagnostic: confirm component mounted
+  if (typeof window !== "undefined") {
+    console.log("[SettingsView] mounted, default tab=appearance")
+  }
+
   const NAV: { id: SectionId; label: string; icon: typeof Cpu; desc: string }[] = [
     { id: "appearance", label: t("settings.appearance"), icon: Palette, desc: "语言、主题、字体" },
     { id: "model", label: t("settings.model"), icon: Cpu, desc: "本地与云端模型、上下文" },

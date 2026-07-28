@@ -6,8 +6,10 @@ export interface ParsedThought {
   body: string
 }
 
-const PLAN_START = "<!-- plan -->"
-const PLAN_END = "<!-- /plan -->"
+const PLAN_START_HTML = "<!-- plan -->"
+const PLAN_END_HTML = "<!-- /plan -->"
+const PLAN_START_BRACKET = "[PLAN]"
+const PLAN_END_BRACKET = "[/PLAN]"
 
 export function splitThoughtDetail(detail: string | undefined): ParsedThought {
   if (!detail?.trim()) {
@@ -16,21 +18,27 @@ export function splitThoughtDetail(detail: string | undefined): ParsedThought {
 
   const text = detail.trim()
 
-  const planStart = text.indexOf(PLAN_START)
-  const planEnd = text.indexOf(PLAN_END)
+  // Try [PLAN]...[/PLAN] first (new format), then <!-- plan -->...<!-- /plan --> (legacy)
+  for (const [startMarker, endMarker] of [
+    [PLAN_START_BRACKET, PLAN_END_BRACKET],
+    [PLAN_START_HTML, PLAN_END_HTML],
+  ] as const) {
+    const planStart = text.indexOf(startMarker)
+    const planEnd = text.indexOf(endMarker)
 
-  if (planStart >= 0 && planEnd > planStart) {
-    const beforePlan = text.slice(0, planStart).trim()
-    const plan = text.slice(planStart + PLAN_START.length, planEnd).trim()
-    const afterPlan = text.slice(planEnd + PLAN_END.length).trim()
+    if (planStart >= 0 && planEnd > planStart) {
+      const beforePlan = text.slice(0, planStart).trim()
+      const plan = text.slice(planStart + startMarker.length, planEnd).trim()
+      const afterPlan = text.slice(planEnd + endMarker.length).trim()
 
-    const summary = beforePlan.split("\n")[0]?.trim() ?? ""
-    const bodyPrefix = beforePlan.includes("\n")
-      ? beforePlan.split("\n").slice(1).join("\n").trim()
-      : ""
-    const body = [bodyPrefix, afterPlan].filter(Boolean).join("\n\n").trim()
+      const summary = beforePlan.split("\n")[0]?.trim() ?? ""
+      const bodyPrefix = beforePlan.includes("\n")
+        ? beforePlan.split("\n").slice(1).join("\n").trim()
+        : ""
+      const body = [bodyPrefix, afterPlan].filter(Boolean).join("\n\n").trim()
 
-    return { summary, plan, body }
+      return { summary, plan, body }
+    }
   }
 
   const lines = text.split("\n")

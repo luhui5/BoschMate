@@ -2100,7 +2100,7 @@ async fn handle_loop_outcome(
                 .map(|log| serde_json::to_string(log).unwrap_or_default());
             let q_json = questions_json(&response);
             conn.execute(
-                "INSERT INTO messages (id, session_id, role, content, mode, tool_calls, diffs, token_usage, questions, created_at) VALUES (?1, ?2, 'assistant', ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                "INSERT INTO messages (id, session_id, role, content, mode, tool_calls, diffs, token_usage, questions, created_at) VALUES (?1, ?2, 'assistant', ?3, ?4, ?5, ?6, ?7, ?8, ?9) ON CONFLICT(id) DO UPDATE SET content = excluded.content, mode = excluded.mode, tool_calls = excluded.tool_calls, diffs = excluded.diffs, token_usage = excluded.token_usage, questions = excluded.questions",
                 params![
                     msg_id,
                     session_id,
@@ -2150,7 +2150,7 @@ async fn handle_loop_outcome(
                 });
             let q_json = questions_json(&response);
             conn.execute(
-                "INSERT INTO messages (id, session_id, role, content, mode, tool_calls, diffs, token_usage, questions, created_at) VALUES (?1, ?2, 'assistant', ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                "INSERT INTO messages (id, session_id, role, content, mode, tool_calls, diffs, token_usage, questions, created_at) VALUES (?1, ?2, 'assistant', ?3, ?4, ?5, ?6, ?7, ?8, ?9) ON CONFLICT(id) DO UPDATE SET content = excluded.content, mode = excluded.mode, tool_calls = excluded.tool_calls, diffs = excluded.diffs, token_usage = excluded.token_usage, questions = excluded.questions",
                 params![
                     msg_id,
                     session_id,
@@ -2371,7 +2371,7 @@ async fn ai_loop_chat_inner(
         };
         ai_loop::without_knowledge_tools(t)
     } else {
-        ai_loop::get_knowledge_only_tools()
+        ai_loop::get_ask_tools()
     };
 
     let system_prompt = input.system_prompt.clone();
@@ -2664,6 +2664,67 @@ fn clear_all_recovery_snapshots(state: State<AppState>) -> Result<(), String> {
     recovery::clear_all(&state.data_dir)
 }
 
+#[derive(Debug, serde::Deserialize)]
+struct RestoreSessionInput {
+    session_id: String,
+    project_id: String,
+    title: String,
+    mode: String,
+    messages_json: String,
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct RestoredMessage {
+    id: String,
+    role: String,
+    content: String,
+    #[serde(default)]
+    mode: Option<String>,
+    #[serde(rename = "createdAt")]
+    created_at: Option<String>,
+}
+
+#[tauri::command]
+fn restore_session_from_snapshot(
+    state: State<AppState>,
+    input: RestoreSessionInput,
+) -> Result<(), String> {
+    let conn = state.db.conn.lock().unwrap();
+    let now = chrono::Utc::now().to_rfc3339();
+
+    // Upsert session
+    conn.execute(
+        "INSERT INTO sessions (id, project_id, title, mode, status, token_count, created_at, updated_at) \
+         VALUES (?1, ?2, ?3, ?4, 'active', 0, ?5, ?5) \
+         ON CONFLICT(id) DO UPDATE SET title = excluded.title, mode = excluded.mode, updated_at = excluded.updated_at",
+        params![input.session_id, input.project_id, input.title, input.mode, now],
+    )
+    .map_err(|e| e.to_string())?;
+
+    // Delete old messages for this session (replace with snapshot data)
+    conn.execute(
+        "DELETE FROM messages WHERE session_id = ?1",
+        params![input.session_id],
+    )
+    .map_err(|e| e.to_string())?;
+
+    // Insert restored messages
+    let messages: Vec<RestoredMessage> =
+        serde_json::from_str(&input.messages_json).map_err(|e| e.to_string())?;
+
+    for msg in &messages {
+        let created = msg.created_at.as_deref().unwrap_or(&now);
+        conn.execute(
+            "INSERT INTO messages (id, session_id, role, content, mode, created_at) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![msg.id, input.session_id, msg.role, msg.content, msg.mode, created],
+        )
+        .map_err(|e| e.to_string())?;
+    }
+
+    Ok(())
+}
+
 // ── File watcher ──
 
 #[tauri::command]
@@ -2727,7 +2788,7 @@ async fn stream_chat(
     });
 
     conn.execute(
-        "INSERT INTO messages (id, session_id, role, content, mode, tool_calls, token_usage, created_at) VALUES (?1, ?2, 'assistant', ?3, 'ask', ?4, ?5, ?6)",
+        "INSERT INTO messages (id, session_id, role, content, mode, tool_calls, token_usage, created_at) VALUES (?1, ?2, 'assistant', ?3, 'ask', ?4, ?5, ?6) ON CONFLICT(id) DO UPDATE SET content = excluded.content, mode = excluded.mode, tool_calls = excluded.tool_calls, token_usage = excluded.token_usage",
         params![msg_id, session_id, response.content, tool_calls_json, usage_json.to_string(), now],
     )
     .map_err(|e| e.to_string())?;
@@ -2866,6 +2927,10 @@ fn main() {
         })
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                // Always clear recovery snapshots on normal close (not a crash)
+                if let Some(state) = window.app_handle().try_state::<AppState>() {
+                    let _ = recovery::clear_all(&state.data_dir);
+                }
                 if window.label() == "main" {
                     if let Some(state) = window.app_handle().try_state::<AppState>() {
                         let conn = state.db.conn.lock().unwrap();
@@ -2875,9 +2940,6 @@ fn main() {
                             return;
                         }
                     }
-                }
-                if let Some(state) = window.app_handle().try_state::<AppState>() {
-                    let _ = recovery::clear_all(&state.data_dir);
                 }
             }
         })
@@ -3005,6 +3067,7 @@ fn main() {
             load_recovery_snapshots,
             clear_recovery_snapshot,
             clear_all_recovery_snapshots,
+            restore_session_from_snapshot,
             watch_project_dir,
             get_update_info,
             // Selection lookup
