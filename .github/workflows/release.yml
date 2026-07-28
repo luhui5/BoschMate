@@ -4,14 +4,18 @@ on:
   push:
     tags:
       - 'v*'
+      - 'release*'
 
 jobs:
-  release:
-    name: Build & Publish (${{ matrix.os }})
+  build:
+    name: Build (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
         os: [windows-latest, macos-latest, ubuntu-24.04]
+    outputs:
+      is_release: ${{ steps.meta.outputs.is_release }}
+      version: ${{ steps.meta.outputs.version }}
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -24,25 +28,58 @@ jobs:
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libssl-dev libsoup-3.0-dev libjavascriptcoregtk-4.1-dev libxdo-dev
 
-      - name: Sanitize tag name
-        id: sanitize
+      - name: Determine version and release flag
+        id: meta
         shell: bash
-        run: echo "tag=${TAG//\//-}" >> $GITHUB_OUTPUT
         env:
           TAG: ${{ github.ref_name }}
-
-      - name: Inject version from tag
         run: |
-          node -e 'const v="${{ steps.sanitize.outputs.tag }}".replace(/^v/,"");const fs=require("fs");for(const f of ["src-tauri/Cargo.toml","src-tauri/tauri.conf.json"]){let c=fs.readFileSync(f,"utf8");c=c.replace(/^version = ".*?"/m,"version = \""+v+"\"");c=c.replace(/"version": ".*?"/,"\"version\": \""+v+"\"");fs.writeFileSync(f,c)}'
+          t="${TAG//\//-}"
+          if [[ "$t" == release* ]]; then
+            v="${t#release}"
+            v="${v#-}"
+            echo "is_release=true" >> $GITHUB_OUTPUT
+          else
+            v="${t#v}"
+            echo "is_release=false" >> $GITHUB_OUTPUT
+          fi
+          echo "version=$v" >> $GITHUB_OUTPUT
+          echo "tag=$t" >> $GITHUB_OUTPUT
+
+      - name: Inject version
+        run: |
+          node -e 'const v="${{ steps.meta.outputs.version }}";const fs=require("fs");for(const f of ["src-tauri/Cargo.toml","src-tauri/tauri.conf.json"]){let c=fs.readFileSync(f,"utf8");c=c.replace(/^version = ".*?"/m,"version = \""+v+"\"");c=c.replace(/"version": ".*?"/,"\"version\": \""+v+"\"");fs.writeFileSync(f,c)}'
 
       - run: pnpm install --frozen-lockfile
       - run: pnpm build
       - run: npx tauri build --ci
 
-      - name: Upload release artifacts
+      - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: YourMate-release-${{ matrix.os }}
+          name: YourMate-${{ steps.meta.outputs.tag }}-${{ matrix.os }}
           path: src-tauri/target/release/bundle/
+
+  release:
+    name: Create GitHub Release
+    needs: build
+    if: needs.build.outputs.is_release == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          pattern: YourMate-${{ needs.build.outputs.tag }}-*
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: ${{ needs.build.outputs.version }}
+          tag_name: ${{ github.ref_name }}
+          files: artifacts/**/*
+          draft: false
+          prerelease: false
+          generate_release_notes: true
 
       # Code signing: configure TAURI_SIGNING_PRIVATE_KEY in repo secrets for production builds.
