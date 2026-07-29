@@ -46,6 +46,28 @@ jobs:
           echo "version=$v" >> $GITHUB_OUTPUT
           echo "tag=$t" >> $GITHUB_OUTPUT
 
+      - name: Validate version
+        shell: bash
+        run: |
+          v="${{ steps.meta.outputs.version }}"
+          IFS='.' read -ra parts <<< "$v"
+          if [ ${#parts[@]} -lt 2 ] || [ ${#parts[@]} -gt 4 ]; then
+            echo "ERROR: Version '$v' is not valid semver (major.minor.patch). Tag must be like v1.2.3 or release1.2.3."
+            exit 1
+          fi
+          for i in "${!parts[@]}"; do
+            p="${parts[$i]}"
+            if ! [[ "$p" =~ ^[0-9]+$ ]]; then
+              echo "ERROR: Version component '$p' is not a number."
+              exit 1
+            fi
+            if [ "$p" -gt 255 ]; then
+              echo "ERROR: Version component '$p' exceeds 255 (Tauri/Windows limit). Use a tag like v0.2.0, not date-based versions."
+              exit 1
+            fi
+          done
+          echo "Version '$v' is valid for Tauri bundling."
+
       - name: Inject version
         run: |
           node -e 'const v="${{ steps.meta.outputs.version }}";const fs=require("fs");for(const f of ["src-tauri/Cargo.toml","src-tauri/tauri.conf.json"]){let c=fs.readFileSync(f,"utf8");c=c.replace(/^version = ".*?"/m,"version = \""+v+"\"");c=c.replace(/"version": ".*?"/,"\"version\": \""+v+"\"");fs.writeFileSync(f,c)}'
