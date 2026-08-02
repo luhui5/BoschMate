@@ -217,8 +217,10 @@ export function ModelSection() {
       <div
         key={m.id}
         className={cn(
-          "group relative flex items-center gap-3 rounded-lg border px-3 py-3 transition-colors",
-          isActive ? "border-primary bg-primary/5" : "border-border hover:border-ring hover:bg-muted/40",
+          "group relative flex items-center gap-3 rounded-lg border px-3 py-3 transition-all duration-200",
+          isActive
+            ? "border-primary/60 bg-gradient-to-r from-primary/10 to-primary/5 ring-1 ring-primary/20"
+            : "border-border hover:border-ring/60 hover:bg-muted/30",
         )}
       >
         <button
@@ -228,21 +230,28 @@ export function ModelSection() {
           }}
           className="flex min-w-0 flex-1 items-center gap-3 text-left"
         >
-          <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-primary/15 text-primary">
+          <span className={cn(
+            "flex h-8 w-8 shrink-0 items-center justify-center rounded-md transition-colors",
+            isActive ? "bg-primary/20 text-primary" : "bg-secondary text-muted-foreground",
+          )}>
             <Cpu className="h-4 w-4" />
           </span>
           <span className="min-w-0 flex-1">
             <span className="flex items-center gap-1.5">
-              <span className="truncate text-sm font-medium">{m.name}</span>
+              <span className="truncate text-sm font-semibold">{m.name}</span>
               <span className="shrink-0 rounded bg-secondary px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">
                 {BACKEND_LABEL[m.backend]}
               </span>
             </span>
-            <span className="mt-0.5 block truncate text-xs text-muted-foreground">
+            <span className="mt-0.5 block truncate text-xs leading-relaxed text-muted-foreground">
               {m.detail} · {Number(m.contextWindow) / 1024}K · temp {m.temperature.toFixed(2)}
             </span>
           </span>
-          {isActive && <Check className="h-4 w-4 shrink-0 text-primary" />}
+          {isActive && (
+            <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-primary text-primary-foreground">
+              <Check className="h-3 w-3" />
+            </span>
+          )}
         </button>
         <div className="flex shrink-0 items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100">
           <Button variant="ghost" size="icon-sm" onClick={() => openEditModel(m)} aria-label={`编辑 ${m.name}`}>
@@ -270,8 +279,8 @@ export function ModelSection() {
       />
 
       {/* Provider management */}
-      <div>
-        <div className="mb-2 flex items-center justify-between">
+      <div className="rounded-xl border border-border bg-card">
+        <div className="flex items-center justify-between border-b border-border px-4 py-3">
           <p className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
             模型提供商
           </p>
@@ -280,46 +289,48 @@ export function ModelSection() {
             新增提供商
           </Button>
         </div>
-        <div className="grid gap-2 sm:grid-cols-2">
-          {providers.map((p) => (
-            <div
-              key={p.id}
-              className="group relative flex items-center gap-3 rounded-lg border border-border px-3 py-3 transition-colors hover:border-ring hover:bg-muted/40"
-            >
-              <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-secondary text-muted-foreground">
-                <Building2 className="h-4 w-4" />
-              </span>
-              <span className="min-w-0 flex-1">
-                <span className="block truncate text-sm font-medium">{p.name}</span>
-                <span className="mt-0.5 block truncate text-xs text-muted-foreground">
-                  {p.description || "无说明"} · {modelCountByProvider[p.id] ?? 0} 个模型
+        <div className="p-4">
+          <div className="grid gap-2 sm:grid-cols-2">
+            {providers.map((p) => (
+              <div
+                key={p.id}
+                className="group relative flex items-center gap-3 rounded-lg border border-border px-3 py-3 transition-colors hover:border-ring hover:bg-muted/40"
+              >
+                <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-secondary text-muted-foreground">
+                  <Building2 className="h-4 w-4" />
                 </span>
-              </span>
-              <div className="flex shrink-0 items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100">
-                <Button variant="ghost" size="icon-sm" onClick={() => openEditProvider(p)} aria-label={`编辑 ${p.name}`}>
-                  <Pencil className="size-3.5" />
-                </Button>
-                <Button
-                  variant="ghost"
-                  size="icon-sm"
-                  onClick={() => deleteProvider(p.id)}
-                  aria-label={`删除 ${p.name}`}
-                  disabled={BUILTIN_PROVIDER_IDS.has(p.id)}
-                >
-                  <Trash2 className="size-3.5" />
-                </Button>
+                <span className="min-w-0 flex-1">
+                  <span className="block truncate text-sm font-medium">{p.name}</span>
+                  <span className="mt-0.5 block truncate text-xs text-muted-foreground">
+                    {p.description || "无说明"} · {modelCountByProvider[p.id] ?? 0} 个模型
+                  </span>
+                </span>
+                <div className="flex shrink-0 items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100">
+                  <Button variant="ghost" size="icon-sm" onClick={() => openEditProvider(p)} aria-label={`编辑 ${p.name}`}>
+                    <Pencil className="size-3.5" />
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    size="icon-sm"
+                    onClick={() => deleteProvider(p.id)}
+                    aria-label={`删除 ${p.name}`}
+                    disabled={BUILTIN_PROVIDER_IDS.has(p.id)}
+                  >
+                    <Trash2 className="size-3.5" />
+                  </Button>
+                </div>
               </div>
-            </div>
-          ))}
+            ))}
+          </div>
+          {providerError && (
+            <p className="mt-2 text-xs text-destructive">{providerError}</p>
+          )}
         </div>
-        {providerError && (
-          <p className="mt-2 text-xs text-destructive">{providerError}</p>
-        )}
       </div>
 
       {/* Models grouped by provider */}
-      <div>
-        <div className="mb-2 flex items-center justify-between">
+      <div className="rounded-xl border border-border bg-card">
+        <div className="flex items-center justify-between border-b border-border px-4 py-3">
           <p className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
             模型列表
           </p>
@@ -328,17 +339,19 @@ export function ModelSection() {
             新增模型
           </Button>
         </div>
-        <div className="space-y-4">
-          {groupedModels.map(({ provider, models: groupModels }) => (
-            <div key={provider.id}>
-              <p className="mb-2 text-xs font-medium uppercase tracking-wider text-muted-foreground">
-                {provider.name}
-              </p>
-              <div className="grid gap-2 sm:grid-cols-2">
-                {groupModels.map(renderModelCard)}
+        <div className="p-4">
+          <div className="space-y-4">
+            {groupedModels.map(({ provider, models: groupModels }) => (
+              <div key={provider.id}>
+                <p className="mb-3 text-xs font-medium uppercase tracking-wider text-muted-foreground">
+                  {provider.name}
+                </p>
+                <div className="grid gap-2 sm:grid-cols-2">
+                  {groupModels.map(renderModelCard)}
+                </div>
               </div>
-            </div>
-          ))}
+            ))}
+          </div>
         </div>
       </div>
 
@@ -366,9 +379,9 @@ export function ModelSection() {
           </>
         }
       >
-        <div className="space-y-4">
+        <div className="space-y-5">
           <div className="space-y-1.5">
-            <label className="text-xs font-medium text-muted-foreground">名称</label>
+            <label className="text-xs font-medium text-foreground/70">名称</label>
             <Input
               value={providerDraft.name}
               onChange={(e) => setProviderDraft((d) => ({ ...d, name: e.target.value }))}
@@ -376,7 +389,7 @@ export function ModelSection() {
             />
           </div>
           <div className="space-y-1.5">
-            <label className="text-xs font-medium text-muted-foreground">说明（选填）</label>
+            <label className="text-xs font-medium text-foreground/70">说明（选填）</label>
             <Input
               value={providerDraft.description ?? ""}
               onChange={(e) => setProviderDraft((d) => ({ ...d, description: e.target.value }))}
@@ -403,9 +416,9 @@ export function ModelSection() {
           </>
         }
       >
-        <div className="space-y-4">
+        <div className="space-y-5">
           <div className="space-y-1.5">
-            <label className="text-xs font-medium text-muted-foreground">模型名称</label>
+            <label className="text-xs font-medium text-foreground/70">模型名称</label>
             <Input
               value={draft.name}
               onChange={(e) => setDraft((d) => ({ ...d, name: e.target.value }))}
@@ -414,7 +427,7 @@ export function ModelSection() {
           </div>
 
           <div className="space-y-1.5">
-            <label className="text-xs font-medium text-muted-foreground">所属提供商</label>
+            <label className="text-xs font-medium text-foreground/70">所属提供商</label>
             <Select
               value={draft.providerId}
               onChange={(v) => setDraft((d) => ({ ...d, providerId: v }))}
@@ -424,7 +437,7 @@ export function ModelSection() {
 
           <div className="grid grid-cols-2 gap-3">
             <div className="space-y-1.5">
-              <label className="text-xs font-medium text-muted-foreground">接口协议</label>
+              <label className="text-xs font-medium text-foreground/70">接口协议</label>
               <div className="grid grid-cols-2 gap-2">
                 {(["openai", "anthropic"] as const).map((p) => (
                   <button
@@ -439,7 +452,7 @@ export function ModelSection() {
                     }
                     className={cn(
                       "flex items-center justify-center gap-2 rounded-lg border px-3 py-2 text-sm transition-colors",
-                      draft.protocol === p ? "border-primary bg-primary/5" : "border-border hover:border-ring",
+                      draft.protocol === p ? "border-primary/60 bg-gradient-to-r from-primary/10 to-primary/5" : "border-border hover:border-ring",
                     )}
                   >
                     {PROTOCOL_LABEL[p]}
@@ -448,7 +461,7 @@ export function ModelSection() {
               </div>
             </div>
             <div className="space-y-1.5">
-              <label className="text-xs font-medium text-muted-foreground">后端路由</label>
+              <label className="text-xs font-medium text-foreground/70">后端路由</label>
               <Select
                 value={draft.backend}
                 onChange={(v) => setDraft((d) => ({ ...d, backend: v as ModelBackend }))}
@@ -461,7 +474,7 @@ export function ModelSection() {
           </div>
 
           <div className="space-y-1.5">
-            <label className="text-xs font-medium text-muted-foreground">API 端点</label>
+            <label className="text-xs font-medium text-foreground/70">API 端点</label>
             <Input
               value={draft.endpoint ?? ""}
               onChange={(e) => {
@@ -494,7 +507,7 @@ export function ModelSection() {
           )}
 
           <div className="space-y-1.5">
-            <label className="text-xs font-medium text-muted-foreground">API Key（选填）</label>
+            <label className="text-xs font-medium text-foreground/70">API Key（选填）</label>
             <Input
               type="password"
               value={apiKeyDraft}
@@ -508,7 +521,7 @@ export function ModelSection() {
 
           <div className="grid grid-cols-2 gap-3">
             <div className="space-y-1.5">
-              <label className="text-xs font-medium text-muted-foreground">上下文窗口</label>
+              <label className="text-xs font-medium text-foreground/70">上下文窗口</label>
               <Select
                 value={String(draft.contextWindow)}
                 onChange={(v) => setDraft((d) => ({ ...d, contextWindow: Number(v) }))}
@@ -523,7 +536,7 @@ export function ModelSection() {
               />
             </div>
             <div className="space-y-1.5">
-              <label className="text-xs font-medium text-muted-foreground">
+              <label className="text-xs font-medium text-foreground/70">
                 采样温度 · {draft.temperature.toFixed(2)}
               </label>
               <input
@@ -539,7 +552,7 @@ export function ModelSection() {
           </div>
 
           <div className="space-y-1.5">
-            <label className="text-xs font-medium text-muted-foreground">说明</label>
+            <label className="text-xs font-medium text-foreground/70">说明</label>
             <Input
               value={draft.detail}
               onChange={(e) => setDraft((d) => ({ ...d, detail: e.target.value }))}

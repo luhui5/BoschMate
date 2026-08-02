@@ -6,7 +6,7 @@ import { cn } from "@/lib/utils"
 export function SectionHeader({ title, desc }: { title: string; desc?: string }) {
   return (
     <div className="mb-6">
-      <h1 className="text-lg font-semibold tracking-tight">{title}</h1>
+      <h1 className="text-xl font-bold tracking-tight">{title}</h1>
       {desc && <p className="mt-1 text-sm text-muted-foreground">{desc}</p>}
     </div>
   )

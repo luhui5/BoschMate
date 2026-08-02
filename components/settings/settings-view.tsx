@@ -83,12 +83,15 @@ export function SettingsView() {
                 key={item.id}
                 onClick={() => setActive(item.id)}
                 className={cn(
-                  "flex items-start gap-3 rounded-lg px-3 py-2 text-left transition-colors",
+                  "relative flex items-start gap-3 rounded-lg px-3 py-2 text-left transition-colors",
                   active === item.id
-                    ? "bg-muted text-foreground"
+                    ? "bg-primary/10 text-primary"
                     : "text-muted-foreground hover:bg-muted/50 hover:text-foreground",
                 )}
               >
+                {active === item.id && (
+                  <span className="absolute left-0 top-1/2 h-5 w-0.5 -translate-y-1/2 rounded-full bg-primary" />
+                )}
                 <Icon className="mt-0.5 h-4 w-4 shrink-0" />
                 <span className="flex flex-col">
                   <span className="text-sm font-medium leading-tight">{item.label}</span>
